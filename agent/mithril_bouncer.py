@@ -14,7 +14,7 @@ import time
 import subprocess
 import requests
 
-MITHRIL_URL = os.getenv("MITHRIL_URL", "http://127.0.0.1:8000")
+MITHRIL_URL = os.getenv("MITHRIL_URL", "http://127.0.0.1:9900")
 NODE_API_KEY = os.getenv("NODE_API_KEY", "")
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "15"))  # Segundos
 BLOCK_METHOD = os.getenv("BLOCK_METHOD", "nginx_conf")  # 'ipset' o 'nginx_conf'

@@ -21,7 +21,7 @@ COPY . /app/
 
 RUN chmod +x /app/entrypoint.sh
 
-EXPOSE 8000
+EXPOSE 9900
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "mithril_siem.asgi:application"]
+CMD ["daphne", "-b", "0.0.0.0", "-p", "9900", "mithril_siem.asgi:application"]

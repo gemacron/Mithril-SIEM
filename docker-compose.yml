@@ -46,7 +46,7 @@ services:
       - mithril_static:/app/staticfiles
       - mithril_media:/app/media
     ports:
-      - "8000:8000"
+      - "9900:9900"
     depends_on:
       mithril-db:
         condition: service_healthy

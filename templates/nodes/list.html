@@ -10,7 +10,7 @@
         <span>📡</span> SERVIDORES PROXY NGINX REGISTRADOS
       </div>
       <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
-        Agrega tantos servidores proxy como desees. Cada uno cuenta con un token de autenticación para enviar logs y sincronizar bloqueos.
+        Agrega tantos servidores proxy como desees. Puedes ajustar individualmente la monitorización, umbrales de RPS y método de mitigación de cada uno.
       </p>
     </div>
     <a href="{% url 'nodes:create' %}" class="btn btn-cyan">+ Alta de Nuevo Proxy</a>
@@ -22,11 +22,11 @@
         <tr>
           <th>Nombre Identificador</th>
           <th>Dirección IP</th>
-          <th>Ubicación / Etiqueta</th>
+          <th>Ubicación</th>
           <th>Estado Salud</th>
           <th>Carga RPS</th>
+          <th>CPU / RAM</th>
           <th>Total Logs</th>
-          <th>Token de API (Bouncer)</th>
           <th style="text-align: right;">Acciones</th>
         </tr>
       </thead>
@@ -42,21 +42,32 @@
           <td>
             {% if node.status == 'ONLINE' %}
             <span class="badge safe">● ONLINE</span>
+            {% elif node.status == 'MAINTENANCE' %}
+            <span class="badge medium">⏸ PAUSADO</span>
+            {% elif node.status == 'DEGRADED' %}
+            <span class="badge high">⚠️ SATURADO</span>
             {% else %}
-            <span class="badge high">○ OFFLINE</span>
+            <span class="badge critical">○ OFFLINE</span>
             {% endif %}
           </td>
-          <td style="color: var(--neon-cyan); font-weight: 700;">{{ node.current_rps }}</td>
-          <td style="color: var(--text-muted);">{{ node.total_logs_processed }}</td>
-          <td>
-            <code style="background: rgba(0,0,0,0.5); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">
-              {{ node.api_key|truncatechars:24 }}
-            </code>
+          <td style="color: var(--neon-cyan); font-weight: 700;">{{ node.current_rps }} <span style="font-size: 0.7rem; color: var(--text-dim);">rps</span></td>
+          <td style="font-size: 0.75rem; color: var(--text-muted);">
+            {% if node.cpu_usage or node.memory_usage %}
+              CPU: {{ node.cpu_usage|floatformat:0 }}% | RAM: {{ node.memory_usage|floatformat:0 }}%
+            {% else %}
+              <span style="color: var(--text-dim);">-</span>
+            {% endif %}
           </td>
+          <td style="color: var(--text-muted);">{{ node.total_logs_processed }}</td>
           <td style="text-align: right;">
-            <a href="{% url 'nodes:delete' node.id %}" class="btn btn-dim" style="padding: 0.25rem 0.6rem; color: var(--neon-crimson); font-size: 0.75rem;">
-              Eliminar
-            </a>
+            <div style="display: inline-flex; gap: 0.4rem;">
+              <a href="{% url 'nodes:configure' node.id %}" class="btn btn-cyan" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
+                ⚙️ Configurar
+              </a>
+              <a href="{% url 'nodes:delete' node.id %}" class="btn btn-dim" style="padding: 0.25rem 0.6rem; color: var(--neon-crimson); font-size: 0.75rem;">
+                Eliminar
+              </a>
+            </div>
           </td>
         </tr>
         {% empty %}
@@ -75,15 +86,15 @@
 <div class="panel" style="margin-top: 1.5rem;">
   <div class="panel-header">
     <div class="panel-title">
-      <span>🚀</span> CÓMO CONECTAR UN PROXY NGINX A MITHRIL
+      <span>🚀</span> CÓMO CONECTAR UN PROXY NGINX A MITHRIL (PUERTO 9900)
     </div>
   </div>
   <div class="panel-body" style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.7;">
     <ol style="padding-left: 1.25rem;">
       <li>Copia el script <code style="color: var(--neon-cyan);">agent/mithril_bouncer.py</code> al servidor donde corre Nginx.</li>
-      <li>Ejecuta el agente pasando la URL del SIEM y el Token generado arriba:
+      <li>Ejecuta el agente pasando la URL del SIEM (puerto 9900) y el Token generado en el botón <strong>⚙️ Configurar</strong> de cada nodo:
         <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-emerald); font-family: var(--font-mono); font-size: 0.8rem; margin: 0.5rem 0;">
-export MITHRIL_URL="http://IP_DE_TU_MITHRIL:8000"
+export MITHRIL_URL="http://IP_DE_TU_MITHRIL:9900"
 export NODE_API_KEY="mithril_node_TU_TOKEN_AQUI"
 python3 mithril_bouncer.py</pre>
       </li>

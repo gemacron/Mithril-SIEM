@@ -1,0 +1,204 @@
+{% extends 'base.html' %}
+
+{% block title %}Configuración de Monitorización - {{ node.name }}{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+  <div>
+    <div style="display: flex; align-items: center; gap: 0.75rem;">
+      <h1 style="font-size: 1.4rem; font-weight: 800; color: var(--text-main);">
+        ⚙️ CONFIGURACIÓN DE MONITORIZACIÓN: <span style="color: var(--neon-cyan);">{{ node.name }}</span>
+      </h1>
+      <span class="badge {% if node.status == 'ONLINE' %}safe{% elif node.status == 'MAINTENANCE' %}medium{% elif node.status == 'DEGRADED' %}high{% else %}critical{% endif %}">
+        ● {{ node.get_status_display }}
+      </span>
+    </div>
+    <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.25rem;">
+      IP: <code>{{ node.ip_address }}</code> &nbsp;|&nbsp; Ubicación: {{ node.location_label }} &nbsp;|&nbsp; Último reporte: {{ node.last_heartbeat|date:"Y-m-d H:i:s"|default:"Nunca" }}
+    </p>
+  </div>
+
+  <a href="{% url 'nodes:list' %}" class="btn btn-dim">&larr; Volver a la Lista de Servidores</a>
+</div>
+
+<!-- Telemetry & Health Quick Stats -->
+<div class="kpi-grid" style="margin-bottom: 1.5rem;">
+  <div class="kpi-card cyan">
+    <div>
+      <div class="kpi-label">Peticiones / Segundo (RPS)</div>
+      <div class="kpi-value">{{ node.current_rps }} <span style="font-size: 0.8rem; color: var(--text-dim); font-weight: 400;">/ max {{ node.max_rps_alert_threshold }}</span></div>
+    </div>
+    <div style="font-size: 1.5rem;">⚡</div>
+  </div>
+
+  <div class="kpi-card emerald">
+    <div>
+      <div class="kpi-label">Uso de CPU Reportado</div>
+      <div class="kpi-value">{{ node.cpu_usage|floatformat:1 }}%</div>
+    </div>
+    <div style="font-size: 1.5rem;">🖥️</div>
+  </div>
+
+  <div class="kpi-card amber">
+    <div>
+      <div class="kpi-label">Uso de Memoria RAM</div>
+      <div class="kpi-value">{{ node.memory_usage|floatformat:1 }}%</div>
+    </div>
+    <div style="font-size: 1.5rem;">🧠</div>
+  </div>
+
+  <div class="kpi-card cyan">
+    <div>
+      <div class="kpi-label">Conexiones Nginx Activas</div>
+      <div class="kpi-value">{{ node.active_connections }}</div>
+    </div>
+    <div style="font-size: 1.5rem;">🔗</div>
+  </div>
+</div>
+
+<div class="dashboard-grid">
+
+  <!-- Left: Monitoring Configuration Form -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">
+        <span>🛠️</span> PARÁMETROS DE MONITORIZACIÓN Y UMBRALES
+      </div>
+    </div>
+    <div class="panel-body">
+      <form method="POST">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="save_config">
+
+        <div style="background: rgba(13, 18, 31, 0.6); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-dim); margin-bottom: 1.25rem;">
+          <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.9rem;">
+            <input type="checkbox" name="monitoring_enabled" {% if node.monitoring_enabled %}checked{% endif %}>
+            <strong style="color: var(--text-main);">Monitorización Activa para este Servidor</strong>
+          </label>
+          <small style="color: var(--text-dim); display: block; margin-top: 0.3rem; margin-left: 1.6rem;">
+            Si desmarcas esta casilla, el proxy entrará en <strong>Modo Mantenimiento</strong> y no generará alertas por falta de heartbeat.
+          </small>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div class="form-group">
+            <label class="form-label" for="heartbeat_timeout_seconds">Timeout de Heartbeat (Segundos)</label>
+            <input type="number" id="heartbeat_timeout_seconds" name="heartbeat_timeout_seconds" class="form-input" value="{{ node.heartbeat_timeout_seconds }}" min="15" max="600">
+            <small style="color: var(--text-dim); font-size: 0.7rem;">Tiempo sin reporte antes de marcar como OFFLINE.</small>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="max_rps_alert_threshold">Umbral de Alerta RPS</label>
+            <input type="number" id="max_rps_alert_threshold" name="max_rps_alert_threshold" class="form-input" value="{{ node.max_rps_alert_threshold }}" min="50" max="50000">
+            <small style="color: var(--text-dim); font-size: 0.7rem;">RPS para clasificar el nodo como DEGRADADO / Sobrecargado.</small>
+          </div>
+        </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div class="form-group">
+            <label class="form-label" for="syslog_port">Puerto Syslog Asignado</label>
+            <input type="number" id="syslog_port" name="syslog_port" class="form-input" value="{{ node.syslog_port }}" min="1024" max="65535">
+            <small style="color: var(--text-dim); font-size: 0.7rem;">Puerto de escucha de logs para este nodo.</small>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="sync_interval_seconds">Intervalo de Sincronización de Bans (s)</label>
+            <input type="number" id="sync_interval_seconds" name="sync_interval_seconds" class="form-input" value="{{ node.sync_interval_seconds }}" min="5" max="300">
+            <small style="color: var(--text-dim); font-size: 0.7rem;">Frecuencia con la que el bouncer consulta nuevas IPs.</small>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="block_method">Método de Bloqueo en el Proxy</label>
+          <select id="block_method" name="block_method" class="form-input">
+            <option value="ipset" {% if node.block_method == 'ipset' %}selected{% endif %}>Kernel ipset (Recomendado - Nanosegundos, sin recargar Nginx)</option>
+            <option value="nginx_conf" {% if node.block_method == 'nginx_conf' %}selected{% endif %}>Archivo include de Nginx (deny IP; con reload)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="location_label">Ubicación / Etiqueta Descriptiva</label>
+          <input type="text" id="location_label" name="location_label" class="form-input" value="{{ node.location_label }}">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="description">Notas del Servidor</label>
+          <textarea id="description" name="description" class="form-input" rows="2">{{ node.description }}</textarea>
+        </div>
+
+        <div style="background: rgba(13, 18, 31, 0.6); padding: 0.75rem 1rem; border-radius: 6px; border: 1px solid var(--border-dim); margin-bottom: 1.25rem;">
+          <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem;">
+            <input type="checkbox" name="notify_on_degraded" {% if node.notify_on_degraded %}checked{% endif %}>
+            Notificar por Telegram si este nodo se desconecta o supera su umbral de RPS
+          </label>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+          <button type="submit" class="btn btn-cyan">Guardar Parámetros de Monitorización</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Right: API Key Management & Service Generator -->
+  <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+    
+    <!-- Token de Autenticación -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>🔑</span> TOKEN DE CONEXIÓN DEL NODO
+        </div>
+      </div>
+      <div class="panel-body">
+        <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+          Token único para autenticar el agente Mithril Bouncer en este servidor proxy:
+        </p>
+        <div style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); font-family: var(--font-mono); font-size: 0.85rem; color: var(--neon-cyan); word-break: break-all; margin-bottom: 1rem;">
+          {{ node.api_key }}
+        </div>
+
+        <form method="POST" onsubmit="return confirm('¿Seguro que deseas regenerar el token? El agente en el servidor dejará de sincronizar hasta que actualices el nuevo token.');">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="regenerate_token">
+          <button type="submit" class="btn btn-dim" style="font-size: 0.75rem; color: var(--neon-amber); border-color: rgba(255,153,0,0.4);">
+            🔄 Regenerar Token de API
+          </button>
+        </form>
+      </div>
+    </div>
+
+    <!-- Generador de Servicio Systemd -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>📦</span> SERVICIO SYSTEMD AUTOMÁTICO (PUERTO 9900)
+        </div>
+      </div>
+      <div class="panel-body">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+          Guarda este contenido en <code>/etc/systemd/system/mithril-bouncer.service</code> en el proxy para auto-arranque:
+        </p>
+        <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-emerald); font-family: var(--font-mono); font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap;">{{ systemd_service }}</pre>
+      </div>
+    </div>
+
+    <!-- Generador de Configuración Nginx -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>📄</span> SNIPPET DE CONFIGURACIÓN NGINX
+        </div>
+      </div>
+      <div class="panel-body">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+          Inserta dentro de tu bloque <code>server { ... }</code> en Nginx:
+        </p>
+        <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-cyan); font-family: var(--font-mono); font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap;">{{ nginx_snippet }}</pre>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+{% endblock %}

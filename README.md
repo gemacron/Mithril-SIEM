@@ -99,7 +99,7 @@ podman compose up -d --build
 El comando inicializará automáticamente:
 - **`mithril-db`**: PostgreSQL 16 con volumen persistente.
 - **`mithril-redis`**: Redis 7 en memoria.
-- **`mithril-web`**: Servidor Django + Daphne (WebSockets) en el puerto `8000`.
+- **`mithril-web`**: Servidor Django + Daphne (WebSockets) en el puerto `9900`.
 - **`mithril-worker`**: Celery Worker para procesamiento en segundo plano.
 - **`mithril-beat`**: Tareas periódicas y chequeo de salud de proxies.
 
@@ -109,7 +109,7 @@ El comando inicializará automáticamente:
 
 1. Ingresa a la interfaz web en tu navegador:
    ```
-   http://localhost:8000
+   http://localhost:9900
    ```
 2. Utiliza las credenciales genéricas iniciales definidas en `.env`:
    - **Usuario:** `admin`
@@ -127,12 +127,12 @@ El comando inicializará automáticamente:
 ### Paso 1: Dar de alta el proxy en Mithril
 1. En el menú superior de Mithril, ve a **Nodos Proxy** y haz clic en **+ Alta de Nuevo Proxy**.
 2. Asigna un nombre (ej: `proxy-edge-01`) y su IP.
-3. El sistema generará un **Token de Conexión** único (ej: `mithril_node_9a8b...`).
+3. El sistema generará un **Token de Conexión** único (ej: `mithril_node_9a8b...`) y podrás acceder a su pantalla **⚙️ Configurar** para ajustar umbrales de RPS, timeouts y descargar el servicio systemd.
 
 ### Paso 2: Ejecutar el Agente Mithril Bouncer en el Proxy
 En cada máquina donde corre Nginx, ejecuta el agente:
 ```bash
-export MITHRIL_URL="http://IP_DE_MITHRIL:8000"
+export MITHRIL_URL="http://IP_DE_MITHRIL:9900"
 export NODE_API_KEY="mithril_node_TU_TOKEN_GENERADO"
 python3 agent/mithril_bouncer.py
 ```
