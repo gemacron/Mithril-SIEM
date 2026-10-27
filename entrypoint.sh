@@ -23,7 +23,10 @@ if [ -n "$REDIS_HOST" ]; then
     echo "✅ Conexión con Redis establecida."
 fi
 
-# Aplicar migraciones
+# Crear y aplicar migraciones
+echo "Generando migraciones para aplicaciones Mithril..."
+python manage.py makemigrations core nodes detection mitigation notifications reports --noinput
+
 echo "Aplicando migraciones de base de datos..."
 python manage.py migrate --noinput
 
