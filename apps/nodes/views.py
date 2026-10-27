@@ -12,7 +12,8 @@ def nodes_list_view(request):
     nodes = ProxyNode.objects.all()
     for n in nodes:
         n.check_health()
-    return render(request, 'nodes/list.html', {'nodes': nodes})
+    host_ip = request.get_host().split(':')[0]
+    return render(request, 'nodes/list.html', {'nodes': nodes, 'host_ip': host_ip})
 
 @login_required
 def node_create_view(request):

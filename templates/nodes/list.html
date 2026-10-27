@@ -83,23 +83,332 @@
 </div>
 
 <!-- Deployment Guide Box -->
-<div class="panel" style="margin-top: 1.5rem;">
-  <div class="panel-header">
-    <div class="panel-title">
-      <span>🚀</span> CÓMO CONECTAR UN PROXY NGINX A MITHRIL (PUERTO 9900)
+<div class="panel" style="margin-top: 1.5rem; border: 1px solid rgba(0, 229, 255, 0.25); background: linear-gradient(180deg, rgba(10, 16, 28, 0.95) 0%, rgba(6, 10, 18, 0.98) 100%);">
+  <div class="panel-header" style="border-bottom: 1px solid rgba(0, 229, 255, 0.15); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
+    <div>
+      <div class="panel-title" style="color: var(--neon-cyan); display: flex; align-items: center; gap: 0.5rem; font-size: 0.95rem;">
+        <span>🛡️</span> CÓMO CONECTAR UN PROXY NGINX A MITHRIL (PUERTO 9900)
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">
+        Agente persistente con <strong>systemd</strong>, compatible con <strong>Ubuntu/Debian</strong> y <strong>Rocky Linux/AlmaLinux/RHEL</strong>. Mitigación en Kernel con <code>ipset</code> o recarga suave de Nginx.
+      </p>
+    </div>
+    <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+      <span class="badge safe" style="font-size: 0.65rem;">Ubuntu 20/22/24</span>
+      <span class="badge safe" style="font-size: 0.65rem;">Rocky Linux 8/9</span>
+      <span class="badge medium" style="font-size: 0.65rem;">Systemd Persistente</span>
+      <span class="badge safe" style="font-size: 0.65rem;">Zero-Pip Deps</span>
     </div>
   </div>
-  <div class="panel-body" style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.7;">
-    <ol style="padding-left: 1.25rem;">
-      <li>Copia el script <code style="color: var(--neon-cyan);">agent/mithril_bouncer.py</code> al servidor donde corre Nginx.</li>
-      <li>Ejecuta el agente pasando la URL del SIEM (puerto 9900) y el Token generado en el botón <strong>⚙️ Configurar</strong> de cada nodo:
-        <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-emerald); font-family: var(--font-mono); font-size: 0.8rem; margin: 0.5rem 0;">
-export MITHRIL_URL="http://IP_DE_TU_MITHRIL:9900"
-export NODE_API_KEY="mithril_node_TU_TOKEN_AQUI"
-python3 mithril_bouncer.py</pre>
-      </li>
-      <li>Configura Nginx para emitir logs en formato JSON según el ejemplo en <code style="color: var(--neon-cyan);">agent/nginx_syslog_sample.conf</code>.</li>
-    </ol>
+
+  <div class="panel-body" style="padding: 1.25rem;">
+    <!-- Navigation Tabs -->
+    <div style="display: flex; gap: 0.5rem; margin-bottom: 1.25rem; border-bottom: 1px solid var(--border-dim); padding-bottom: 0.5rem; flex-wrap: wrap;">
+      <button type="button" class="tab-btn active" onclick="switchGuideTab('tab-quick', this)">
+        ⚡ 1. Instalación Rápida con Git
+      </button>
+      <button type="button" class="tab-btn" onclick="switchGuideTab('tab-ubuntu', this)">
+        🐧 2. Ubuntu / Debian
+      </button>
+      <button type="button" class="tab-btn" onclick="switchGuideTab('tab-rocky', this)">
+        🎩 3. Rocky Linux / RHEL
+      </button>
+      <button type="button" class="tab-btn" onclick="switchGuideTab('tab-nginx', this)">
+        🌐 4. Configuración Nginx
+      </button>
+      <button type="button" class="tab-btn" onclick="switchGuideTab('tab-verify', this)">
+        🔍 5. Verificación & Systemd
+      </button>
+    </div>
+
+    <!-- TAB 1: Instalación Rápida con Git -->
+    <div id="tab-quick" class="guide-tab-content active">
+      <div style="background: rgba(0, 229, 255, 0.04); border-left: 3px solid var(--neon-cyan); padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--text-main);">
+        💡 <strong>Recomendado:</strong> El script <code>install_agent.sh</code> detecta automáticamente si estás en <strong>Ubuntu</strong> o <strong>Rocky Linux</strong>, instala los paquetes requeridos, crea el servicio <code>mithril-bouncer.service</code> en systemd y lo deja activo y persistente tras reinicios.
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 1: Clonar repositorio oficial en el proxy</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-git-clone', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-git-clone" class="terminal-box">git clone https://github.com/gemacron/Mithril-SIEM.git /tmp/Mithril-SIEM</pre>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 2: Ejecutar el instalador universal (Modo Interactivo)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-installer-run', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-installer-run" class="terminal-box">sudo bash /tmp/Mithril-SIEM/agent/install_agent.sh</pre>
+        <p style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.3rem;">
+          * Te solicitará la URL del SIEM (<code>http://{{ host_ip }}:9900</code>) y el <strong>NODE_API_KEY</strong> que obtienes al crear el nodo arriba.
+        </p>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Alternativa: Instalación en una sola línea (Automatizada / Ansible)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-installer-one-liner', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-installer-one-liner" class="terminal-box">sudo bash /tmp/Mithril-SIEM/agent/install_agent.sh "http://{{ host_ip }}:9900" "TU_NODE_API_KEY" "ipset" "15"</pre>
+      </div>
+    </div>
+
+    <!-- TAB 2: Ubuntu / Debian -->
+    <div id="tab-ubuntu" class="guide-tab-content" style="display: none;">
+      <p style="font-size: 0.8rem; color: var(--text-main); margin-bottom: 0.75rem;">
+        Comandos específicos para <strong>Ubuntu 20.04 / 22.04 / 24.04 LTS</strong> y <strong>Debian 11 / 12</strong>:
+      </p>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">1. Dependencias del sistema (apt)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-ubuntu-deps', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-ubuntu-deps" class="terminal-box">sudo apt-get update
+sudo apt-get install -y python3 ipset iptables curl git</pre>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">2. Archivo de servicio Systemd (/etc/systemd/system/mithril-bouncer.service)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-ubuntu-systemd', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-ubuntu-systemd" class="terminal-box">sudo cat &lt;&lt;'EOF' &gt; /etc/systemd/system/mithril-bouncer.service
+[Unit]
+Description=Mithril SIEM Bouncer Agent
+After=network.target nginx.service
+
+[Service]
+Type=simple
+User=root
+Environment="MITHRIL_URL=http://{{ host_ip }}:9900"
+Environment="NODE_API_KEY=TU_NODE_API_KEY"
+Environment="BLOCK_METHOD=ipset"
+Environment="SYNC_INTERVAL=15"
+Environment="NGINX_BLOCK_FILE=/etc/nginx/conf.d/mithril_blocklist.conf"
+ExecStart=/usr/bin/python3 /opt/mithril-agent/mithril_bouncer.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF</pre>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">3. Iniciar y habilitar servicio persistente</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-ubuntu-start', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-ubuntu-start" class="terminal-box">sudo systemctl daemon-reload
+sudo systemctl enable --now mithril-bouncer.service</pre>
+      </div>
+    </div>
+
+    <!-- TAB 3: Rocky Linux / AlmaLinux / RHEL -->
+    <div id="tab-rocky" class="guide-tab-content" style="display: none;">
+      <p style="font-size: 0.8rem; color: var(--text-main); margin-bottom: 0.75rem;">
+        Comandos específicos para <strong>Rocky Linux 8 / 9</strong>, <strong>AlmaLinux</strong>, <strong>RHEL</strong> y <strong>CentOS Stream</strong>:
+      </p>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">1. Dependencias del sistema (dnf)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-rocky-deps', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-rocky-deps" class="terminal-box">sudo dnf install -y python3 ipset iptables curl git</pre>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">2. Configuración SELinux (si aplica)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-rocky-selinux', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-rocky-selinux" class="terminal-box">sudo setsebool -P httpd_can_network_connect 1</pre>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">3. Iniciar y habilitar servicio persistente</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-rocky-start', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-rocky-start" class="terminal-box">sudo systemctl daemon-reload
+sudo systemctl enable --now mithril-bouncer.service</pre>
+      </div>
+    </div>
+
+    <!-- TAB 4: Configuración Nginx -->
+    <div id="tab-nginx" class="guide-tab-content" style="display: none;">
+      <p style="font-size: 0.8rem; color: var(--text-main); margin-bottom: 0.75rem;">
+        Configuración de Nginx para enviar logs en tiempo real vía <strong>Syslog UDP (puerto 5140)</strong> e incluir la lista de bloqueo:
+      </p>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">1. Formato JSON (pegar dentro de 'http { ... }' en /etc/nginx/nginx.conf)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-nginx-format', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-nginx-format" class="terminal-box">log_format mithril_json escape=json '{'
+    '"client_ip":"$remote_addr",'
+    '"time_local":"$time_iso8601",'
+    '"http_method":"$request_method",'
+    '"uri":"$uri",'
+    '"query_params":"$args",'
+    '"status_code":$status,'
+    '"bytes_sent":$body_bytes_sent,'
+    '"latency_ms":$request_time,'
+    '"user_agent":"$http_user_agent",'
+    '"referer":"$http_referer"'
+'};</pre>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">2. Directivas en el VirtualHost (dentro de server { ... })</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-nginx-vhost', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-nginx-vhost" class="terminal-box"># 1. Inclusión de lista negra administrada dinámicamente por Mithril
+include /etc/nginx/conf.d/mithril_blocklist.conf;
+
+# 2. Envío directo al SIEM por Syslog UDP en tiempo real
+access_log syslog:server={{ host_ip }}:5140,facility=local7,tag=nginx mithril_json;</pre>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">3. Validar sintaxis y recargar Nginx sin caídas</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-nginx-reload', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-nginx-reload" class="terminal-box">sudo nginx -t && sudo systemctl reload nginx</pre>
+      </div>
+    </div>
+
+    <!-- TAB 5: Verificación & Systemd -->
+    <div id="tab-verify" class="guide-tab-content" style="display: none;">
+      <p style="font-size: 0.8rem; color: var(--text-main); margin-bottom: 0.75rem;">
+        Comandos de diagnóstico para monitorear el agente y las reglas de bloqueo en tu proxy:
+      </p>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem;">
+        <div style="background: rgba(6, 9, 16, 0.7); border: 1px solid var(--border-dim); padding: 0.75rem; border-radius: 6px;">
+          <div style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.3rem;">Estado del Servicio Systemd</div>
+          <pre class="terminal-box" style="margin: 0;">sudo systemctl status mithril-bouncer</pre>
+        </div>
+
+        <div style="background: rgba(6, 9, 16, 0.7); border: 1px solid var(--border-dim); padding: 0.75rem; border-radius: 6px;">
+          <div style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.3rem;">Registros de Telemetría en Vivo</div>
+          <pre class="terminal-box" style="margin: 0;">sudo journalctl -u mithril-bouncer -f</pre>
+        </div>
+
+        <div style="background: rgba(6, 9, 16, 0.7); border: 1px solid var(--border-dim); padding: 0.75rem; border-radius: 6px;">
+          <div style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.3rem;">Ver IPs Bloqueadas en Kernel (ipset)</div>
+          <pre class="terminal-box" style="margin: 0;">sudo ipset list mithril_blacklist</pre>
+        </div>
+
+        <div style="background: rgba(6, 9, 16, 0.7); border: 1px solid var(--border-dim); padding: 0.75rem; border-radius: 6px;">
+          <div style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Ver Archivo de Bloqueo Nginx</div>
+          <pre class="terminal-box" style="margin: 0;">cat /etc/nginx/conf.d/mithril_blocklist.conf</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer Guide Link -->
+    <div style="margin-top: 1.25rem; padding-top: 0.75rem; border-top: 1px solid var(--border-dim); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+      <span style="font-size: 0.72rem; color: var(--text-dim);">
+        📖 Guía completa y troubleshooting detallado disponible en el repositorio:
+      </span>
+      <a href="https://github.com/gemacron/Mithril-SIEM/blob/main/docs/PROXY_SETUP_GUIDE.md" target="_blank" class="btn btn-dim" style="font-size: 0.75rem; color: var(--neon-cyan); border-color: rgba(0, 229, 255, 0.3);">
+        Ver docs/PROXY_SETUP_GUIDE.md en GitHub ↗
+      </a>
+    </div>
   </div>
 </div>
+
+<style>
+.tab-btn {
+  background: transparent;
+  border: 1px solid var(--border-dim);
+  color: var(--text-muted);
+  padding: 0.4rem 0.85rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 600;
+  transition: all 0.2s ease;
+}
+.tab-btn:hover {
+  border-color: var(--neon-cyan);
+  color: var(--text-main);
+}
+.tab-btn.active {
+  background: rgba(0, 229, 255, 0.12);
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+  box-shadow: 0 0 10px rgba(0, 229, 255, 0.2);
+}
+.terminal-box {
+  background: #050811;
+  border: 1px solid rgba(0, 229, 255, 0.18);
+  border-radius: 6px;
+  padding: 0.65rem 0.85rem;
+  color: var(--neon-emerald);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  overflow-x: auto;
+  line-height: 1.5;
+  margin: 0;
+}
+.copy-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-dim);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.copy-btn:hover {
+  background: rgba(0, 229, 255, 0.15);
+  border-color: var(--neon-cyan);
+  color: var(--neon-cyan);
+}
+</style>
+
+<script>
+function switchGuideTab(tabId, btn) {
+  document.querySelectorAll('.guide-tab-content').forEach(function(el) {
+    el.style.display = 'none';
+  });
+  document.querySelectorAll('.tab-btn').forEach(function(el) {
+    el.classList.remove('active');
+  });
+  var target = document.getElementById(tabId);
+  if (target) {
+    target.style.display = 'block';
+  }
+  btn.classList.add('active');
+}
+
+function copyCode(elementId, btn) {
+  var el = document.getElementById(elementId);
+  if (!el) return;
+  var text = el.innerText || el.textContent;
+  navigator.clipboard.writeText(text).then(function() {
+    var originalText = btn.innerHTML;
+    btn.innerHTML = '✅ ¡Copiado!';
+    btn.style.borderColor = 'var(--neon-emerald)';
+    btn.style.color = 'var(--neon-emerald)';
+    setTimeout(function() {
+      btn.innerHTML = originalText;
+      btn.style.borderColor = '';
+      btn.style.color = '';
+    }, 2000);
+  }).catch(function(err) {
+    console.error('Error al copiar:', err);
+  });
+}
+</script>
 {% endblock %}
