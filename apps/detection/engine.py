@@ -20,9 +20,9 @@ def resolve_geoip(ip_str):
             return {
                 'country_code': 'LO',
                 'country_name': 'Red Local',
-                'city': 'Interno',
-                'latitude': 0.0,
-                'longitude': 0.0
+                'city': 'SOC Base Local',
+                'latitude': -34.6037,
+                'longitude': -58.3816
             }
     except Exception:
         pass

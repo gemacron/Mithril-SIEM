@@ -227,10 +227,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // 1. Añadir pulso táctico en el mapa 2D
         if (window.mithrilMap) {
-          const lat = parseFloat(event.latitude) || 0;
-          const lon = parseFloat(event.longitude) || 0;
-          if (lat !== 0 || lon !== 0) {
-            window.mithrilMap.addLivePulse(lat, lon, event.is_threat);
+          const lat = parseFloat(event.latitude);
+          const lon = parseFloat(event.longitude);
+          if (!isNaN(lat) && !isNaN(lon)) {
+            window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip);
           }
         }
 

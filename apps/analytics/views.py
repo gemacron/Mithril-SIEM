@@ -56,18 +56,30 @@ def api_map_data(request):
         .order_by('-total')[:15]
     )
 
-    # Coordenadas recientes de incidentes para los puntos del mapa
+    # Coordenadas recientes de incidentes y tráfico para los puntos del mapa
     recent_points = (
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(latitude__isnull=True)
-        .exclude(latitude=0.0)
         .values('latitude', 'longitude', 'country_name', 'client_ip', 'status_code')
-        .order_by('-created_at')[:50]
+        .order_by('-created_at')[:80]
     )
+
+    proxy_nodes = [
+        {
+            'id': str(n.id),
+            'name': n.name,
+            'ip': n.ip_address,
+            'status': n.status,
+            'latitude': -34.6037,
+            'longitude': -58.3816
+        }
+        for n in ProxyNode.objects.all()
+    ]
 
     return JsonResponse({
         'countries': list(country_stats),
-        'points': list(recent_points)
+        'points': list(recent_points),
+        'nodes': proxy_nodes
     })
 
 @login_required
