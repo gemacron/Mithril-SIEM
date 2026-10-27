@@ -1,0 +1,94 @@
+{% extends 'base.html' %}
+
+{% block title %}Servidores Proxy Nginx{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">
+        <span>📡</span> SERVIDORES PROXY NGINX REGISTRADOS
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
+        Agrega tantos servidores proxy como desees. Cada uno cuenta con un token de autenticación para enviar logs y sincronizar bloqueos.
+      </p>
+    </div>
+    <a href="{% url 'nodes:create' %}" class="btn btn-cyan">+ Alta de Nuevo Proxy</a>
+  </div>
+
+  <div class="panel-body" style="padding: 0;">
+    <table class="terminal-table">
+      <thead>
+        <tr>
+          <th>Nombre Identificador</th>
+          <th>Dirección IP</th>
+          <th>Ubicación / Etiqueta</th>
+          <th>Estado Salud</th>
+          <th>Carga RPS</th>
+          <th>Total Logs</th>
+          <th>Token de API (Bouncer)</th>
+          <th style="text-align: right;">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for node in nodes %}
+        <tr>
+          <td>
+            <strong style="color: var(--text-main); font-size: 0.95rem;">{{ node.name }}</strong>
+            {% if node.description %}<br><span style="font-size: 0.7rem; color: var(--text-dim);">{{ node.description }}</span>{% endif %}
+          </td>
+          <td><code>{{ node.ip_address }}</code></td>
+          <td>{{ node.location_label }}</td>
+          <td>
+            {% if node.status == 'ONLINE' %}
+            <span class="badge safe">● ONLINE</span>
+            {% else %}
+            <span class="badge high">○ OFFLINE</span>
+            {% endif %}
+          </td>
+          <td style="color: var(--neon-cyan); font-weight: 700;">{{ node.current_rps }}</td>
+          <td style="color: var(--text-muted);">{{ node.total_logs_processed }}</td>
+          <td>
+            <code style="background: rgba(0,0,0,0.5); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.75rem;">
+              {{ node.api_key|truncatechars:24 }}
+            </code>
+          </td>
+          <td style="text-align: right;">
+            <a href="{% url 'nodes:delete' node.id %}" class="btn btn-dim" style="padding: 0.25rem 0.6rem; color: var(--neon-crimson); font-size: 0.75rem;">
+              Eliminar
+            </a>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 3rem;">
+            No hay proxies registrados. Haz clic en <strong>+ Alta de Nuevo Proxy</strong> para conectar tu primer servidor.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Deployment Guide Box -->
+<div class="panel" style="margin-top: 1.5rem;">
+  <div class="panel-header">
+    <div class="panel-title">
+      <span>🚀</span> CÓMO CONECTAR UN PROXY NGINX A MITHRIL
+    </div>
+  </div>
+  <div class="panel-body" style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.7;">
+    <ol style="padding-left: 1.25rem;">
+      <li>Copia el script <code style="color: var(--neon-cyan);">agent/mithril_bouncer.py</code> al servidor donde corre Nginx.</li>
+      <li>Ejecuta el agente pasando la URL del SIEM y el Token generado arriba:
+        <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-emerald); font-family: var(--font-mono); font-size: 0.8rem; margin: 0.5rem 0;">
+export MITHRIL_URL="http://IP_DE_TU_MITHRIL:8000"
+export NODE_API_KEY="mithril_node_TU_TOKEN_AQUI"
+python3 mithril_bouncer.py</pre>
+      </li>
+      <li>Configura Nginx para emitir logs en formato JSON según el ejemplo en <code style="color: var(--neon-cyan);">agent/nginx_syslog_sample.conf</code>.</li>
+    </ol>
+  </div>
+</div>
+{% endblock %}

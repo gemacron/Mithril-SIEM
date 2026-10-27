@@ -1,0 +1,83 @@
+{% extends 'base.html' %}
+
+{% block title %}Bloqueos Activos{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">
+        <span>🛑</span> BLOQUEOS ACTIVOS EN LA INFRAESTRUCTURA
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
+        IPs actualmente bloqueadas en el firewall/Nginx de todos los proxies sincronizados.
+      </p>
+    </div>
+    <span class="badge critical">{{ bans.count }} ACTIVOS</span>
+  </div>
+
+  <div class="panel-body" style="padding: 0;">
+    <table class="terminal-table">
+      <thead>
+        <tr>
+          <th>IP Bloqueada</th>
+          <th>Motivo</th>
+          <th>Aprobado Por</th>
+          <th>Fecha Bloqueo</th>
+          <th>Expira En</th>
+          <th>Sincronización en Proxies</th>
+          <th style="text-align: right;">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for b in bans %}
+        <tr>
+          <td>
+            <strong style="color: var(--neon-crimson); font-size: 0.95rem;">{{ b.client_ip }}</strong>
+          </td>
+          <td style="color: var(--text-muted); max-width: 280px;">
+            {{ b.reason }}
+          </td>
+          <td>
+            <span class="badge safe">{{ b.approved_by.username|default:"Sistema" }}</span>
+          </td>
+          <td style="color: var(--text-dim);">
+            {{ b.banned_at|date:"Y-m-d H:i:s" }}
+          </td>
+          <td>
+            {% if b.expires_at %}
+              <span style="color: var(--neon-amber);">{{ b.expires_at|date:"Y-m-d H:i:s" }}</span>
+            {% else %}
+              <span class="badge critical">PERMANENTE</span>
+            {% endif %}
+          </td>
+          <td>
+            {% for sync in b.sync_records.all %}
+              <span class="badge {% if sync.is_synced %}safe{% else %}high{% endif %}" title="{{ sync.node.name }}">
+                {{ sync.node.name }}: {% if sync.is_synced %}OK{% else %}SYNC...{% endif %}
+              </span>
+            {% empty %}
+              <span style="color: var(--text-dim); font-size: 0.75rem;">Sin proxies vinculados</span>
+            {% endfor %}
+          </td>
+          <td style="text-align: right;">
+            <form method="POST" action="{% url 'mitigation:revoke_ban' b.id %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-dim" style="padding: 0.35rem 0.75rem; color: var(--neon-crimson); border-color: rgba(255, 51, 102, 0.4);" onclick="return confirm('¿Seguro que deseas revocar el bloqueo para esta IP?');">
+                🔓 Desbloquear IP
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="7" style="text-align: center; color: var(--text-dim); padding: 3rem;">
+            No hay bloqueos activos en este momento.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,41 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Verificación 2FA{% endblock %}
+
+{% block content %}
+<div style="min-height: 70vh; display: flex; align-items: center; justify-content: center;">
+  <div style="width: 100%; max-width: 440px; background: var(--bg-card); border: 1px solid var(--border-dim); border-radius: 12px; padding: 2.25rem; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+    
+    <div style="text-align: center; margin-bottom: 2rem;">
+      <div style="width: 56px; height: 56px; border-radius: 50%; background: rgba(0, 229, 255, 0.1); border: 2px solid var(--neon-cyan); display: inline-flex; align-items: center; justify-content: center; font-size: 1.5rem; margin-bottom: 1rem;">
+        🔐
+      </div>
+      <h1 style="font-size: 1.35rem; font-weight: 800; color: var(--text-main);">Doble Factor Requerido</h1>
+      <p style="color: var(--text-muted); font-size: 0.85rem; margin-top: 0.25rem;">
+        Operador: <strong style="color: var(--neon-cyan);">{{ target_user.username }}</strong>
+      </p>
+    </div>
+
+    <form method="POST" action="{% url 'core:verify_2fa' %}">
+      {% csrf_token %}
+      
+      <div class="form-group">
+        <label class="form-label" for="token" style="text-align: center; display: block;">
+          Código de 6 dígitos de Google Authenticator
+        </label>
+        <input type="text" id="token" name="token" class="form-input" required autofocus autocomplete="one-time-code" placeholder="000 000" maxlength="8" style="text-align: center; font-size: 1.6rem; letter-spacing: 0.25em; font-family: var(--font-mono); padding: 0.75rem;">
+      </div>
+
+      <button type="submit" class="btn btn-cyan" style="width: 100%; justify-content: center; padding: 0.75rem; font-size: 0.9rem;">
+        Validar Token y Entrar
+      </button>
+    </form>
+
+    <div style="margin-top: 1.5rem; text-align: center;">
+      <a href="{% url 'core:login' %}" style="color: var(--text-dim); font-size: 0.8rem; text-decoration: none;">&larr; Volver al inicio de sesión</a>
+    </div>
+
+  </div>
+</div>
+{% endblock %}

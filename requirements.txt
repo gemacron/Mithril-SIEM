@@ -1,0 +1,14 @@
+Django>=5.0.4,<5.2
+psycopg2-binary>=2.9.9
+channels>=4.1.0
+channels-redis>=4.2.0
+daphne>=4.1.0
+celery>=5.4.0
+redis>=5.0.3
+pyotp>=2.9.0
+qrcode[pil]>=7.4.2
+requests>=2.31.0
+maxminddb>=2.6.0
+python-dotenv>=1.0.1
+Pillow>=10.2.0
+whitenoise>=6.6.0

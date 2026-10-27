@@ -1,0 +1,92 @@
+{% extends 'base.html' %}
+
+{% block title %}Candidatos a Bloqueo (Autoban Simulado){% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">
+        <span>⚠️</span> COLA DE CANDIDATOS A BLOQUEO (HUMAN-IN-THE-LOOP)
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
+        Estas IPs han superado el umbral de riesgo de las reglas de seguridad. El sistema requiere tu confirmación para aplicar el bloqueo en los servidores Nginx.
+      </p>
+    </div>
+    <span class="badge high">{{ candidates.count }} PENDIENTES</span>
+  </div>
+
+  <div class="panel-body" style="padding: 0;">
+    <table class="terminal-table">
+      <thead>
+        <tr>
+          <th>IP Sospechosa</th>
+          <th>Score de Riesgo</th>
+          <th>Causa Sugerida del Autoban</th>
+          <th>Detonante / Regla</th>
+          <th>Hora Detección</th>
+          <th style="text-align: right;">Decisión del Operador</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in candidates %}
+        <tr>
+          <td>
+            <strong style="color: var(--text-main); font-size: 0.95rem;">{{ c.client_ip }}</strong>
+          </td>
+          <td>
+            <span class="badge critical" style="font-size: 0.8rem;">
+              {{ c.accumulated_score }} / 100
+            </span>
+          </td>
+          <td style="color: var(--text-muted); max-width: 320px;">
+            {{ c.suggested_reason }}
+          </td>
+          <td>
+            {% if c.trigger_event and c.trigger_event.rule %}
+              <span class="badge high">{{ c.trigger_event.rule.code }}</span><br>
+              <span style="font-size: 0.7rem; color: var(--text-dim);">{{ c.trigger_event.rule.name }}</span>
+            {% else %}
+              <span class="badge medium">Heurística Global</span>
+            {% endif %}
+          </td>
+          <td style="color: var(--text-dim);">
+            {{ c.created_at|date:"Y-m-d H:i:s" }}
+          </td>
+          <td style="text-align: right;">
+            <div style="display: inline-flex; gap: 0.5rem;">
+              <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}">
+                {% csrf_token %}
+                <select name="duration_hours" class="form-input" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; width: auto; display: inline-block;">
+                  <option value="24">Bloquear 24 Horas</option>
+                  <option value="1">Bloquear 1 Hora</option>
+                  <option value="168">Bloquear 7 Días</option>
+                  <option value="0">Permanente</option>
+                </select>
+                <button type="submit" class="btn btn-crimson" style="padding: 0.35rem 0.75rem;">
+                  🛑 Aprobar Bloqueo
+                </button>
+              </form>
+
+              <form method="POST" action="{% url 'mitigation:dismiss_candidate' c.id %}">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-dim" style="padding: 0.35rem 0.75rem;">
+                  ✕ Descartar
+                </button>
+              </form>
+            </div>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6" style="text-align: center; color: var(--text-dim); padding: 3rem;">
+            <div style="font-size: 2rem; margin-bottom: 0.5rem;">🛡️</div>
+            <p>No hay candidatos pendientes de bloqueo en este momento.</p>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

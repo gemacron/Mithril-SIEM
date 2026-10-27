@@ -1,0 +1,67 @@
+{% extends 'base.html' %}
+
+{% block title %}Configuración de Alertas Telegram{% endblock %}
+
+{% block content %}
+<div style="max-width: 650px; margin: 1.5rem auto;">
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title">
+        <span>✈️</span> ALERTAS EN TIEMPO REAL VÍA TELEGRAM BOT
+      </div>
+      <span class="badge {% if config.is_enabled %}safe{% else %}high{% endif %}">
+        {% if config.is_enabled %}ACTIVO{% else %}INACTIVO{% endif %}
+      </span>
+    </div>
+
+    <div class="panel-body">
+      <form method="POST">
+        {% csrf_token %}
+
+        <div class="form-group">
+          <label class="form-label" for="bot_token">Telegram Bot Token</label>
+          <input type="text" id="bot_token" name="bot_token" class="form-input" value="{{ config.bot_token }}" placeholder="123456789:ABCdefGhIJKlmNoPQRstuVWXyz">
+          <small style="color: var(--text-dim); font-size: 0.7rem;">Crea un bot con <strong>@BotFather</strong> en Telegram y pega el token aquí.</small>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label" for="chat_id">Chat ID o Canal de Operaciones</label>
+          <input type="text" id="chat_id" name="chat_id" class="form-input" value="{{ config.chat_id }}" placeholder="-1001234567890 o tu ID personal">
+          <small style="color: var(--text-dim); font-size: 0.7rem;">El ID de tu usuario, grupo de SOC o canal privado.</small>
+        </div>
+
+        <div style="background: rgba(13, 18, 31, 0.6); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-dim); margin-bottom: 1.5rem;">
+          <h4 style="font-size: 0.8rem; font-weight: 700; color: var(--text-main); margin-bottom: 0.75rem;">
+            Eventos a Notificar:
+          </h4>
+
+          <label style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; cursor: pointer; font-size: 0.85rem;">
+            <input type="checkbox" name="is_enabled" {% if config.is_enabled %}checked{% endif %}>
+            <strong>Habilitar envío de alertas a Telegram</strong>
+          </label>
+
+          <label style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; cursor: pointer; font-size: 0.85rem;">
+            <input type="checkbox" name="notify_on_ban_candidate" {% if config.notify_on_ban_candidate %}checked{% endif %}>
+            Notificar cuando se detecta un nuevo <strong>Candidato a Bloqueo</strong>
+          </label>
+
+          <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem;">
+            <input type="checkbox" name="notify_on_node_offline" {% if config.notify_on_node_offline %}checked{% endif %}>
+            Notificar si un <strong>Proxy Nginx pierde conexión</strong> (Heartbeat caído)
+          </label>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem;">
+          <button type="submit" name="action" value="test" class="btn btn-dim">
+            🔔 Enviar Alerta de Prueba
+          </button>
+
+          <button type="submit" name="action" value="save" class="btn btn-cyan">
+            Guardar Configuración
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}

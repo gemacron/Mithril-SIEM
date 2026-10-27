@@ -1,0 +1,86 @@
+{% extends 'base.html' %}
+
+{% block title %}Reglas de Detección y Riesgo{% endblock %}
+
+{% block content %}
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">
+        <span>⚙️</span> REGLAS DE DETECCIÓN Y HEURÍSTICA DE SEGURIDAD
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
+        Inspeccionan el tráfico de Nginx en tiempo real. Cada regla suma puntos de riesgo a la reputación de la IP atacante.
+      </p>
+    </div>
+    <span class="badge cyan">{{ rules.count }} REGLAS ACTIVAS</span>
+  </div>
+
+  <div class="panel-body" style="padding: 0;">
+    <table class="terminal-table">
+      <thead>
+        <tr>
+          <th>Código</th>
+          <th>Nombre de Regla</th>
+          <th>Categoría</th>
+          <th>Patrón / Expresión Regular</th>
+          <th>Umbral</th>
+          <th>Puntos de Riesgo</th>
+          <th>Estado</th>
+          <th style="text-align: right;">Acción</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rules %}
+        <tr>
+          <td><strong style="color: var(--neon-cyan);">{{ r.code }}</strong></td>
+          <td>
+            <strong style="color: var(--text-main);">{{ r.name }}</strong><br>
+            <span style="font-size: 0.7rem; color: var(--text-dim);">{{ r.description }}</span>
+          </td>
+          <td><span class="badge medium">{{ r.get_category_display }}</span></td>
+          <td>
+            {% if r.pattern_regex %}
+            <code style="background: rgba(0,0,0,0.5); padding: 0.2rem 0.4rem; border-radius: 4px; font-size: 0.75rem; color: #ffd000;">
+              {{ r.pattern_regex|truncatechars:45 }}
+            </code>
+            {% else %}
+            <span style="color: var(--text-dim); font-size: 0.75rem;">Heurística de Conteo</span>
+            {% endif %}
+          </td>
+          <td style="color: var(--text-muted);">
+            {{ r.threshold_count }} req / {{ r.threshold_seconds }}s
+          </td>
+          <td>
+            <span class="badge {% if r.risk_points >= 50 %}critical{% else %}high{% endif %}">
+              +{{ r.risk_points }} pts
+            </span>
+          </td>
+          <td>
+            {% if r.is_active %}
+            <span class="badge safe">ACTIVA</span>
+            {% else %}
+            <span class="badge low">INACTIVA</span>
+            {% endif %}
+          </td>
+          <td style="text-align: right;">
+            <form method="POST" action="{% url 'detection:rule_toggle' r.id %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-dim" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
+                {% if r.is_active %}Desactivar{% else %}Activar{% endif %}
+              </button>
+            </form>
+          </td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 3rem;">
+            No hay reglas configuradas.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,71 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Dashboard{% endblock %} | {{ MITHRIL_APP_NAME }}</title>
+  <link rel="stylesheet" href="{% static 'css/mithril-soc.css' %}">
+  <link rel="icon" type="image/jpeg" href="{% static 'img/mithril-logo.jpg' %}">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <a href="{% url 'analytics:dashboard' %}" class="nav-brand">
+      <img src="{% static 'img/mithril-logo.jpg' %}" alt="Mithril Shield" class="nav-logo">
+      <span class="brand-text">{{ MITHRIL_APP_NAME }}</span>
+      <span class="brand-badge">v{{ MITHRIL_VERSION }}</span>
+    </a>
+
+    {% if user.is_authenticated %}
+    <nav>
+      <ul class="nav-links">
+        <li><a href="{% url 'analytics:dashboard' %}" class="nav-link {% if request.resolver_match.app_name == 'analytics' %}active{% endif %}">📊 SOC War Room</a></li>
+        <li>
+          <a href="{% url 'mitigation:candidates' %}" class="nav-link {% if request.resolver_match.url_name == 'candidates' %}active{% endif %}">
+            ⚠️ Candidatos a Bloqueo
+            {% if pending_candidates_count > 0 %}
+            <span class="badge-alert">{{ pending_candidates_count }}</span>
+            {% endif %}
+          </a>
+        </li>
+        <li><a href="{% url 'mitigation:active_bans' %}" class="nav-link {% if request.resolver_match.url_name == 'active_bans' %}active{% endif %}">🛑 Bloqueos Activos ({{ active_bans_count }})</a></li>
+        <li><a href="{% url 'nodes:list' %}" class="nav-link {% if request.resolver_match.app_name == 'nodes' %}active{% endif %}">📡 Nodos Proxy ({{ online_nodes_count }})</a></li>
+        <li><a href="{% url 'detection:rules' %}" class="nav-link {% if request.resolver_match.app_name == 'detection' %}active{% endif %}">⚙️ Reglas</a></li>
+        <li><a href="{% url 'reports:index' %}" class="nav-link {% if request.resolver_match.app_name == 'reports' %}active{% endif %}">📜 Reportes</a></li>
+      </ul>
+    </nav>
+
+    <div class="nav-right">
+      <a href="{% url 'notifications:settings' %}" class="nav-link" title="Configurar Telegram">✈️ Telegram</a>
+      <span class="badge safe" style="font-family: var(--font-mono);">OP: {{ user.username }}</span>
+      <a href="{% url 'core:logout' %}" class="btn btn-dim" style="padding: 0.3rem 0.6rem;">Cerrar Sesión</a>
+    </div>
+    {% endif %}
+  </header>
+
+  <!-- Flash Messages -->
+  <div style="max-width: 1600px; margin: 0.75rem auto 0; padding: 0 1.5rem; width: 100%;">
+    {% if messages %}
+      {% for message in messages %}
+        <div class="alert alert-{{ message.tags }}">
+          {{ message }}
+        </div>
+      {% endfor %}
+    {% endif %}
+  </div>
+
+  <!-- Main Content Area -->
+  <main class="main-content">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer style="text-align: center; padding: 1.5rem; color: var(--text-dim); font-size: 0.75rem; border-top: 1px solid var(--border-dim); margin-top: auto;">
+    {{ MITHRIL_APP_NAME }} &copy; 2026 — Plataforma SIEM Táctica de Detección y Mitigación para Nginx Proxies.
+  </footer>
+
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>

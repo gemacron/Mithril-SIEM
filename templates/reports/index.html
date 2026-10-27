@@ -1,0 +1,121 @@
+{% extends 'base.html' %}
+
+{% block title %}Reportes y Auditoría Forense{% endblock %}
+
+{% block content %}
+<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem;">
+  <div>
+    <h1 style="font-size: 1.35rem; font-weight: 800; color: var(--text-main);">
+      📜 AUDITORÍA FORENSE Y REPORTES
+    </h1>
+    <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.2rem;">
+      Registro inmutable de decisiones de operadores, incidentes de seguridad y trazabilidad.
+    </p>
+  </div>
+
+  <div style="display: flex; gap: 0.6rem;">
+    <a href="{% url 'reports:export_csv' %}?type=audit" class="btn btn-dim">
+      📄 Exportar Auditoría (CSV)
+    </a>
+    <a href="{% url 'reports:export_csv' %}?type=events" class="btn btn-dim">
+      🚨 Exportar Incidentes (CSV)
+    </a>
+    <a href="{% url 'reports:export_json' %}?type=audit" class="btn btn-cyan">
+      📦 Exportar (JSON)
+    </a>
+  </div>
+</div>
+
+<div class="panel">
+  <div class="panel-header">
+    <div class="panel-title">
+      <span>🛡️</span> HISTORIAL DE ACCIONES DE OPERADORES (AUDIT TRAIL)
+    </div>
+    <span class="badge low">{{ audit_records.count }} REGISTROS RECIENTES</span>
+  </div>
+
+  <div class="panel-body" style="padding: 0;">
+    <table class="terminal-table">
+      <thead>
+        <tr>
+          <th>Fecha y Hora</th>
+          <th>Operador</th>
+          <th>Acción Ejecutada</th>
+          <th>Objetivo</th>
+          <th>Detalles Técnicos</th>
+          <th>IP Origen</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in audit_records %}
+        <tr>
+          <td style="color: var(--text-dim);">{{ r.created_at|date:"Y-m-d H:i:s" }}</td>
+          <td><strong style="color: var(--neon-cyan);">{{ r.user.username|default:"Sistema" }}</strong></td>
+          <td><span class="badge safe">{{ r.action }}</span></td>
+          <td><code>{{ r.target }}</code></td>
+          <td style="color: var(--text-muted); font-size: 0.75rem;">
+            {{ r.details }}
+          </td>
+          <td><code>{{ r.ip_address|default:"127.0.0.1" }}</code></td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6" style="text-align: center; color: var(--text-dim); padding: 2.5rem;">
+            No hay registros de auditoría aún.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="panel" style="margin-top: 1.5rem;">
+  <div class="panel-header">
+    <div class="panel-title">
+      <span>🚨</span> ÚLTIMOS INCIDENTES DETECTADOS POR HEURÍSTICA
+    </div>
+    <span class="badge critical">{{ recent_events.count }} INCIDENTES</span>
+  </div>
+
+  <div class="panel-body" style="padding: 0;">
+    <table class="terminal-table">
+      <thead>
+        <tr>
+          <th>Severidad</th>
+          <th>Fecha</th>
+          <th>IP Atacante</th>
+          <th>Regla Disparada</th>
+          <th>Carga / Fragmento Detectado</th>
+          <th>Servidor Proxy</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ev in recent_events %}
+        <tr>
+          <td><span class="badge critical">{{ ev.severity }}</span></td>
+          <td style="color: var(--text-dim);">{{ ev.created_at|date:"Y-m-d H:i:s" }}</td>
+          <td><code>{{ ev.client_ip }}</code></td>
+          <td>
+            <strong style="color: var(--text-main);">{{ ev.rule.name|default:"Heurística" }}</strong><br>
+            <span style="font-size: 0.7rem; color: var(--text-dim);">{{ ev.rule.code }}</span>
+          </td>
+          <td>
+            <code style="background: rgba(0,0,0,0.4); padding: 0.2rem 0.4rem; border-radius: 4px; color: var(--neon-crimson); font-size: 0.75rem;">
+              {{ ev.matched_payload|truncatechars:60 }}
+            </code>
+          </td>
+          <td><code>{{ ev.node.name|default:"Direct" }}</code></td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="6" style="text-align: center; color: var(--text-dim); padding: 2.5rem;">
+            No se han registrado incidentes aún.
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

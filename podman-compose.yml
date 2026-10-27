@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  mithril-db:
+    image: postgres:16-alpine
+    container_name: mithril-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-mithril_siem}
+      POSTGRES_USER: ${DB_USER:-mithril_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-mithril_secure_pg_pass_2026}
+    volumes:
+      - mithril_pg_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-mithril_user} -d ${DB_NAME:-mithril_siem}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mithril-redis:
+    image: redis:7-alpine
+    container_name: mithril-redis
+    restart: unless-stopped
+    volumes:
+      - mithril_redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  mithril-web:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: mithril-web
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - mithril_static:/app/staticfiles
+      - mithril_media:/app/media
+    ports:
+      - "8000:8000"
+    depends_on:
+      mithril-db:
+        condition: service_healthy
+      mithril-redis:
+        condition: service_healthy
+
+  mithril-worker:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: mithril-worker
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: celery -A mithril_siem worker -l info -c 4
+    depends_on:
+      - mithril-db
+      - mithril-redis
+
+  mithril-beat:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: mithril-beat
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    command: celery -A mithril_siem beat -l info
+    depends_on:
+      - mithril-db
+      - mithril-redis
+
+volumes:
+  mithril_pg_data:
+    driver: local
+  mithril_redis_data:
+    driver: local
+  mithril_static:
+    driver: local
+  mithril_media:
+    driver: local

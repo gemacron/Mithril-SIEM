@@ -1,0 +1,236 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}SOC War Room en Vivo{% endblock %}
+
+{% block content %}
+
+<!-- KPI Metrics Grid -->
+<div class="kpi-grid">
+  <div class="kpi-card emerald">
+    <div>
+      <div class="kpi-label">Proxies Nginx Online</div>
+      <div class="kpi-value">{{ online_nodes_count }} <span style="font-size: 1rem; color: var(--text-dim); font-weight: 500;">/ {{ nodes.count }}</span></div>
+    </div>
+    <div style="font-size: 1.75rem;">📡</div>
+  </div>
+
+  <div class="kpi-card cyan">
+    <div>
+      <div class="kpi-label">Peticiones Procesadas Hoy</div>
+      <div class="kpi-value">{{ total_logs_today }}</div>
+    </div>
+    <div style="font-size: 1.75rem;">🌐</div>
+  </div>
+
+  <div class="kpi-card crimson">
+    <div>
+      <div class="kpi-label">Amenazas Detectadas Hoy</div>
+      <div class="kpi-value">{{ threats_today }}</div>
+    </div>
+    <div style="font-size: 1.75rem;">🚨</div>
+  </div>
+
+  <div class="kpi-card amber">
+    <div>
+      <div class="kpi-label">Candidatos a Bloqueo</div>
+      <div class="kpi-value" style="color: var(--neon-amber);">{{ pending_candidates_count }}</div>
+    </div>
+    <div style="font-size: 1.75rem;">⚠️</div>
+  </div>
+
+  <div class="kpi-card crimson">
+    <div>
+      <div class="kpi-label">Bloqueos Activos</div>
+      <div class="kpi-value">{{ active_bans_count }}</div>
+    </div>
+    <div style="font-size: 1.75rem;">🛑</div>
+  </div>
+</div>
+
+<!-- Main Two-Column War Room Layout -->
+<div class="dashboard-grid">
+  
+  <!-- Left Column: 2D Tactical Map & Live Stream -->
+  <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+    
+    <!-- 2D Tactical World Map Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>🗺️</span> MAPA TÁCTICO MUNDIAL 2D (ORIGEN DE TRÁFICO)
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.6rem;">
+          <span style="font-size: 0.75rem; color: var(--text-dim);">STREAM EN VIVO:</span>
+          <span id="socketStatusIndicator" class="badge medium">CONECTANDO</span>
+        </div>
+      </div>
+      <div class="panel-body" style="padding: 0;">
+        <div class="map-container">
+          <canvas id="tacticalMapCanvas"></canvas>
+          <div class="map-overlay-info">
+            • Puntos <span style="color: var(--neon-cyan);">AZULES</span>: Peticiones normales &nbsp;|&nbsp;
+            • Puntos <span style="color: var(--neon-crimson);">ROJOS</span>: Intentos Maliciosos detectados
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Live Traffic Stream Panel -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>⚡</span> LIVE FEED (PETICIONES EN VIVO DESDE PROXIES)
+        </div>
+        <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono);">
+          BUFFER: ÚLTIMAS 20 ACTIVIDADES
+        </div>
+      </div>
+      <div class="panel-body" style="padding: 0; max-height: 280px; overflow-y: auto;">
+        <table class="terminal-table">
+          <thead>
+            <tr>
+              <th>Tipo</th>
+              <th>Hora</th>
+              <th>IP Cliente</th>
+              <th>País</th>
+              <th>Método / Ruta</th>
+              <th>Código</th>
+              <th>Nodo Proxy</th>
+            </tr>
+          </thead>
+          <tbody id="liveFeedTableBody">
+            {% for log in recent_events %}
+            <tr>
+              <td><span class="badge critical">AMENAZA</span></td>
+              <td><strong>{{ log.created_at|date:"H:i:s" }}</strong></td>
+              <td><code>{{ log.client_ip }}</code></td>
+              <td>Remoto</td>
+              <td><span style="color: var(--neon-cyan);">EVENT</span> <code>{{ log.matched_payload|truncatechars:35 }}</code></td>
+              <td style="color: var(--neon-crimson); font-weight: bold;">ALERTA</td>
+              <td><code>{{ log.node.name|default:"Direct" }}</code></td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="7" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">
+                Esperando flujo de peticiones desde los proxies Nginx...
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right Column: Ban Candidates Queue & Proxies Health -->
+  <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+    
+    <!-- Pending Ban Candidates (Human Decision Center) -->
+    <div class="panel">
+      <div class="panel-header" style="border-left: 3px solid var(--neon-amber);">
+        <div class="panel-title">
+          <span>⚠️</span> CANDIDATOS A BLOQUEO (AUTOBAN EN ESPERA)
+        </div>
+        <a href="{% url 'mitigation:candidates' %}" class="btn btn-dim" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Ver Todos</a>
+      </div>
+      <div class="panel-body" style="padding: 0.75rem;">
+        {% if candidates %}
+          <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+            {% for c in candidates %}
+            <div style="background: rgba(13, 18, 31, 0.7); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.85rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
+                <span style="font-family: var(--font-mono); font-weight: 700; color: var(--text-main); font-size: 0.9rem;">
+                  🌐 {{ c.client_ip }}
+                </span>
+                <span class="badge critical">Riesgo: {{ c.accumulated_score }}/100</span>
+              </div>
+              <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+                {{ c.suggested_reason|truncatechars:90 }}
+              </p>
+              
+              <div style="display: flex; gap: 0.5rem;">
+                <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}" style="flex: 1;">
+                  {% csrf_token %}
+                  <input type="hidden" name="duration_hours" value="24">
+                  <button type="submit" class="btn btn-crimson" style="width: 100%; justify-content: center; font-size: 0.75rem; padding: 0.35rem 0.6rem;">
+                    🛑 Bloquear (24h)
+                  </button>
+                </form>
+                <form method="POST" action="{% url 'mitigation:dismiss_candidate' c.id %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-dim" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" title="Descartar">
+                    ✕ Descartar
+                  </button>
+                </form>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div style="text-align: center; color: var(--text-dim); padding: 2rem 1rem;">
+            <div style="font-size: 2rem; margin-bottom: 0.5rem;">🛡️</div>
+            <p style="font-size: 0.85rem;">No hay candidatos pendientes de bloqueo.</p>
+            <p style="font-size: 0.75rem; margin-top: 0.25rem;">La heurística y las reglas están monitoreando el tráfico en segundo plano.</p>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Connected Nginx Proxies -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>📡</span> INFRAESTRUCTURA DE PROXIES
+        </div>
+        <a href="{% url 'nodes:create' %}" class="btn btn-cyan" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">+ Alta Proxy</a>
+      </div>
+      <div class="panel-body" style="padding: 0;">
+        <table class="terminal-table">
+          <thead>
+            <tr>
+              <th>Servidor</th>
+              <th>Estado</th>
+              <th>RPS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for node in nodes %}
+            <tr>
+              <td>
+                <strong style="color: var(--text-main);">{{ node.name }}</strong><br>
+                <span style="color: var(--text-dim); font-size: 0.7rem;">{{ node.ip_address }}</span>
+              </td>
+              <td>
+                {% if node.status == 'ONLINE' %}
+                <span class="badge safe">ONLINE</span>
+                {% else %}
+                <span class="badge high">OFFLINE</span>
+                {% endif %}
+              </td>
+              <td style="color: var(--neon-cyan); font-weight: 700;">{{ node.current_rps }}</td>
+            </tr>
+            {% empty %}
+            <tr>
+              <td colspan="3" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">
+                No hay proxies dados de alta.<br>
+                <a href="{% url 'nodes:create' %}" style="color: var(--neon-cyan); font-size: 0.8rem;">+ Agregar tu primer proxy Nginx</a>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+{% endblock %}
+
+{% block extra_scripts %}
+<script src="{% static 'js/mithril-map.js' %}"></script>
+<script src="{% static 'js/mithril-live.js' %}"></script>
+{% endblock %}

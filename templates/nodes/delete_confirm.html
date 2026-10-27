@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+
+{% block title %}Confirmar Eliminación{% endblock %}
+
+{% block content %}
+<div style="max-width: 500px; margin: 2rem auto;">
+  <div class="panel" style="border-color: var(--neon-crimson);">
+    <div class="panel-header">
+      <div class="panel-title" style="color: var(--neon-crimson);">
+        <span>⚠️</span> CONFIRMAR REVOCACIÓN DE PROXY
+      </div>
+    </div>
+    <div class="panel-body">
+      <p style="margin-bottom: 1rem; color: var(--text-main);">
+        ¿Estás seguro de que deseas revocar y eliminar el nodo proxy <strong>{{ node.name }}</strong> ({{ node.ip_address }})?
+      </p>
+      <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 1.5rem;">
+        Su token de acceso quedará invalidado y dejará de sincronizar listas de bloqueo.
+      </p>
+
+      <form method="POST">
+        {% csrf_token %}
+        <div style="display: flex; justify-content: flex-end; gap: 0.75rem;">
+          <a href="{% url 'nodes:list' %}" class="btn btn-dim">Cancelar</a>
+          <button type="submit" class="btn btn-crimson">Confirmar Eliminación</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
