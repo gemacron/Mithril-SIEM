@@ -399,3 +399,33 @@ body {
 .alert-error { background: rgba(255, 51, 102, 0.1); border: 1px solid var(--neon-crimson); color: var(--neon-crimson); }
 .alert-info { background: rgba(0, 229, 255, 0.1); border: 1px solid var(--neon-cyan); color: var(--neon-cyan); }
 .alert-warning { background: rgba(255, 153, 0, 0.1); border: 1px solid var(--neon-amber); color: var(--neon-amber); }
+
+/* LIVE REALTIME TRANSITIONS & FLASH ANIMATIONS */
+@keyframes rowFlashCyan {
+  0% { background-color: rgba(0, 229, 255, 0.35); }
+  100% { background-color: transparent; }
+}
+
+@keyframes rowFlashCrimson {
+  0% { background-color: rgba(255, 51, 102, 0.45); }
+  100% { background-color: transparent; }
+}
+
+@keyframes kpiPulse {
+  0% { transform: scale(1.08); text-shadow: 0 0 10px currentColor; }
+  100% { transform: scale(1); text-shadow: none; }
+}
+
+.row-flash-cyan {
+  animation: rowFlashCyan 1.4s ease-out;
+}
+
+.row-flash-crimson {
+  animation: rowFlashCrimson 2s ease-out;
+}
+
+.kpi-pulse {
+  display: inline-block;
+  animation: kpiPulse 0.4s ease-out;
+}
+

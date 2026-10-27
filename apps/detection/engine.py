@@ -18,7 +18,7 @@ def resolve_geoip(ip_str):
         ip_obj = ipaddress.ip_address(ip_str)
         if ip_obj.is_private or ip_obj.is_loopback:
             return {
-                'country_code': 'LAN',
+                'country_code': 'LO',
                 'country_name': 'Red Local',
                 'city': 'Interno',
                 'latitude': 0.0,

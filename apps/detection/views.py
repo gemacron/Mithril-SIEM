@@ -40,6 +40,11 @@ def api_ingest(request):
         api_key = auth_header.split(' ')[1].strip()
         node = ProxyNode.objects.filter(api_key=api_key).first()
 
+    if not node:
+        node_ip = request.META.get('HTTP_X_NODE_IP') or request.META.get('REMOTE_ADDR')
+        if node_ip:
+            node = ProxyNode.objects.filter(ip_address=node_ip).first()
+
     try:
         body = json.loads(request.body.decode('utf-8'))
     except Exception as e:
@@ -51,7 +56,10 @@ def api_ingest(request):
 
     for item in logs_data:
         try:
-            process_incoming_log(item, node=node)
+            target_node = node
+            if not target_node and 'node_ip' in item:
+                target_node = ProxyNode.objects.filter(ip_address=item['node_ip']).first()
+            process_incoming_log(item, node=target_node)
             processed_count += 1
         except Exception as e:
             print(f"Error procesando log individual: {e}")

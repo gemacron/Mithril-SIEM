@@ -42,7 +42,7 @@ class TrafficLog(models.Model):
     latency_ms = models.FloatField(default=0.0)
     user_agent = models.TextField(blank=True, default='')
     referer = models.TextField(blank=True, default='')
-    country_code = models.CharField(max_length=2, blank=True, default='', db_index=True)
+    country_code = models.CharField(max_length=8, blank=True, default='', db_index=True)
     country_name = models.CharField(max_length=64, blank=True, default='')
     city = models.CharField(max_length=64, blank=True, default='')
     latitude = models.FloatField(null=True, blank=True)

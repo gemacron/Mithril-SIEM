@@ -26,13 +26,11 @@
         <li>
           <a href="{% url 'mitigation:candidates' %}" class="nav-link {% if request.resolver_match.url_name == 'candidates' %}active{% endif %}">
             ⚠️ Candidatos a Bloqueo
-            {% if pending_candidates_count > 0 %}
-            <span class="badge-alert">{{ pending_candidates_count }}</span>
-            {% endif %}
+            <span id="navPendingBansBadge" class="badge-alert" {% if not pending_candidates_count or pending_candidates_count == 0 %}style="display:none;"{% endif %}>{{ pending_candidates_count|default:"0" }}</span>
           </a>
         </li>
-        <li><a href="{% url 'mitigation:active_bans' %}" class="nav-link {% if request.resolver_match.url_name == 'active_bans' %}active{% endif %}">🛑 Bloqueos Activos ({{ active_bans_count }})</a></li>
-        <li><a href="{% url 'nodes:list' %}" class="nav-link {% if request.resolver_match.app_name == 'nodes' %}active{% endif %}">📡 Nodos Proxy ({{ online_nodes_count }})</a></li>
+        <li><a href="{% url 'mitigation:active_bans' %}" class="nav-link {% if request.resolver_match.url_name == 'active_bans' %}active{% endif %}">🛑 Bloqueos Activos (<span id="navActiveBansCount">{{ active_bans_count|default:"0" }}</span>)</a></li>
+        <li><a href="{% url 'nodes:list' %}" class="nav-link {% if request.resolver_match.app_name == 'nodes' %}active{% endif %}">📡 Nodos Proxy (<span id="navOnlineNodesCount">{{ online_nodes_count|default:"0" }}</span>)</a></li>
         <li><a href="{% url 'detection:rules' %}" class="nav-link {% if request.resolver_match.app_name == 'detection' %}active{% endif %}">⚙️ Reglas</a></li>
         <li><a href="{% url 'reports:index' %}" class="nav-link {% if request.resolver_match.app_name == 'reports' %}active{% endif %}">📜 Reportes</a></li>
       </ul>
