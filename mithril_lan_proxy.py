@@ -104,11 +104,41 @@ COMBINED_LOG_REGEX = re.compile(
     r'"(?P<referer>[^"]*)"\s+"(?P<agent>[^"]*)"'
 )
 
+INTERNAL_HEALTHCHECK_PATHS = ('/stub_status', '/nginx_status', '/metrics', '/healthz')
+recent_dedup_cache = {}
+DEDUP_WINDOW_SEC = 1.5
+
+def is_duplicate_event(log_obj):
+    """
+    Evita duplicar eventos cuando un mismo servidor Nginx registra la misma peticion
+    en multiples formatos o archivos simultaneamente (ej. syslog + access.log + custom.log).
+    """
+    now = time.time()
+    if len(recent_dedup_cache) > 2000:
+        cutoff = now - DEDUP_WINDOW_SEC
+        for k in [k for k, ts in recent_dedup_cache.items() if ts < cutoff]:
+            recent_dedup_cache.pop(k, None)
+
+    raw_uri = str(log_obj.get('uri', '/'))
+    clean_uri = re.sub(r'^\[[^\]]+\]\s*', '', raw_uri)
+    sig = (
+        log_obj.get('node_ip', ''),
+        log_obj.get('client_ip', ''),
+        log_obj.get('http_method', 'GET'),
+        clean_uri,
+        str(log_obj.get('query_params', '')),
+        int(log_obj.get('status_code') or 200),
+    )
+    last_ts = recent_dedup_cache.get(sig)
+    if last_ts and (now - last_ts) < DEDUP_WINDOW_SEC:
+        return True
+    recent_dedup_cache[sig] = now
+    return False
+
 def parse_nginx_combined_syslog(raw_msg, sender_ip):
     """
-    Convierte una línea de access_log en formato clásico 'combined' o 'main' de Nginx
-    (como facturaantell-access.log, nube-access.log, pimco-access.log, puercos.log)
-    en un evento estructurado para Mithril SIEM.
+     Analizador universal para cualquier linea de access_log en formato estandar
+    CLF / Combined / Main / Extendido de Nginx.
     """
     m = COMBINED_LOG_REGEX.search(raw_msg)
     if not m:
@@ -127,8 +157,8 @@ def parse_nginx_combined_syslog(raw_msg, sender_ip):
         http_method = 'GET'
         full_uri = '/'
 
-    # Ignorar ruido interno de monitoreo local /stub_status desde 127.0.0.1
-    if client_ip == '127.0.0.1' and '/stub_status' in full_uri:
+    # Ignorar chequeos internos de metricas desde loopback
+    if client_ip in ('127.0.0.1', '::1') and any(p in full_uri for p in INTERNAL_HEALTHCHECK_PATHS):
         return None
 
     if '?' in full_uri:
@@ -136,15 +166,11 @@ def parse_nginx_combined_syslog(raw_msg, sender_ip):
     else:
         uri, query_params = full_uri, ''
 
-    # Extraer etiqueta del sitio si viene en el tag de syslog o prefijo [sitio]
-    site_tag = ''
-    tag_match = re.search(r'\[site:([a-zA-Z0-9_\-\.]+)\]', raw_msg)
+    # Extraer etiqueta generica del VirtualHost / archivo origen si esta disponible
+    vhost_tag = ''
+    tag_match = re.search(r'\[(?:vhost|site):([a-zA-Z0-9_\-\.]+)\]', raw_msg)
     if tag_match:
-        site_tag = tag_match.group(1)
-    else:
-        syslog_tag = re.search(r'nginx_([a-zA-Z0-9_\-]+):', raw_msg)
-        if syslog_tag:
-            site_tag = syslog_tag.group(1)
+        vhost_tag = tag_match.group(1)
 
     status_code = int(m.group('status'))
     bytes_str = m.group('bytes')
@@ -152,13 +178,8 @@ def parse_nginx_combined_syslog(raw_msg, sender_ip):
     referer = m.group('referer') if m.group('referer') != '-' else ''
     user_agent = m.group('agent') if m.group('agent') != '-' else ''
 
-    # Si proviene de puercos.log (00-bloqueo-bots.conf), marcar en URI y asegurar detección
-    if 'puercos' in site_tag.lower():
-        uri = f"[BOT-TRAP] {uri}"
-        if status_code < 400:
-            status_code = 403
-    elif site_tag and not uri.startswith('['):
-        uri = f"[{site_tag}] {uri}"
+    if vhost_tag and vhost_tag not in ('access', 'nginx') and not uri.startswith('['):
+        uri = f"[{vhost_tag}] {uri}"
 
     return {
         'client_ip': client_ip,
@@ -169,9 +190,9 @@ def parse_nginx_combined_syslog(raw_msg, sender_ip):
         'bytes_sent': bytes_sent,
         'latency_ms': 0.0,
         'user_agent': user_agent,
-        'referer': referer or site_tag,
+        'referer': referer or vhost_tag,
         'node_ip': sender_ip,
-        'headers': {'log_type': 'access_combined', 'site': site_tag}
+        'headers': {'log_type': 'access_combined', 'vhost': vhost_tag}
     }
 
 def parse_nginx_error_syslog(raw_msg, sender_ip):
@@ -277,26 +298,26 @@ def run_udp_syslog_receiver():
                         log_obj['user_agent'] = log_obj.get('http_user_agent', '')
                     if 'referer' not in log_obj and 'http_referer' in log_obj:
                         log_obj['referer'] = log_obj.get('http_referer', '')
-                    # Ignorar ruido interno de monitoreo local /stub_status desde 127.0.0.1
-                    if log_obj.get('client_ip') == '127.0.0.1' and '/stub_status' in str(log_obj.get('uri', '')):
+                    # Ignorar chequeos internos de metricas desde loopback
+                    if log_obj.get('client_ip') in ('127.0.0.1', '::1') and any(p in str(log_obj.get('uri', '')) for p in INTERNAL_HEALTHCHECK_PATHS):
                         continue
                     log_obj['node_ip'] = addr[0]
-                    if not log_queue.full():
+                    if not is_duplicate_event(log_obj) and not log_queue.full():
                         log_queue.put_nowait(log_obj)
                     continue
                 except json.JSONDecodeError:
                     pass
 
-            # 2. Si es una línea de access_log en formato combined/main de los sitios (facturaantell, nube, pimco, puercos, etc.)
+            # 2. Si es una línea de access_log en formato estandar CLF / Combined / Extendido de Nginx
             comb_obj = parse_nginx_combined_syslog(raw, addr[0])
             if comb_obj:
-                if not log_queue.full():
+                if not is_duplicate_event(comb_obj) and not log_queue.full():
                     log_queue.put_nowait(comb_obj)
                 continue
 
             # 3. Si es un mensaje de texto plano del error_log de Nginx
             err_obj = parse_nginx_error_syslog(raw, addr[0])
-            if err_obj and not log_queue.full():
+            if err_obj and not is_duplicate_event(err_obj) and not log_queue.full():
                 log_queue.put_nowait(err_obj)
         except Exception:
             pass

@@ -13,6 +13,7 @@ Funcionalidades:
 """
 
 import os
+import re
 import sys
 import glob
 import time
@@ -95,6 +96,57 @@ def get_nginx_version():
     except Exception:
         return "Nginx"
 
+def get_active_connections():
+    """Obtiene el numero de conexiones TCP establecidas hacia el proxy de forma universal"""
+    try:
+        res = subprocess.run(["ss", "-Htan", "state", "established"], capture_output=True, text=True, check=False)
+        if res.returncode == 0 and res.stdout:
+            lines = [l for l in res.stdout.strip().splitlines() if l.strip()]
+            return len(lines)
+    except Exception:
+        pass
+    return 0
+
+def discover_nginx_log_files():
+    """
+    Descubre dinamicamente todos los archivos de log activos en cualquier configuracion de Nginx:
+    1. Analiza las directivas access_log y error_log declaradas en /etc/nginx/
+    2. Escanea /var/log/nginx/*.log como respaldo universal
+    """
+    discovered = set()
+
+    # 1. Buscar en /var/log/nginx/*.log (y subdirectorios de primer nivel)
+    if os.path.isdir(NGINX_LOG_DIR):
+        for pattern in ("*.log", "*/*.log"):
+            for p in glob.glob(os.path.join(NGINX_LOG_DIR, pattern)):
+                if os.path.isfile(p):
+                    discovered.add(os.path.abspath(p))
+
+    # 2. Descubrir rutas personalizadas declaradas en archivos .conf de /etc/nginx
+    nginx_etc = "/etc/nginx"
+    log_directive_re = re.compile(r'^\s*(?:access_log|error_log)\s+([^\s;]+)', re.MULTILINE)
+    if os.path.isdir(nginx_etc):
+        for root_dir, _, files in os.walk(nginx_etc):
+            for fname in files:
+                if not fname.endswith(".conf"):
+                    continue
+                fpath = os.path.join(root_dir, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as cf:
+                        content = cf.read()
+                    for match in log_directive_re.finditer(content):
+                        raw_path = match.group(1).strip('"\'')
+                        if raw_path in ("off", "/dev/null") or raw_path.startswith("syslog:"):
+                            continue
+                        if not os.path.isabs(raw_path):
+                            raw_path = os.path.join("/var/log/nginx", raw_path)
+                        if os.path.isfile(raw_path):
+                            discovered.add(os.path.abspath(raw_path))
+                except Exception:
+                    pass
+
+    return discovered
+
 def init_firewall():
     """Asegura que el set de ipset y la regla de iptables existan"""
     if BLOCK_METHOD == "ipset":
@@ -156,68 +208,71 @@ def apply_blocklist(banned_ips):
 
 def tail_nginx_logs_worker():
     """
-    Hilo 100% de solo lectura (Read-Only) para servidores en produccion:
-    Monitorea en tiempo real todos los archivos *.log de /var/log/nginx/ (virtualhosts y error.log)
-    sin necesidad de modificar la configuracion de Nginx ni recargar el servicio.
+    Recolector universal de logs en tiempo real (100% Read-Only):
+    Descubre automaticamente cualquier archivo access_log y error_log de Nginx
+    en el servidor (sin importar como este estructurado /etc/nginx/) y transmite
+    las nuevas entradas por UDP al SIEM sin tocar ni recargar Nginx.
     """
     parsed = urllib.parse.urlparse(MITHRIL_URL)
     target_host = parsed.hostname or "127.0.0.1"
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    # Archivos globales que ya se envian por syslog o son duplicados de goaccess
-    skip_files = {"access.log", "access_goaccess.log", "access_otel.log"}
-    open_files = {}  # path -> (file_obj, inode, site_tag)
+    open_files = {}  # path -> (file_obj, inode, source_tag)
+    last_discovery = 0
 
-    print(f"📡 [LOG-STREAMER] Monitoreando en modo solo-lectura {NGINX_LOG_DIR}/*.log -> UDP {target_host}:{SYSLOG_PORT}")
+    print(f"📡 [LOG-STREAMER] Auto-descubrimiento universal de logs Nginx activo -> UDP {target_host}:{SYSLOG_PORT}")
 
     while True:
         try:
-            if os.path.isdir(NGINX_LOG_DIR):
-                for path in glob.glob(os.path.join(NGINX_LOG_DIR, "*.log")):
+            now = time.time()
+            # Re-escanear archivos de log cada 10 segundos para detectar nuevos vhosts o rotaciones
+            if now - last_discovery >= 10:
+                last_discovery = now
+                for path in discover_nginx_log_files():
                     fname = os.path.basename(path)
-                    if fname in skip_files:
+                    # Ignorar archivos rotados historicos (.gz, -YYYYMMDD)
+                    if fname.endswith(".gz") or re.search(r'-\d{8}$', fname):
                         continue
                     try:
                         st = os.stat(path)
                         if st.st_size == 0 and path not in open_files:
                             continue
-                        site_tag = fname.replace("-access.log", "").replace(".access.log", "").replace(".log", "")
+                        source_tag = re.sub(r'([-_.]?(access|error))?\.log$', '', fname, flags=re.IGNORECASE) or "nginx"
                         if path not in open_files:
                             f = open(path, "r", encoding="utf-8", errors="ignore")
-                            f.seek(0, os.SEEK_END)  # Solo leer lineas nuevas en tiempo real
-                            open_files[path] = (f, st.st_ino, site_tag)
+                            f.seek(0, os.SEEK_END)  # Posicionarse al final para leer solo trafico en vivo
+                            open_files[path] = (f, st.st_ino, source_tag)
                         else:
-                            f, old_ino, site_tag = open_files[path]
-                            # Detectar rotacion de logrotate
+                            f, old_ino, source_tag = open_files[path]
                             if st.st_ino != old_ino or st.st_size < f.tell():
                                 try:
                                     f.close()
                                 except Exception:
                                     pass
                                 f = open(path, "r", encoding="utf-8", errors="ignore")
-                                open_files[path] = (f, st.st_ino, site_tag)
+                                open_files[path] = (f, st.st_ino, source_tag)
                     except Exception:
                         pass
 
-                for path, (f, ino, site_tag) in list(open_files.items()):
-                    try:
-                        lines_read = 0
-                        while lines_read < 200:
-                            line = f.readline()
-                            if not line:
-                                break
-                            lines_read += 1
-                            line_str = line.strip()
-                            if not line_str or "/stub_status" in line_str:
-                                continue
-                            payload = f"<190>nginx_{site_tag}: [site:{site_tag}] {line_str}".encode("utf-8", errors="ignore")
-                            udp_sock.sendto(payload[:60000], (target_host, SYSLOG_PORT))
-                    except Exception:
-                        pass
+            for path, (f, ino, source_tag) in list(open_files.items()):
+                try:
+                    lines_read = 0
+                    while lines_read < 250:
+                        line = f.readline()
+                        if not line:
+                            break
+                        lines_read += 1
+                        line_str = line.strip()
+                        if not line_str:
+                            continue
+                        payload = f"<190>nginx: [vhost:{source_tag}] {line_str}".encode("utf-8", errors="ignore")
+                        udp_sock.sendto(payload[:60000], (target_host, SYSLOG_PORT))
+                except Exception:
+                    pass
         except Exception:
             pass
 
-        time.sleep(0.5)
+        time.sleep(0.4)
 
 def main():
     print("=" * 60)
@@ -236,6 +291,7 @@ def main():
         cpu = get_cpu_usage()
         ram = get_ram_usage()
         nginx_ver = get_nginx_version()
+        active_conns = get_active_connections()
 
         # 1. Enviar Heartbeat y Telemetria al SIEM
         hb_data = {
@@ -243,7 +299,7 @@ def main():
             "cpu": cpu,
             "ram": ram,
             "nginx_version": nginx_ver,
-            "active_connections": 0,
+            "active_connections": active_conns,
             "rps": 0
         }
         status_code, resp = http_request(f"{MITHRIL_URL}/nodes/api/heartbeat/", method="POST", data=hb_data)
