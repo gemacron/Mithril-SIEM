@@ -3,6 +3,68 @@
 {% block title %}Reglas de Detección y Riesgo{% endblock %}
 
 {% block content %}
+<!-- Creador / Editor Universal de Reglas Heurísticas y Expresiones Regulares -->
+<div class="panel" style="margin-bottom: 1.5rem;">
+  <div class="panel-header">
+    <div>
+      <div class="panel-title">
+        <span>➕</span> CREAR O ACTUALIZAR REGLA DE DETECCIÓN / HEURÍSTICA
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
+        Si ingresas el código de una regla existente (ej. <code>R-SQLI-URL</code>), se actualizarán sus parámetros y umbrales. Deja el patrón vacío para reglas heurísticas de conteo/frecuencia.
+      </p>
+    </div>
+  </div>
+  <div class="panel-body">
+    <form method="POST" action="{% url 'detection:rules' %}">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="create">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1rem;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Código de Regla</label>
+          <input type="text" name="code" id="ruleCodeInput" class="form-input" placeholder="Ej: R-CUSTOM-01" required>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Nombre Descriptivo</label>
+          <input type="text" name="name" id="ruleNameInput" class="form-input" placeholder="Ej: Bloqueo de Rutas Sensibles" required>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Categoría</label>
+          <select name="category" id="ruleCategoryInput" class="form-input">
+            {% for cat_val, cat_label in categories %}
+            <option value="{{ cat_val }}">{{ cat_label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Puntos de Riesgo (1-100)</label>
+          <input type="number" name="risk_points" id="rulePointsInput" class="form-input" value="50" min="1" max="100" required>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Expresión Regular (Evaluada contra URI, Query, User-Agent decodificados)</label>
+          <input type="text" name="pattern_regex" id="ruleRegexInput" class="form-input" placeholder="Ej: (union\s+select|/etc/passwd|\.env) — Dejar vacío para heurística de frecuencia">
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Umbral (Peticiones)</label>
+          <input type="number" name="threshold_count" id="ruleCountInput" class="form-input" value="1" min="1" max="10000" required>
+        </div>
+        <div class="form-group" style="margin-bottom: 0;">
+          <label class="form-label">Ventana Temporal (Segundos)</label>
+          <input type="number" name="threshold_seconds" id="ruleWindowInput" class="form-input" value="60" min="1" max="86400" required>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+        <input type="text" name="description" id="ruleDescInput" class="form-input" placeholder="Descripción técnica opcional de la regla..." style="flex: 1;">
+        <button type="submit" class="btn btn-cyan">💾 Guardar y Activar Regla</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="panel">
   <div class="panel-header">
     <div>
@@ -10,10 +72,10 @@
         <span>⚙️</span> REGLAS DE DETECCIÓN Y HEURÍSTICA DE SEGURIDAD
       </div>
       <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
-        Inspeccionan el tráfico de Nginx en tiempo real. Cada regla suma puntos de riesgo a la reputación de la IP atacante.
+        Inspeccionan el tráfico de Nginx en tiempo real (con decodificación automática URL/doble-encoding). Al llegar a 80 pts la IP entra a Candidatos a Bloqueo.
       </p>
     </div>
-    <span class="badge cyan">{{ rules.count }} REGLAS ACTIVAS</span>
+    <span class="badge cyan">{{ active_count|default:rules.count }} / {{ rules.count }} REGLAS ACTIVAS</span>
   </div>
 
   <div class="panel-body" style="padding: 0;">
@@ -63,11 +125,21 @@
             <span class="badge low">INACTIVA</span>
             {% endif %}
           </td>
-          <td style="text-align: right;">
-            <form method="POST" action="{% url 'detection:rule_toggle' r.id %}">
+          <td style="text-align: right; white-space: nowrap;">
+            <button type="button" class="btn btn-dim" style="padding: 0.25rem 0.5rem; font-size: 0.72rem; margin-right: 0.3rem;"
+              onclick="loadRuleToEditor('{{ r.code|escapejs }}', '{{ r.name|escapejs }}', '{{ r.category|escapejs }}', '{{ r.pattern_regex|escapejs }}', '{{ r.threshold_count }}', '{{ r.threshold_seconds }}', '{{ r.risk_points }}', '{{ r.description|escapejs }}')">
+              ✏️ Editar
+            </button>
+            <form method="POST" action="{% url 'detection:rule_toggle' r.id %}" style="display: inline;">
               {% csrf_token %}
-              <button type="submit" class="btn btn-dim" style="padding: 0.25rem 0.6rem; font-size: 0.75rem;">
+              <button type="submit" class="btn btn-dim" style="padding: 0.25rem 0.6rem; font-size: 0.72rem;">
                 {% if r.is_active %}Desactivar{% else %}Activar{% endif %}
+              </button>
+            </form>
+            <form method="POST" action="{% url 'detection:rule_delete' r.id %}" style="display: inline; margin-left: 0.3rem;" onsubmit="return confirm('¿Eliminar la regla {{ r.code }}?');">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-crimson" style="padding: 0.25rem 0.5rem; font-size: 0.72rem;" title="Eliminar regla">
+                ✕
               </button>
             </form>
           </td>
@@ -83,4 +155,18 @@
     </table>
   </div>
 </div>
+
+<script>
+function loadRuleToEditor(code, name, category, regex, count, windowSec, points, desc) {
+  document.getElementById('ruleCodeInput').value = code;
+  document.getElementById('ruleNameInput').value = name;
+  document.getElementById('ruleCategoryInput').value = category;
+  document.getElementById('ruleRegexInput').value = regex;
+  document.getElementById('ruleCountInput').value = count;
+  document.getElementById('ruleWindowInput').value = windowSec;
+  document.getElementById('rulePointsInput').value = points;
+  document.getElementById('ruleDescInput').value = desc;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+</script>
 {% endblock %}

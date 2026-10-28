@@ -1,4 +1,5 @@
 import re
+import urllib.parse
 import ipaddress
 from datetime import timedelta
 from django.utils import timezone
@@ -7,6 +8,22 @@ from channels.layers import get_channel_layer
 from .models import TrafficLog, SecurityRule, SecurityEvent
 from apps.mitigation.models import IpReputation, BanCandidate, ActiveBan
 from apps.notifications.services import send_telegram_alert
+
+def normalize_inspection_payload(raw_text):
+    """
+    Decodifica payloads URL-encoded (simple y doble codificación como %20, %2e%2e%2f, %3cscript%3e)
+    y normaliza comentarios de evasión SQL (/**/) para que las reglas regex detecten ataques ofuscados.
+    """
+    if not raw_text:
+        return ""
+    try:
+        decoded_once = urllib.parse.unquote_plus(str(raw_text))
+        decoded_twice = urllib.parse.unquote_plus(decoded_once)
+        # Reemplazar comentarios SQL inline /**/ usados para evadir UNION/**/SELECT
+        cleaned = re.sub(r'/\*.*?\*/', ' ', decoded_twice)
+        return f"{raw_text} {decoded_once} {cleaned}"
+    except Exception:
+        return str(raw_text)
 
 def resolve_geoip(ip_str):
     """
@@ -101,19 +118,24 @@ def process_incoming_log(data, node=None):
         broadcast_to_soc(log, is_threat=False, reputation=reputation)
         return log
 
-    # 3. Motor de Detección Heurística y Reglas
+    # 3. Motor Universal de Detección Heurística y Reglas
     now = timezone.now()
     active_rules = SecurityRule.objects.filter(is_active=True)
-    full_target_string = f"{log.uri} {log.query_params} {log.user_agent}"
+
+    # Normalizar y decodificar URL/Query/User-Agent/Referer para detectar ataques codificados (%20, %2e%2e, etc.)
+    raw_combined = f"{log.uri} {log.query_params} {log.user_agent} {log.referer}"
+    full_target_string = normalize_inspection_payload(raw_combined)
+    normalized_uri = normalize_inspection_payload(f"{log.uri} {log.query_params}")
 
     risk_to_add = 0
     triggered_events = []
 
     for rule in active_rules:
-        # A. Detección de Fuerza Bruta de Autenticación (401/403) en rutas sensibles
+        window_start = now - timedelta(seconds=max(1, rule.threshold_seconds))
+
+        # A. Reglas de Fuerza Bruta de Autenticación (401/403)
         if rule.code == 'R-AUTH-BRUTE-401':
-            if log.status_code in (401, 403) and re.search(rule.pattern_regex, log.uri, re.IGNORECASE):
-                window_start = now - timedelta(seconds=rule.threshold_seconds)
+            if log.status_code in (401, 403) and (not rule.pattern_regex or re.search(rule.pattern_regex, normalized_uri, re.IGNORECASE)):
                 recent_auth_fails = TrafficLog.objects.filter(
                     client_ip=client_ip,
                     status_code__in=[401, 403],
@@ -125,48 +147,91 @@ def process_incoming_log(data, node=None):
                         rule=rule,
                         client_ip=client_ip,
                         severity='HIGH',
-                        matched_payload=f"{recent_auth_fails} fallos 401/403 en {log.uri} ({rule.threshold_seconds}s)",
-                        details={'count_auth_fails': recent_auth_fails, 'uri': log.uri}
+                        matched_payload=f"{recent_auth_fails} respuestas {log.status_code} en {log.uri} ({rule.threshold_seconds}s)",
+                        details={'count_auth_fails': recent_auth_fails, 'uri': log.uri, 'status_code': log.status_code}
                     )
                     triggered_events.append(event)
                     risk_to_add += rule.risk_points
 
-        # B. Coincidencia por Regex en Payload / URI / User-Agent
-        elif rule.pattern_regex:
-            match = re.search(rule.pattern_regex, full_target_string, re.IGNORECASE)
-            if match:
-                severity = 'CRITICAL' if rule.risk_points >= 70 else ('HIGH' if rule.risk_points >= 50 else 'MEDIUM')
-                event = SecurityEvent.objects.create(
-                    node=node,
-                    rule=rule,
+        # B. Detección Heurística de Frecuencia 404 (Enumeración de archivos / Scanners)
+        elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
+            if log.status_code == 404:
+                recent_404_count = TrafficLog.objects.filter(
                     client_ip=client_ip,
-                    severity=severity,
-                    matched_payload=match.group(0),
-                    details={'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
-                )
-                triggered_events.append(event)
-                risk_to_add += rule.risk_points
+                    status_code=404,
+                    created_at__gte=window_start
+                ).count()
+                if recent_404_count >= rule.threshold_count:
+                    event = SecurityEvent.objects.create(
+                        node=node,
+                        rule=rule,
+                        client_ip=client_ip,
+                        severity='HIGH',
+                        matched_payload=f"{recent_404_count} errores 404 en {rule.threshold_seconds}s ({log.uri})",
+                        details={'count_404': recent_404_count, 'uri': log.uri}
+                    )
+                    triggered_events.append(event)
+                    risk_to_add += rule.risk_points
 
-        # C. Detección de Frecuencia 404 (Enumeración / Scanners)
-        elif rule.code == 'R-SCAN-404-BRUTE' and log.status_code == 404:
-            window_start = now - timedelta(seconds=rule.threshold_seconds)
-            recent_404_count = TrafficLog.objects.filter(
+        # C. Detección Heurística de Ráfaga / Flood DoS por IP (Rate Limit sin regex)
+        elif not rule.pattern_regex and rule.category == 'RATE_LIMIT':
+            recent_req_count = TrafficLog.objects.filter(
                 client_ip=client_ip,
-                status_code=404,
                 created_at__gte=window_start
             ).count()
-
-            if recent_404_count >= rule.threshold_count:
+            if recent_req_count >= rule.threshold_count:
                 event = SecurityEvent.objects.create(
                     node=node,
                     rule=rule,
                     client_ip=client_ip,
-                    severity='HIGH',
-                    matched_payload=f"{recent_404_count} errores 404 en {rule.threshold_seconds}s",
-                    details={'count_404': recent_404_count}
+                    severity='CRITICAL' if rule.risk_points >= 60 else 'HIGH',
+                    matched_payload=f"Ráfaga DoS: {recent_req_count} reqs en {rule.threshold_seconds}s",
+                    details={'request_count': recent_req_count, 'window_seconds': rule.threshold_seconds}
                 )
                 triggered_events.append(event)
                 risk_to_add += rule.risk_points
+
+        # D. Reglas basadas en Expresión Regular (con soporte de umbral threshold_count >= 1)
+        elif rule.pattern_regex:
+            try:
+                match = re.search(rule.pattern_regex, full_target_string, re.IGNORECASE)
+            except re.error:
+                match = None
+
+            if match:
+                should_trigger = True
+                matched_text = match.group(0)
+
+                if rule.threshold_count > 1:
+                    recent_matches = SecurityEvent.objects.filter(
+                        client_ip=client_ip,
+                        rule=rule,
+                        created_at__gte=window_start
+                    ).count() + 1
+                    if recent_matches < rule.threshold_count:
+                        # Registrar evento previo de conteo con severidad baja sin sumar el castigo completo aún
+                        SecurityEvent.objects.create(
+                            node=node,
+                            rule=rule,
+                            client_ip=client_ip,
+                            severity='LOW',
+                            matched_payload=f"[{recent_matches}/{rule.threshold_count}] {matched_text}",
+                            details={'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
+                        )
+                        should_trigger = False
+
+                if should_trigger:
+                    severity = 'CRITICAL' if rule.risk_points >= 70 else ('HIGH' if rule.risk_points >= 50 else 'MEDIUM')
+                    event = SecurityEvent.objects.create(
+                        node=node,
+                        rule=rule,
+                        client_ip=client_ip,
+                        severity=severity,
+                        matched_payload=matched_text,
+                        details={'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
+                    )
+                    triggered_events.append(event)
+                    risk_to_add += rule.risk_points
 
     # 4. Actualizar puntaje de riesgo de la IP
     if risk_to_add > 0:

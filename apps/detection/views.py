@@ -1,3 +1,4 @@
+import re
 import json
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
@@ -7,11 +8,60 @@ from django.contrib import messages
 from .models import SecurityRule, TrafficLog, SecurityEvent
 from .engine import process_incoming_log
 from apps.nodes.models import ProxyNode
+from apps.reports.models import AuditTrail
 
 @login_required
 def rules_list_view(request):
+    if request.method == 'POST':
+        action = request.POST.get('action', 'create')
+        if action == 'create':
+            code = request.POST.get('code', '').strip().upper()
+            name = request.POST.get('name', '').strip()
+            description = request.POST.get('description', '').strip()
+            category = request.POST.get('category', 'SCANNER')
+            pattern_regex = request.POST.get('pattern_regex', '').strip()
+            threshold_count = max(1, int(request.POST.get('threshold_count', 1) or 1))
+            threshold_seconds = max(1, int(request.POST.get('threshold_seconds', 60) or 60))
+            risk_points = max(1, min(100, int(request.POST.get('risk_points', 40) or 40)))
+
+            if not code or not name:
+                messages.error(request, 'El código y el nombre de la regla son obligatorios.')
+            else:
+                try:
+                    if pattern_regex:
+                        re.compile(pattern_regex)
+                    rule, created = SecurityRule.objects.update_or_create(
+                        code=code,
+                        defaults={
+                            'name': name,
+                            'description': description,
+                            'category': category,
+                            'pattern_regex': pattern_regex,
+                            'threshold_count': threshold_count,
+                            'threshold_seconds': threshold_seconds,
+                            'risk_points': risk_points,
+                            'is_active': True,
+                        }
+                    )
+                    AuditTrail.objects.create(
+                        user=request.user,
+                        action='SAVE_SECURITY_RULE',
+                        target=f"Regla: {rule.code}",
+                        details={'name': rule.name, 'category': category, 'risk_points': risk_points},
+                        ip_address=request.META.get('REMOTE_ADDR')
+                    )
+                    messages.success(request, f"Regla '{rule.code}' guardada y activada exitosamente.")
+                except re.error as err:
+                    messages.error(request, f"Expresión regular inválida: {err}")
+            return redirect('detection:rules')
+
     rules = SecurityRule.objects.all()
-    return render(request, 'settings/rules.html', {'rules': rules})
+    active_count = rules.filter(is_active=True).count()
+    return render(request, 'settings/rules.html', {
+        'rules': rules,
+        'active_count': active_count,
+        'categories': SecurityRule.CATEGORY_CHOICES,
+    })
 
 @login_required
 def rule_toggle_view(request, rule_id):
@@ -22,8 +72,32 @@ def rule_toggle_view(request, rule_id):
     rule.is_active = not rule.is_active
     rule.save(update_fields=['is_active'])
 
+    AuditTrail.objects.create(
+        user=request.user,
+        action='TOGGLE_SECURITY_RULE',
+        target=f"Regla: {rule.code}",
+        details={'is_active': rule.is_active},
+        ip_address=request.META.get('REMOTE_ADDR')
+    )
+
     status_str = "activada" if rule.is_active else "desactivada"
     messages.info(request, f"Regla '{rule.code}' {status_str}.")
+    return redirect('detection:rules')
+
+@login_required
+def rule_delete_view(request, rule_id):
+    if request.method == 'POST':
+        rule = get_object_or_404(SecurityRule, id=rule_id)
+        code = rule.code
+        rule.delete()
+        AuditTrail.objects.create(
+            user=request.user,
+            action='DELETE_SECURITY_RULE',
+            target=f"Regla: {code}",
+            details={},
+            ip_address=request.META.get('REMOTE_ADDR')
+        )
+        messages.warning(request, f"Regla '{code}' eliminada.")
     return redirect('detection:rules')
 
 @csrf_exempt
