@@ -15,9 +15,9 @@ Funcionalidades:
 import os
 import re
 import sys
-import glob
 import time
 import json
+import struct
 import socket
 import threading
 import subprocess
@@ -31,7 +31,6 @@ NODE_API_KEY = os.getenv("NODE_API_KEY", "")
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "15"))  # Segundos
 BLOCK_METHOD = os.getenv("BLOCK_METHOD", "ipset")  # 'ipset', 'nginx_conf' o 'monitor'
 NGINX_BLOCK_FILE = os.getenv("NGINX_BLOCK_FILE", "/etc/nginx/conf.d/mithril_blocklist.conf")
-NGINX_LOG_DIR = os.getenv("NGINX_LOG_DIR", "/var/log/nginx")
 SYSLOG_PORT = int(os.getenv("SYSLOG_PORT", "5140"))
 
 if not NODE_API_KEY:
@@ -107,46 +106,6 @@ def get_active_connections():
         pass
     return 0
 
-def discover_nginx_log_files():
-    """
-    Descubre dinamicamente todos los archivos de log activos en cualquier configuracion de Nginx:
-    1. Analiza las directivas access_log y error_log declaradas en /etc/nginx/
-    2. Escanea /var/log/nginx/*.log como respaldo universal
-    """
-    discovered = set()
-
-    # 1. Buscar en /var/log/nginx/*.log (y subdirectorios de primer nivel)
-    if os.path.isdir(NGINX_LOG_DIR):
-        for pattern in ("*.log", "*/*.log"):
-            for p in glob.glob(os.path.join(NGINX_LOG_DIR, pattern)):
-                if os.path.isfile(p):
-                    discovered.add(os.path.abspath(p))
-
-    # 2. Descubrir rutas personalizadas declaradas en archivos .conf de /etc/nginx
-    nginx_etc = "/etc/nginx"
-    log_directive_re = re.compile(r'^\s*(?:access_log|error_log)\s+([^\s;]+)', re.MULTILINE)
-    if os.path.isdir(nginx_etc):
-        for root_dir, _, files in os.walk(nginx_etc):
-            for fname in files:
-                if not fname.endswith(".conf"):
-                    continue
-                fpath = os.path.join(root_dir, fname)
-                try:
-                    with open(fpath, "r", encoding="utf-8", errors="ignore") as cf:
-                        content = cf.read()
-                    for match in log_directive_re.finditer(content):
-                        raw_path = match.group(1).strip('"\'')
-                        if raw_path in ("off", "/dev/null") or raw_path.startswith("syslog:"):
-                            continue
-                        if not os.path.isabs(raw_path):
-                            raw_path = os.path.join("/var/log/nginx", raw_path)
-                        if os.path.isfile(raw_path):
-                            discovered.add(os.path.abspath(raw_path))
-                except Exception:
-                    pass
-
-    return discovered
-
 def init_firewall():
     """Asegura que el set de ipset y la regla de iptables existan"""
     if BLOCK_METHOD == "ipset":
@@ -206,73 +165,243 @@ def apply_blocklist(banned_ips):
         except Exception as e:
             print(f"❌ [NGINX] Error escribiendo lista de bloqueo: {e}")
 
-def tail_nginx_logs_worker():
+HTTP_METHODS_BYTES = (b"GET ", b"POST ", b"PUT ", b"DELETE ", b"HEAD ", b"OPTIONS ", b"PATCH ")
+
+def extract_tls_sni(payload):
+    """Extrae el dominio SNI (Server Name Indication) en memoria de un paquete TLS ClientHello"""
+    try:
+        if len(payload) < 44 or payload[0] != 0x16 or payload[5] != 0x01:
+            return ""
+        # Saltar Record Header (5) + Handshake Header (4) + Version (2) + Random (32) = 43
+        pos = 43
+        session_id_len = payload[pos]
+        pos += 1 + session_id_len
+        if pos + 2 > len(payload):
+            return ""
+        cipher_suites_len = struct.unpack("!H", payload[pos:pos+2])[0]
+        pos += 2 + cipher_suites_len
+        if pos + 1 > len(payload):
+            return ""
+        comp_methods_len = payload[pos]
+        pos += 1 + comp_methods_len
+        if pos + 2 > len(payload):
+            return ""
+        extensions_len = struct.unpack("!H", payload[pos:pos+2])[0]
+        pos += 2
+        end_ext = min(len(payload), pos + extensions_len)
+        while pos + 4 <= end_ext:
+            ext_type, ext_len = struct.unpack("!HH", payload[pos:pos+4])
+            pos += 4
+            if ext_type == 0x0000 and pos + 5 <= end_ext:  # server_name extension
+                name_len = struct.unpack("!H", payload[pos+3:pos+5])[0]
+                if pos + 5 + name_len <= end_ext:
+                    return payload[pos+5:pos+5+name_len].decode("ascii", errors="ignore")
+                break
+            pos += ext_len
+    except Exception:
+        pass
+    return ""
+
+def kernel_network_mirror_worker():
     """
-    Recolector universal de logs en tiempo real (100% Read-Only):
-    Descubre automaticamente cualquier archivo access_log y error_log de Nginx
-    en el servidor (sin importar como este estructurado /etc/nginx/) y transmite
-    las nuevas entradas por UDP al SIEM sin tocar ni recargar Nginx.
+    Espejo de Red en Memoria del Kernel (AF_PACKET Zero-File-Read Mirror):
+    - NO lee ningún archivo de /var/log/nginx/ ni de /etc/nginx/ (cero I/O de disco).
+    - Captura en memoria RAM todas las peticiones HTTP entrantes y balanceadas (proxy_pass)
+      así como las conexiones TLS (SNI) sin importar cómo esté configurado Nginx.
     """
+    if not hasattr(socket, "AF_PACKET"):
+        return
+
     parsed = urllib.parse.urlparse(MITHRIL_URL)
     target_host = parsed.hostname or "127.0.0.1"
+    target_port = parsed.port or 9900
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    open_files = {}  # path -> (file_obj, inode, source_tag)
-    last_discovery = 0
+    try:
+        raw_sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
+        raw_sock.settimeout(0.5)
+    except Exception as e:
+        print(f"⚠️ [KERNEL-MIRROR] No se pudo abrir AF_PACKET ({e}).")
+        return
 
-    print(f"📡 [LOG-STREAMER] Auto-descubrimiento universal de logs Nginx activo -> UDP {target_host}:{SYSLOG_PORT}")
+    print(f"⚡ [KERNEL-MIRROR] Espejo en memoria RAM activo (Cero lectura de archivos) -> UDP {target_host}:{SYSLOG_PORT}")
+
+    pending_http = {}  # (src_ip, src_port, dst_ip, dst_port) -> dict
+    recent_client_activity = {}  # client_ip -> timestamp
+    last_flush = time.time()
+
+    def flush_expired_pending(now_ts):
+        for k, req_item in list(pending_http.items()):
+            if now_ts - req_item["ts"] >= 0.8:
+                pending_http.pop(k, None)
+                event_json = json.dumps({
+                    "client_ip": req_item["client_ip"],
+                    "http_method": req_item["http_method"],
+                    "uri": req_item["uri"],
+                    "query_params": req_item["query_params"],
+                    "status_code": 200,
+                    "bytes_sent": 0,
+                    "latency_ms": round(max(0.0, now_ts - req_item["ts"]), 4),
+                    "user_agent": req_item["user_agent"],
+                    "referer": req_item["referer"],
+                })
+                msg = f"<190>nginx: {event_json}".encode("utf-8", errors="ignore")
+                udp_sock.sendto(msg[:60000], (target_host, SYSLOG_PORT))
 
     while True:
         try:
-            now = time.time()
-            # Re-escanear archivos de log cada 10 segundos para detectar nuevos vhosts o rotaciones
-            if now - last_discovery >= 10:
-                last_discovery = now
-                for path in discover_nginx_log_files():
-                    fname = os.path.basename(path)
-                    # Ignorar archivos rotados historicos (.gz, -YYYYMMDD)
-                    if fname.endswith(".gz") or re.search(r'-\d{8}$', fname):
-                        continue
-                    try:
-                        st = os.stat(path)
-                        if st.st_size == 0 and path not in open_files:
-                            continue
-                        source_tag = re.sub(r'([-_.]?(access|error))?\.log$', '', fname, flags=re.IGNORECASE) or "nginx"
-                        if path not in open_files:
-                            f = open(path, "r", encoding="utf-8", errors="ignore")
-                            f.seek(0, os.SEEK_END)  # Posicionarse al final para leer solo trafico en vivo
-                            open_files[path] = (f, st.st_ino, source_tag)
-                        else:
-                            f, old_ino, source_tag = open_files[path]
-                            if st.st_ino != old_ino or st.st_size < f.tell():
-                                try:
-                                    f.close()
-                                except Exception:
-                                    pass
-                                f = open(path, "r", encoding="utf-8", errors="ignore")
-                                open_files[path] = (f, st.st_ino, source_tag)
-                    except Exception:
-                        pass
+            try:
+                raw_packet, addr = raw_sock.recvfrom(65535)
+            except socket.timeout:
+                now_ts = time.time()
+                flush_expired_pending(now_ts)
+                last_flush = now_ts
+                continue
 
-            for path, (f, ino, source_tag) in list(open_files.items()):
-                try:
-                    lines_read = 0
-                    while lines_read < 250:
-                        line = f.readline()
-                        if not line:
-                            break
-                        lines_read += 1
-                        line_str = line.strip()
-                        if not line_str:
-                            continue
-                        payload = f"<190>nginx: [vhost:{source_tag}] {line_str}".encode("utf-8", errors="ignore")
-                        udp_sock.sendto(payload[:60000], (target_host, SYSLOG_PORT))
-                except Exception:
-                    pass
+            now = time.time()
+            if now - last_flush >= 0.5:
+                flush_expired_pending(now)
+                last_flush = now
+            # En loopback (lo), Linux entrega cada paquete dos veces (entrada y salida PACKET_OUTGOING=4)
+            if addr and len(addr) >= 3 and addr[0] == "lo" and addr[2] == 4:
+                continue
+
+            if len(raw_packet) < 34:
+                continue
+
+            eth_proto = struct.unpack("!H", raw_packet[12:14])[0]
+            eth_offset = 14
+            if eth_proto == 0x8100:  # 802.1Q VLAN
+                if len(raw_packet) < 38:
+                    continue
+                eth_proto = struct.unpack("!H", raw_packet[16:18])[0]
+                eth_offset = 18
+
+            if eth_proto != 0x0800:  # Solo IPv4
+                continue
+
+            ver_ihl = raw_packet[eth_offset]
+            ihl = (ver_ihl & 0x0F) * 4
+            if raw_packet[eth_offset + 9] != 6:  # Solo TCP
+                continue
+
+            ip_end = eth_offset + ihl
+            if len(raw_packet) < ip_end + 20:
+                continue
+
+            src_ip = socket.inet_ntoa(raw_packet[eth_offset + 12 : eth_offset + 16])
+            dst_ip = socket.inet_ntoa(raw_packet[eth_offset + 16 : eth_offset + 20])
+            src_port, dst_port = struct.unpack("!HH", raw_packet[ip_end : ip_end + 4])
+
+            # Ignorar tráfico propio hacia Mithril SIEM o SSH
+            if src_port in (22, SYSLOG_PORT, target_port) or dst_port in (22, SYSLOG_PORT, target_port):
+                continue
+
+            tcp_header_len = ((raw_packet[ip_end + 12] >> 4) & 0x0F) * 4
+            payload_start = ip_end + tcp_header_len
+            if payload_start >= len(raw_packet):
+                continue
+
+            payload = raw_packet[payload_start:]
+            if len(payload) < 8:
+                continue
+
+            # 1. Petición HTTP en memoria (entrante directa o desencriptada por Nginx hacia upstream)
+            if payload.startswith(HTTP_METHODS_BYTES):
+                head_End = payload.find(b"\r\n\r\n")
+                header_bytes = payload[:head_End] if head_End != -1 else payload[:2048]
+                header_text = header_bytes.decode("latin-1", errors="ignore")
+                lines = header_text.split("\r\n")
+                if not lines:
+                    continue
+
+                req_parts = lines[0].split(" ")
+                if len(req_parts) < 2:
+                    continue
+                method = req_parts[0].upper()[:10]
+                full_uri = req_parts[1]
+
+                headers_map = {}
+                for hline in lines[1:]:
+                    if ":" in hline:
+                        k, v = hline.split(":", 1)
+                        headers_map[k.strip().lower()] = v.strip()
+
+                # Si es tráfico proxy_pass desde Nginx a un backend, extraer la IP real del cliente externo
+                real_ip = (
+                    headers_map.get("x-real-ip")
+                    or headers_map.get("cf-connecting-ip")
+                    or (headers_map.get("x-forwarded-for", "").split(",")[0].strip())
+                    or src_ip
+                )
+
+                # Ignorar peticiones desde este mismo servidor cuando Nginx ya recibió el paquete directo
+                if real_ip in ("127.0.0.1", "::1") and any(p in full_uri for p in ("/stub_status", "/nginx_status", "/metrics")):
+                    continue
+
+                host_hdr = headers_map.get("host", "")
+                if "?" in full_uri:
+                    uri, query_params = full_uri.split("?", 1)
+                else:
+                    uri, query_params = full_uri, ""
+
+                display_uri = f"[{host_hdr}] {uri}" if host_hdr and not uri.startswith("[") else uri
+                recent_client_activity[real_ip] = now
+
+                pending_http[(src_ip, src_port, dst_ip, dst_port)] = {
+                    "ts": now,
+                    "client_ip": real_ip,
+                    "http_method": method,
+                    "uri": display_uri,
+                    "query_params": query_params,
+                    "user_agent": headers_map.get("user-agent", ""),
+                    "referer": headers_map.get("referer", host_hdr),
+                }
+
+            # 2. Respuesta HTTP en memoria (empareja el código de estado 200/404/500/403 con la petición)
+            elif payload.startswith((b"HTTP/1.1 ", b"HTTP/1.0 ")):
+                req_key = (dst_ip, dst_port, src_ip, src_port)
+                req_item = pending_http.pop(req_key, None)
+                if req_item:
+                    first_line = payload[:64].decode("latin-1", errors="ignore").split("\r\n")[0]
+                    parts = first_line.split(" ")
+                    status_code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 200
+                    latency = round(max(0.0, now - req_item["ts"]), 4)
+                    event_json = json.dumps({
+                        "client_ip": req_item["client_ip"],
+                        "http_method": req_item["http_method"],
+                        "uri": req_item["uri"],
+                        "query_params": req_item["query_params"],
+                        "status_code": status_code,
+                        "bytes_sent": len(payload),
+                        "latency_ms": latency,
+                        "user_agent": req_item["user_agent"],
+                        "referer": req_item["referer"],
+                    })
+                    msg = f"<190>nginx: {event_json}".encode("utf-8", errors="ignore")
+                    udp_sock.sendto(msg[:60000], (target_host, SYSLOG_PORT))
+
+            # 3. Handshake TLS ClientHello en puerto 443 (para sitios HTTPS estáticos o sin proxy_pass HTTP)
+            elif dst_port == 443 and payload[0] == 0x16:
+                sni = extract_tls_sni(payload)
+                if sni and (now - recent_client_activity.get(src_ip, 0)) > 2.0:
+                    recent_client_activity[src_ip] = now
+                    event_json = json.dumps({
+                        "client_ip": src_ip,
+                        "http_method": "HTTPS",
+                        "uri": f"[{sni}] /",
+                        "query_params": "",
+                        "status_code": 200,
+                        "bytes_sent": len(payload),
+                        "latency_ms": 0.0,
+                        "user_agent": f"TLS SNI ({sni})",
+                        "referer": sni,
+                    })
+                    msg = f"<190>nginx: {event_json}".encode("utf-8", errors="ignore")
+                    udp_sock.sendto(msg[:60000], (target_host, SYSLOG_PORT))
+
         except Exception:
             pass
-
-        time.sleep(0.4)
 
 def main():
     print("=" * 60)
@@ -283,8 +412,8 @@ def main():
     print("=" * 60)
 
     init_firewall()
-    t_logs = threading.Thread(target=tail_nginx_logs_worker, daemon=True)
-    t_logs.start()
+    t_mirror = threading.Thread(target=kernel_network_mirror_worker, daemon=True)
+    t_mirror.start()
     last_banned_count = -1
 
     while True:
