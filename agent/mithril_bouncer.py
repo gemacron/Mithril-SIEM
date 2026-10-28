@@ -14,18 +14,24 @@ Funcionalidades:
 
 import os
 import sys
+import glob
 import time
 import json
+import socket
+import threading
 import subprocess
 import urllib.request
+import urllib.parse
 import urllib.error
 
 # Configuracion desde Variables de Entorno (o valores por defecto)
 MITHRIL_URL = os.getenv("MITHRIL_URL", "http://127.0.0.1:9900").rstrip("/")
 NODE_API_KEY = os.getenv("NODE_API_KEY", "")
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "15"))  # Segundos
-BLOCK_METHOD = os.getenv("BLOCK_METHOD", "ipset")  # 'ipset' o 'nginx_conf'
+BLOCK_METHOD = os.getenv("BLOCK_METHOD", "ipset")  # 'ipset', 'nginx_conf' o 'monitor'
 NGINX_BLOCK_FILE = os.getenv("NGINX_BLOCK_FILE", "/etc/nginx/conf.d/mithril_blocklist.conf")
+NGINX_LOG_DIR = os.getenv("NGINX_LOG_DIR", "/var/log/nginx")
+SYSLOG_PORT = int(os.getenv("SYSLOG_PORT", "5140"))
 
 if not NODE_API_KEY:
     print("❌ [FATAL] La variable de entorno NODE_API_KEY es obligatoria.")
@@ -110,6 +116,9 @@ def init_firewall():
 
 def apply_blocklist(banned_ips):
     """Aplica la lista de IPs denegadas en el firewall o archivo de Nginx"""
+    if BLOCK_METHOD == "monitor":
+        print(f"👁️ [MONITOR-PASIVO] {len(banned_ips)} IPs en lista negra (modo solo lectura, sin tocar firewall ni Nginx).")
+        return
     if BLOCK_METHOD == "ipset":
         try:
             # Asegurar que la regla INPUT exista (por si firewalld se recargo en Rocky Linux / RHEL)
@@ -145,6 +154,71 @@ def apply_blocklist(banned_ips):
         except Exception as e:
             print(f"❌ [NGINX] Error escribiendo lista de bloqueo: {e}")
 
+def tail_nginx_logs_worker():
+    """
+    Hilo 100% de solo lectura (Read-Only) para servidores en produccion:
+    Monitorea en tiempo real todos los archivos *.log de /var/log/nginx/ (virtualhosts y error.log)
+    sin necesidad de modificar la configuracion de Nginx ni recargar el servicio.
+    """
+    parsed = urllib.parse.urlparse(MITHRIL_URL)
+    target_host = parsed.hostname or "127.0.0.1"
+    udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    # Archivos globales que ya se envian por syslog o son duplicados de goaccess
+    skip_files = {"access.log", "access_goaccess.log", "access_otel.log"}
+    open_files = {}  # path -> (file_obj, inode, site_tag)
+
+    print(f"📡 [LOG-STREAMER] Monitoreando en modo solo-lectura {NGINX_LOG_DIR}/*.log -> UDP {target_host}:{SYSLOG_PORT}")
+
+    while True:
+        try:
+            if os.path.isdir(NGINX_LOG_DIR):
+                for path in glob.glob(os.path.join(NGINX_LOG_DIR, "*.log")):
+                    fname = os.path.basename(path)
+                    if fname in skip_files:
+                        continue
+                    try:
+                        st = os.stat(path)
+                        if st.st_size == 0 and path not in open_files:
+                            continue
+                        site_tag = fname.replace("-access.log", "").replace(".access.log", "").replace(".log", "")
+                        if path not in open_files:
+                            f = open(path, "r", encoding="utf-8", errors="ignore")
+                            f.seek(0, os.SEEK_END)  # Solo leer lineas nuevas en tiempo real
+                            open_files[path] = (f, st.st_ino, site_tag)
+                        else:
+                            f, old_ino, site_tag = open_files[path]
+                            # Detectar rotacion de logrotate
+                            if st.st_ino != old_ino or st.st_size < f.tell():
+                                try:
+                                    f.close()
+                                except Exception:
+                                    pass
+                                f = open(path, "r", encoding="utf-8", errors="ignore")
+                                open_files[path] = (f, st.st_ino, site_tag)
+                    except Exception:
+                        pass
+
+                for path, (f, ino, site_tag) in list(open_files.items()):
+                    try:
+                        lines_read = 0
+                        while lines_read < 200:
+                            line = f.readline()
+                            if not line:
+                                break
+                            lines_read += 1
+                            line_str = line.strip()
+                            if not line_str or "/stub_status" in line_str:
+                                continue
+                            payload = f"<190>nginx_{site_tag}: [site:{site_tag}] {line_str}".encode("utf-8", errors="ignore")
+                            udp_sock.sendto(payload[:60000], (target_host, SYSLOG_PORT))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        time.sleep(0.5)
+
 def main():
     print("=" * 60)
     print("🛡️  MITHRIL BOUNCER AGENT - INICIADO")
@@ -154,6 +228,8 @@ def main():
     print("=" * 60)
 
     init_firewall()
+    t_logs = threading.Thread(target=tail_nginx_logs_worker, daemon=True)
+    t_logs.start()
     last_banned_count = -1
 
     while True:
