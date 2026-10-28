@@ -155,7 +155,7 @@ class TacticalWorldMap {
             lon: parseFloat(p.longitude) || 0,
             ip: p.client_ip || '',
             country: p.country_name || '',
-            isThreat: (p.status_code >= 400),
+            isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
             status_code: p.status_code
           }));
         }

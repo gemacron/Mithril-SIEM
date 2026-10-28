@@ -14,6 +14,9 @@
   </div>
 
   <div style="display: flex; gap: 0.6rem;">
+    <a href="{% url 'reports:export_csv' %}?type=traffic" class="btn btn-dim">
+      🌐 Exportar Tráfico HTTP (CSV)
+    </a>
     <a href="{% url 'reports:export_csv' %}?type=audit" class="btn btn-dim">
       📄 Exportar Auditoría (CSV)
     </a>
@@ -23,6 +26,70 @@
     <a href="{% url 'reports:export_json' %}?type=audit" class="btn btn-cyan">
       📦 Exportar (JSON)
     </a>
+  </div>
+</div>
+
+<!-- Explorador Forense de Tráfico HTTP Almacenado en PostgreSQL -->
+<div class="panel" style="margin-bottom: 1.5rem;">
+  <div class="panel-header">
+    <div class="panel-title">
+      <span>🌐</span> EXPLORADOR FORENSE DE TRÁFICO HTTP (POSTGRESQL)
+    </div>
+    <span class="badge safe">{{ total_traffic_count }} PETICIONES ALMACENADAS</span>
+  </div>
+
+  <div class="panel-body">
+    <form method="GET" style="display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap;">
+      <input type="text" name="ip" value="{{ search_ip }}" placeholder="Filtrar por IP (ej. 192.168.1.50)" class="form-input" style="max-width: 240px;">
+      <input type="text" name="uri" value="{{ search_uri }}" placeholder="Filtrar por ruta URI (ej. /login)" class="form-input" style="max-width: 260px;">
+      <input type="text" name="status" value="{{ search_status }}" placeholder="Código HTTP (ej. 404)" class="form-input" style="max-width: 170px;">
+      <button type="submit" class="btn btn-cyan">🔍 Filtrar Registros</button>
+      {% if search_ip or search_uri or search_status %}
+      <a href="{% url 'reports:index' %}" class="btn btn-dim">Limpiar</a>
+      {% endif %}
+    </form>
+
+    <div style="max-height: 360px; overflow-y: auto;">
+      <table class="terminal-table">
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Fecha y Hora (UTC)</th>
+            <th>IP Cliente</th>
+            <th>País</th>
+            <th>Método / Ruta URI</th>
+            <th>Código</th>
+            <th>User-Agent</th>
+            <th>Nodo Proxy</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for log in recent_traffic %}
+          <tr>
+            <td style="color: var(--text-dim);">#{{ log.id }}</td>
+            <td style="color: var(--text-dim);">{{ log.created_at|date:"Y-m-d H:i:s" }}</td>
+            <td><code>{{ log.client_ip }}</code></td>
+            <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
+            <td>
+              <span style="color: var(--neon-cyan); font-weight: 600;">{{ log.http_method }}</span>
+              <code>{{ log.uri|truncatechars:45 }}{% if log.query_params %}?{{ log.query_params|truncatechars:25 }}{% endif %}</code>
+            </td>
+            <td style="{% if log.status_code >= 400 %}color: var(--neon-crimson);{% else %}color: var(--neon-emerald);{% endif %} font-weight: bold;">
+              {{ log.status_code }}
+            </td>
+            <td style="color: var(--text-muted); font-size: 0.72rem;">{{ log.user_agent|truncatechars:40|default:"-" }}</td>
+            <td><code>{{ log.node.name|default:"Direct" }}</code></td>
+          </tr>
+          {% empty %}
+          <tr>
+            <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 2rem;">
+              No se encontraron peticiones con los filtros seleccionados.
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>
 

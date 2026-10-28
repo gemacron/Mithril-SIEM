@@ -100,14 +100,20 @@
             </tr>
           </thead>
           <tbody id="liveFeedTableBody">
-            {% for log in recent_events %}
-            <tr>
-              <td><span class="badge critical">AMENAZA</span></td>
+            {% for log in recent_logs %}
+            <tr data-log-id="{{ log.id }}">
+              <td>
+                {% if log.is_threat %}
+                <span class="badge critical">AMENAZA</span>
+                {% else %}
+                <span class="badge low">NORMAL</span>
+                {% endif %}
+              </td>
               <td><strong>{{ log.created_at|date:"H:i:s" }}</strong></td>
               <td><code>{{ log.client_ip }}</code></td>
-              <td>Remoto</td>
-              <td><span style="color: var(--neon-cyan);">EVENT</span> <code>{{ log.matched_payload|truncatechars:35 }}</code></td>
-              <td style="color: var(--neon-crimson); font-weight: bold;">ALERTA</td>
+              <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
+              <td><span style="color: var(--neon-cyan); font-weight: 600;">{{ log.http_method }}</span> <code>{{ log.uri|truncatechars:35 }}</code></td>
+              <td style="{% if log.status_code >= 400 %}color: var(--neon-crimson);{% else %}color: var(--neon-emerald);{% endif %} font-weight: bold;">{{ log.status_code }}</td>
               <td><code>{{ log.node.name|default:"Direct" }}</code></td>
             </tr>
             {% empty %}

@@ -99,7 +99,8 @@ def node_configure_view(request, node_id):
     host_ip = request.get_host().split(':')[0]
     generated_systemd_service = f"""[Unit]
 Description=Mithril SIEM Bouncer Agent ({node.name})
-After=network.target nginx.service
+After=network-online.target firewalld.service nginx.service
+Wants=network-online.target
 
 [Service]
 Type=simple
@@ -108,9 +109,12 @@ Environment="MITHRIL_URL=http://{host_ip}:9900"
 Environment="NODE_API_KEY={node.api_key}"
 Environment="SYNC_INTERVAL={node.sync_interval_seconds}"
 Environment="BLOCK_METHOD={node.block_method}"
-ExecStart=/usr/bin/python3 /opt/mithril/mithril_bouncer.py
+Environment="NGINX_BLOCK_FILE=/etc/nginx/conf.d/mithril_blocklist.conf"
+ExecStart=/usr/bin/python3 /opt/mithril-agent/mithril_bouncer.py
 Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target"""

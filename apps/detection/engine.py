@@ -110,11 +110,32 @@ def process_incoming_log(data, node=None):
     triggered_events = []
 
     for rule in active_rules:
-        # A. Coincidencia por Regex
-        if rule.pattern_regex:
+        # A. Detección de Fuerza Bruta de Autenticación (401/403) en rutas sensibles
+        if rule.code == 'R-AUTH-BRUTE-401':
+            if log.status_code in (401, 403) and re.search(rule.pattern_regex, log.uri, re.IGNORECASE):
+                window_start = now - timedelta(seconds=rule.threshold_seconds)
+                recent_auth_fails = TrafficLog.objects.filter(
+                    client_ip=client_ip,
+                    status_code__in=[401, 403],
+                    created_at__gte=window_start
+                ).count()
+                if recent_auth_fails >= rule.threshold_count:
+                    event = SecurityEvent.objects.create(
+                        node=node,
+                        rule=rule,
+                        client_ip=client_ip,
+                        severity='HIGH',
+                        matched_payload=f"{recent_auth_fails} fallos 401/403 en {log.uri} ({rule.threshold_seconds}s)",
+                        details={'count_auth_fails': recent_auth_fails, 'uri': log.uri}
+                    )
+                    triggered_events.append(event)
+                    risk_to_add += rule.risk_points
+
+        # B. Coincidencia por Regex en Payload / URI / User-Agent
+        elif rule.pattern_regex:
             match = re.search(rule.pattern_regex, full_target_string, re.IGNORECASE)
             if match:
-                severity = 'HIGH' if rule.risk_points >= 50 else 'MEDIUM'
+                severity = 'CRITICAL' if rule.risk_points >= 70 else ('HIGH' if rule.risk_points >= 50 else 'MEDIUM')
                 event = SecurityEvent.objects.create(
                     node=node,
                     rule=rule,
@@ -126,7 +147,7 @@ def process_incoming_log(data, node=None):
                 triggered_events.append(event)
                 risk_to_add += rule.risk_points
 
-        # B. Detección de Frecuencia 404 (Enumeración / Scanners)
+        # C. Detección de Frecuencia 404 (Enumeración / Scanners)
         elif rule.code == 'R-SCAN-404-BRUTE' and log.status_code == 404:
             window_start = now - timedelta(seconds=rule.threshold_seconds)
             recent_404_count = TrafficLog.objects.filter(
@@ -213,6 +234,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
     payload = {
         'type': 'traffic_event',
         'event': {
+            'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
             'client_ip': log.client_ip,
             'method': log.http_method,

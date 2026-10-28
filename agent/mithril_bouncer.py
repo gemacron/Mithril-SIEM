@@ -112,6 +112,8 @@ def apply_blocklist(banned_ips):
     """Aplica la lista de IPs denegadas en el firewall o archivo de Nginx"""
     if BLOCK_METHOD == "ipset":
         try:
+            # Asegurar que la regla INPUT exista (por si firewalld se recargo en Rocky Linux / RHEL)
+            init_firewall()
             # Reemplazo atomico usando un set temporal
             subprocess.run(["ipset", "create", "mithril_temp", "hash:ip", "-exist"], check=True)
             subprocess.run(["ipset", "flush", "mithril_temp"], check=True)

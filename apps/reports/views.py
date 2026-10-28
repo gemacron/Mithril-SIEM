@@ -8,12 +8,31 @@ from apps.detection.models import SecurityEvent, TrafficLog
 
 @login_required
 def reports_index_view(request):
+    search_ip = request.GET.get('ip', '').strip()
+    search_uri = request.GET.get('uri', '').strip()
+    search_status = request.GET.get('status', '').strip()
+
+    traffic_qs = TrafficLog.objects.select_related('node').all()
+    if search_ip:
+        traffic_qs = traffic_qs.filter(client_ip__icontains=search_ip)
+    if search_uri:
+        traffic_qs = traffic_qs.filter(uri__icontains=search_uri)
+    if search_status.isdigit():
+        traffic_qs = traffic_qs.filter(status_code=int(search_status))
+
+    total_traffic_count = traffic_qs.count()
+    recent_traffic = traffic_qs[:100]
     audit_records = AuditTrail.objects.select_related('user')[:50]
     recent_events = SecurityEvent.objects.select_related('rule', 'node')[:50]
 
     return render(request, 'reports/index.html', {
         'audit_records': audit_records,
-        'recent_events': recent_events
+        'recent_events': recent_events,
+        'recent_traffic': recent_traffic,
+        'total_traffic_count': total_traffic_count,
+        'search_ip': search_ip,
+        'search_uri': search_uri,
+        'search_status': search_status,
     })
 
 @login_required
@@ -36,6 +55,24 @@ def export_csv_view(request):
                 e.rule.name if e.rule else 'Heurística',
                 e.matched_payload,
                 e.node.name if e.node else 'Direct'
+            ])
+    elif data_type == 'traffic':
+        writer.writerow(['ID', 'Fecha', 'IP Cliente', 'País', 'Método', 'URI', 'Query', 'Código HTTP', 'Bytes', 'Latencia (ms)', 'User-Agent', 'Nodo Proxy'])
+        logs = TrafficLog.objects.select_related('node').all()[:5000]
+        for l in logs:
+            writer.writerow([
+                l.id,
+                l.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                l.client_ip,
+                l.country_name or l.country_code,
+                l.http_method,
+                l.uri,
+                l.query_params,
+                l.status_code,
+                l.bytes_sent,
+                l.latency_ms,
+                l.user_agent,
+                l.node.name if l.node else 'Direct'
             ])
     else:
         writer.writerow(['ID', 'Fecha', 'Usuario', 'Acción', 'Objetivo', 'Detalles', 'IP Origen'])

@@ -113,6 +113,8 @@ def dismiss_candidate_view(request, candidate_id):
 
 @login_required
 def active_bans_list_view(request):
+    # Expirar automáticamente bloqueos cuyo tiempo haya concluido
+    ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=timezone.now()).update(is_active=False)
     bans = ActiveBan.objects.filter(is_active=True).select_related('approved_by').prefetch_related('sync_records', 'sync_records__node')
     return render(request, 'mitigation/active_bans.html', {'bans': bans})
 
@@ -159,6 +161,8 @@ def api_node_sync_bans(request):
     except ProxyNode.DoesNotExist:
         return JsonResponse({'error': 'Invalid node API key'}, status=403)
 
+    # Expirar automáticamente bloqueos vencidos antes de enviar la lista al bouncer
+    ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=timezone.now()).update(is_active=False)
     active_bans = ActiveBan.objects.filter(is_active=True)
     ban_ips = [b.client_ip for b in active_bans]
 

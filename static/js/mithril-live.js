@@ -197,6 +197,35 @@ document.addEventListener('DOMContentLoaded', () => {
         // Actualizar tablas
         if (data.nodes) renderNodesTable(data.nodes);
         if (data.candidates) renderCandidates(data.candidates);
+        if (data.recent_logs && tableBody && data.recent_logs.length > 0) {
+          const emptyRow = tableBody.querySelector('td[colspan="7"]');
+          const firstRow = tableBody.querySelector('tr[data-log-id]');
+          const currentTopId = firstRow ? parseInt(firstRow.getAttribute('data-log-id') || '0', 10) : 0;
+          const latestServerId = data.recent_logs[0].id || 0;
+
+          if (emptyRow || tableBody.children.length === 0 || latestServerId > currentTopId) {
+            let rowsHtml = '';
+            data.recent_logs.forEach(event => {
+              const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
+              const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
+              const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
+              const uriDisplay = event.uri ? (event.uri.length > 35 ? event.uri.substring(0, 35) + '...' : event.uri) : '/';
+              const countryDisplay = event.country_name || event.country_code || 'Remoto';
+              rowsHtml += `
+                <tr data-log-id="${event.id || ''}">
+                  <td><span class="${badgeClass}">${badgeText}</span></td>
+                  <td><strong>${event.timestamp || ''}</strong></td>
+                  <td><code>${event.client_ip || ''}</code></td>
+                  <td>${countryDisplay}</td>
+                  <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
+                  <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
+                  <td><code>${event.node || 'Direct'}</code></td>
+                </tr>
+              `;
+            });
+            tableBody.innerHTML = rowsHtml;
+          }
+        }
       })
       .catch(err => {
         console.debug('Error sincronizando live-stats:', err);
@@ -257,6 +286,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const countryDisplay = event.country_name || event.country_code || 'Remoto';
 
           row.className = flashClass;
+          if (event.id) row.setAttribute('data-log-id', event.id);
           row.innerHTML = `
             <td><span class="${badgeClass}">${badgeText}</span></td>
             <td><strong>${event.timestamp || ''}</strong></td>

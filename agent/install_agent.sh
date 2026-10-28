@@ -68,7 +68,13 @@ case "$OS_ID" in
         apt-get install -y -qq python3 ipset iptables curl
         ;;
     rocky|almalinux|rhel|centos|fedora)
-        dnf install -y -q python3 ipset iptables curl
+        dnf install -y -q python3 ipset iptables iptables-nft curl policycoreutils-python-utils
+        if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce)" != "Disabled" ]; then
+            echo -e "${CYAN}   Configurando permisos SELinux para Nginx y Syslog UDP (5140)...${NC}"
+            setsebool -P httpd_can_network_connect 1 2>/dev/null || true
+            setsebool -P nis_enabled 1 2>/dev/null || true
+            semanage port -a -t syslogd_port_t -p udp 5140 2>/dev/null || semanage port -m -t syslogd_port_t -p udp 5140 2>/dev/null || true
+        fi
         ;;
     *)
         echo -e "${YELLOW}   Distribución no estándar detectada ($OS_ID). Intentando gestores conocidos...${NC}"

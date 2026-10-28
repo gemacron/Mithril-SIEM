@@ -55,13 +55,33 @@ class ProxyNode(models.Model):
         self.save(update_fields=['api_key'])
         return self.api_key
 
-    def update_heartbeat(self, rps=0, cpu=0.0, ram=0.0, active_conns=0, nginx_ver=""):
+    def compute_live_rps(self):
+        """Calcula las peticiones por segundo reales basadas en los logs recibidos en los últimos 10s"""
+        try:
+            window_start = timezone.now() - timezone.timedelta(seconds=10)
+            recent_count = self.logs.filter(created_at__gte=window_start).count()
+            if recent_count > 0:
+                return max(1, round(recent_count / 10))
+            return 0
+        except Exception:
+            return self.current_rps
+
+    def update_heartbeat(self, rps=None, cpu=None, ram=None, active_conns=None, nginx_ver=""):
         self.last_heartbeat = timezone.now()
-        self.current_rps = rps
-        if cpu: self.cpu_usage = cpu
-        if ram: self.memory_usage = ram
-        if active_conns: self.active_connections = active_conns
-        if nginx_ver: self.nginx_version = nginx_ver
+        computed_rps = self.compute_live_rps()
+        if rps is not None and rps > 0:
+            self.current_rps = max(rps, computed_rps)
+        else:
+            self.current_rps = computed_rps
+
+        if cpu is not None and cpu > 0:
+            self.cpu_usage = cpu
+        if ram is not None and ram > 0:
+            self.memory_usage = ram
+        if active_conns is not None and active_conns > 0:
+            self.active_connections = active_conns
+        if nginx_ver:
+            self.nginx_version = nginx_ver
 
         if not self.monitoring_enabled:
             self.status = 'MAINTENANCE'
@@ -84,17 +104,22 @@ class ProxyNode(models.Model):
             self.status = 'OFFLINE'
             return self.status
 
-        diff = (timezone.now() - self.last_heartbeat).total_seconds()
+        now = timezone.now()
+        diff = (now - self.last_heartbeat).total_seconds()
+        live_rps = self.compute_live_rps()
+
         if diff > self.heartbeat_timeout_seconds:
-            if self.status != 'OFFLINE':
+            if self.status != 'OFFLINE' or self.current_rps != 0:
                 self.status = 'OFFLINE'
-                self.save(update_fields=['status'])
+                self.current_rps = 0
+                self.save(update_fields=['status', 'current_rps'])
             return 'OFFLINE'
 
-        if self.current_rps >= self.max_rps_alert_threshold:
-            self.status = 'DEGRADED'
-            self.save(update_fields=['status'])
-            return 'DEGRADED'
+        new_status = 'DEGRADED' if live_rps >= self.max_rps_alert_threshold else 'ONLINE'
+        if self.status != new_status or self.current_rps != live_rps:
+            self.status = new_status
+            self.current_rps = live_rps
+            self.save(update_fields=['status', 'current_rps'])
 
         return self.status
 
