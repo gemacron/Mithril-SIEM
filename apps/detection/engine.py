@@ -424,8 +424,8 @@ def resolve_cloudflare_and_real_ip(data):
             if not real_origin_ip:
                 real_origin_ip = cand
 
-    # 2. Si no hubo IP pública externa y la petición NO vino de Cloudflare, registrar IP de la LAN
-    if not real_origin_ip and not cf_node_ip:
+    # 2. Si no hubo IP pública externa, registrar la IP local / LAN del balanceador o cliente privado
+    if not real_origin_ip:
         for cand in all_candidates:
             if cand not in ('127.0.0.1', '::1') and not is_cloudflare_ip(cand):
                 real_origin_ip = cand
@@ -456,7 +456,7 @@ def resolve_cloudflare_and_real_ip(data):
             is_cf = bool(cf_node_ip)
 
     final_real_ip = real_origin_ip if (real_origin_ip and real_origin_ip != cf_node_ip) else ''
-    is_local = is_private_local_ip(final_real_ip or raw_ip) and not is_cf
+    is_local = is_private_local_ip(final_real_ip or raw_ip)
 
     return {
         'is_cloudflare': is_cf,

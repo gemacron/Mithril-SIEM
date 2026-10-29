@@ -127,16 +127,18 @@
               <td>
                 {% if log.real_client_ip and not log.is_real_ip_local %}
                   <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</code>
+                {% elif log.real_client_ip and log.is_real_ip_local %}
+                  <code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / Balanceador">🏢 {{ log.real_client_ip }}</code>
                 {% elif not log.is_cloudflare and not log.is_local_ip %}
                   <code style="color: var(--neon-emerald); font-size: 0.75rem;">{{ log.client_ip }}</code>
-                {% elif log.is_local_ip and not log.is_cloudflare %}
-                  <span style="color: var(--neon-cyan); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada en red privada o balanceador interno">🏢 LAN ({{ log.real_client_ip|default:log.client_ip }})</span>
+                {% elif log.is_local_ip %}
+                  <code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / Balanceador">🏢 {{ log.client_ip }}</code>
                 {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent %}
                   <span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por el monitor de salud de Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>
                 {% elif log.http_method == 'HTTPS' %}
                   <span style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);" title="Paquete TLS ClientHello previo a las cabeceras HTTP">🔒 Handshake TLS</span>
                 {% else %}
-                  <span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición vía nodo Cloudflare sin IP de cliente externo">☁️ Conexión Edge</span>
+                  <span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición vía nodo Cloudflare">☁️ Conexión Edge</span>
                 {% endif %}
               </td>
               <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>

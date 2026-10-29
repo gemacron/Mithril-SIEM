@@ -87,14 +87,11 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!isPrivateLocalIp(event.real_client_ip)) {
         return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 ${event.real_client_ip}</code>`;
       }
-      if (event.is_cloudflare) {
-        return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición vía nodo Cloudflare sin cabecera de cliente externo">☁️ Conexión Edge</span>`;
-      }
-      return `<span style="color: var(--neon-cyan); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada en red privada o balanceador interno">🏢 LAN (${event.real_client_ip})</span>`;
+      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / Balanceador">🏢 ${event.real_client_ip}</code>`;
     }
     if (!event.is_cloudflare) {
       if (isPrivateLocalIp(event.client_ip)) {
-        return `<span style="color: var(--neon-cyan); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición local / balanceador">🏢 LAN (${event.client_ip || '-'})</span>`;
+        return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / Balanceador">🏢 ${event.client_ip || '-'}</code>`;
       }
       return `<code style="color: var(--neon-emerald); font-size: 0.75rem;">${event.client_ip || '-'}</code>`;
     }
@@ -343,20 +340,22 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function applyLocalFilterToDom() {
     if (!tableBody) return;
-    const rows = tableBody.querySelectorAll('tr');
+    const rows = tableBody.querySelectorAll('tr[data-log-id], tr[data-client-ip], tr[data-is-local]');
     rows.forEach(r => {
+      if (!hideLocalIps) {
+        // Al destildar, mostrar inmediatamente todas las filas
+        r.style.display = '';
+        return;
+      }
       const isLocAttr = r.getAttribute('data-is-local');
       const rClientIp = r.getAttribute('data-client-ip');
       const rRealIp = r.getAttribute('data-real-ip');
       let isLocalRow = (isLocAttr === 'true');
       if (rRealIp && isPrivateLocalIp(rRealIp)) isLocalRow = true;
-      if (rClientIp && !r.innerHTML.includes('☁️ CF') && isPrivateLocalIp(rClientIp)) isLocalRow = true;
+      if (rClientIp && isPrivateLocalIp(rClientIp)) isLocalRow = true;
+      if (r.innerText.includes('192.168.') || r.innerText.includes('10.') || r.innerText.includes('🏢')) isLocalRow = true;
 
-      if (isLocalRow) {
-        r.style.display = hideLocalIps ? 'none' : '';
-      } else {
-        r.style.display = '';
-      }
+      r.style.display = isLocalRow ? 'none' : '';
     });
   }
 
@@ -446,7 +445,7 @@ document.addEventListener('DOMContentLoaded', () => {
         emptyRow.parentElement.remove();
       }
       tableBody.insertBefore(fragment, tableBody.firstChild);
-      while (tableBody.children.length > 25) {
+      while (tableBody.children.length > 60) {
         tableBody.removeChild(tableBody.lastChild);
       }
     }
