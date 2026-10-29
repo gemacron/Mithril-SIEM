@@ -23,11 +23,50 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-# 2. Argumentos opcionales o interactivos
-MITHRIL_URL="${1:-}"
-NODE_API_KEY="${2:-}"
-BLOCK_METHOD="${3:-ipset}"
-SYNC_INTERVAL="${4:-15}"
+# 2. Argumentos por flags (--server, --key, --mode, --interval) o posicionales ($1 $2 $3 $4)
+MITHRIL_URL=""
+NODE_API_KEY=""
+BLOCK_METHOD="ipset"
+SYNC_INTERVAL="15"
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --server|-s)
+            MITHRIL_URL="$2"
+            shift 2
+            ;;
+        --key|-k)
+            NODE_API_KEY="$2"
+            shift 2
+            ;;
+        --mode|-m)
+            BLOCK_METHOD="$2"
+            shift 2
+            ;;
+        --interval|-i)
+            SYNC_INTERVAL="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$MITHRIL_URL" ] && [ ${#POSITIONAL[@]} -ge 1 ]; then
+    MITHRIL_URL="${POSITIONAL[0]}"
+fi
+if [ -z "$NODE_API_KEY" ] && [ ${#POSITIONAL[@]} -ge 2 ]; then
+    NODE_API_KEY="${POSITIONAL[1]}"
+fi
+if [ "$BLOCK_METHOD" = "ipset" ] && [ ${#POSITIONAL[@]} -ge 3 ]; then
+    BLOCK_METHOD="${POSITIONAL[2]}"
+fi
+if [ "$SYNC_INTERVAL" = "15" ] && [ ${#POSITIONAL[@]} -ge 4 ]; then
+    SYNC_INTERVAL="${POSITIONAL[3]}"
+fi
 
 if [ -z "$MITHRIL_URL" ]; then
     echo -e -n "${YELLOW}Ingresa la URL de Mithril SIEM (ej. http://192.168.1.100:9900): ${NC}"
@@ -94,15 +133,20 @@ echo -e "\n${CYAN}📂 [3/5] Instalando archivos del agente en /opt/mithril-agen
 mkdir -p /opt/mithril-agent
 mkdir -p /etc/nginx/conf.d
 
-# Si el script se ejecuta dentro del repositorio clonado, copiar directamente
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "$SCRIPT_DIR/mithril_bouncer.py" ]; then
+# Descargar la última versión de mithril_bouncer.py directamente desde el servidor Mithril SIEM (o repositorio local/GitHub)
+echo -e "${CYAN}   Descargando agente mithril_bouncer.py desde $MITHRIL_URL...${NC}"
+if curl -fsSL "$MITHRIL_URL/nodes/mithril_bouncer.py" -o /opt/mithril-agent/mithril_bouncer.py 2>/dev/null && grep -q "Mithril" /opt/mithril-agent/mithril_bouncer.py; then
+    echo -e "${GREEN}   Agente descargado exitosamente desde el servidor Mithril SIEM.${NC}"
+elif [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/mithril_bouncer.py" ]; then
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     cp "$SCRIPT_DIR/mithril_bouncer.py" /opt/mithril-agent/mithril_bouncer.py
+    echo -e "${GREEN}   Agente copiado desde el directorio local.${NC}"
 else
-    echo -e "${YELLOW}   Descargando mithril_bouncer.py desde el repositorio...${NC}"
-    curl -sSL "https://raw.githubusercontent.com/gemacron/Mithril-SIEM/main/agent/mithril_bouncer.py" -o /opt/mithril-agent/mithril_bouncer.py
+    echo -e "${YELLOW}   Descargando mithril_bouncer.py desde GitHub...${NC}"
+    curl -fsSL "https://raw.githubusercontent.com/gemacron/Mithril-SIEM/main/agent/mithril_bouncer.py" -o /opt/mithril-agent/mithril_bouncer.py
 fi
 
+sed -i 's/\r$//' /opt/mithril-agent/mithril_bouncer.py 2>/dev/null || true
 chmod +x /opt/mithril-agent/mithril_bouncer.py
 
 # Crear archivo inicial de lista negra de Nginx vacío para evitar errores de sintaxis

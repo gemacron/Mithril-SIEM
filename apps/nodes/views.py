@@ -1,11 +1,39 @@
+import os
 import json
+from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse
+from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib import messages
 from .models import ProxyNode
 from apps.reports.models import AuditTrail
+
+def download_install_script_view(request):
+    """
+    Sirve el script agent/install_agent.sh con saltos de línea Unix (LF)
+    para que pueda ejecutarse directamente vía:
+    curl -sSL http://<IP>:9900/nodes/install.sh | bash -s -- --server ... --key ...
+    """
+    script_path = os.path.join(settings.BASE_DIR, 'agent', 'install_agent.sh')
+    try:
+        with open(script_path, 'r', encoding='utf-8') as f:
+            content = f.read().replace('\r\n', '\n').replace('\r', '\n')
+        return HttpResponse(content, content_type='text/plain; charset=utf-8')
+    except Exception as e:
+        return HttpResponse(f"#!/usr/bin/env bash\necho 'Error cargando install_agent.sh: {e}'\nexit 1\n", content_type='text/plain; charset=utf-8', status=500)
+
+def download_bouncer_script_view(request):
+    """
+    Sirve el agente Python agent/mithril_bouncer.py con saltos de línea Unix (LF).
+    """
+    script_path = os.path.join(settings.BASE_DIR, 'agent', 'mithril_bouncer.py')
+    try:
+        with open(script_path, 'r', encoding='utf-8') as f:
+            content = f.read().replace('\r\n', '\n').replace('\r', '\n')
+        return HttpResponse(content, content_type='text/plain; charset=utf-8')
+    except Exception as e:
+        return HttpResponse(f"# Error cargando mithril_bouncer.py: {e}\n", content_type='text/plain; charset=utf-8', status=500)
 
 @login_required
 def nodes_list_view(request):
