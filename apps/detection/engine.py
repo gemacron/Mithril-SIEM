@@ -130,6 +130,23 @@ def process_incoming_log(data, node=None):
     risk_to_add = 0
     triggered_events = []
 
+    base_req_details = {
+        'log_id': log.id,
+        'node': node.name if node else 'Direct',
+        'http_method': log.http_method,
+        'uri': log.uri,
+        'query_params': log.query_params,
+        'status_code': log.status_code,
+        'bytes_sent': log.bytes_sent,
+        'latency_ms': log.latency_ms,
+        'user_agent': log.user_agent,
+        'referer': log.referer,
+        'country_code': log.country_code,
+        'country_name': log.country_name,
+        'city': log.city,
+        'headers': log.raw_headers or {},
+    }
+
     for rule in active_rules:
         window_start = now - timedelta(seconds=max(1, rule.threshold_seconds))
 
@@ -148,7 +165,7 @@ def process_incoming_log(data, node=None):
                         client_ip=client_ip,
                         severity='HIGH',
                         matched_payload=f"{recent_auth_fails} respuestas {log.status_code} en {log.uri} ({rule.threshold_seconds}s)",
-                        details={'count_auth_fails': recent_auth_fails, 'uri': log.uri, 'status_code': log.status_code}
+                        details={**base_req_details, 'count_auth_fails': recent_auth_fails}
                     )
                     triggered_events.append(event)
                     risk_to_add += rule.risk_points
@@ -168,7 +185,7 @@ def process_incoming_log(data, node=None):
                         client_ip=client_ip,
                         severity='HIGH',
                         matched_payload=f"{recent_404_count} errores 404 en {rule.threshold_seconds}s ({log.uri})",
-                        details={'count_404': recent_404_count, 'uri': log.uri}
+                        details={**base_req_details, 'count_404': recent_404_count}
                     )
                     triggered_events.append(event)
                     risk_to_add += rule.risk_points
@@ -186,7 +203,7 @@ def process_incoming_log(data, node=None):
                     client_ip=client_ip,
                     severity='CRITICAL' if rule.risk_points >= 60 else 'HIGH',
                     matched_payload=f"Ráfaga DoS: {recent_req_count} reqs en {rule.threshold_seconds}s",
-                    details={'request_count': recent_req_count, 'window_seconds': rule.threshold_seconds}
+                    details={**base_req_details, 'request_count': recent_req_count, 'window_seconds': rule.threshold_seconds}
                 )
                 triggered_events.append(event)
                 risk_to_add += rule.risk_points
@@ -216,7 +233,7 @@ def process_incoming_log(data, node=None):
                             client_ip=client_ip,
                             severity='LOW',
                             matched_payload=f"[{recent_matches}/{rule.threshold_count}] {matched_text}",
-                            details={'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
+                            details={**base_req_details, 'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
                         )
                         should_trigger = False
 
@@ -228,7 +245,7 @@ def process_incoming_log(data, node=None):
                         client_ip=client_ip,
                         severity=severity,
                         matched_payload=matched_text,
-                        details={'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
+                        details={**base_req_details, 'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
                     )
                     triggered_events.append(event)
                     risk_to_add += rule.risk_points
@@ -266,7 +283,9 @@ def process_incoming_log(data, node=None):
             if not created:
                 candidate.accumulated_score = reputation.current_risk_score
                 candidate.suggested_reason = reason_text
-                candidate.save(update_fields=['accumulated_score', 'suggested_reason'])
+                if last_event:
+                    candidate.trigger_event = last_event
+                candidate.save(update_fields=['accumulated_score', 'suggested_reason', 'trigger_event'])
 
             # Notificar vía Telegram si es un candidato nuevo
             if created:

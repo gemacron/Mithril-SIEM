@@ -152,11 +152,19 @@
                 </span>
                 <span class="badge critical">Riesgo: {{ c.accumulated_score }}/100</span>
               </div>
-              <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+              <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.4rem;">
                 {{ c.suggested_reason|truncatechars:90 }}
               </p>
+              {% if c.trigger_event and c.trigger_event.matched_payload %}
+              <div style="font-size: 0.7rem; font-family: var(--font-mono); color: var(--neon-amber); background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); padding: 0.2rem 0.45rem; border-radius: 4px; margin-bottom: 0.65rem; word-break: break-all;">
+                ⚡ {{ c.trigger_event.matched_payload|truncatechars:55 }}
+              </div>
+              {% endif %}
               
-              <div style="display: flex; gap: 0.5rem;">
+              <div style="display: flex; gap: 0.4rem;">
+                <button type="button" class="btn btn-cyan" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" onclick="openCandidateInspectModal({{ c.id }})" title="Ver qué intentó hacer y todos los datos de la petición">
+                  🔍 Info
+                </button>
                 <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}" style="flex: 1;">
                   {% csrf_token %}
                   <input type="hidden" name="duration_hours" value="24">

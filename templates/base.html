@@ -64,6 +64,281 @@
     {{ MITHRIL_APP_NAME }} &copy; 2026 — Plataforma SIEM Táctica de Detección y Mitigación para Nginx Proxies.
   </footer>
 
+  <!-- Modal Global de Inspección Forense de Candidato a Bloqueo -->
+  <div id="candidateInspectModal" style="display: none; position: fixed; inset: 0; background: rgba(4, 7, 15, 0.88); backdrop-filter: blur(5px); z-index: 9999; align-items: center; justify-content: center; padding: 1.25rem;">
+    <div class="panel" style="width: 100%; max-width: 1020px; max-height: 92vh; overflow-y: auto; border: 1px solid var(--neon-cyan); box-shadow: 0 0 35px rgba(0, 229, 255, 0.22);">
+      <div class="panel-header" style="border-bottom: 1px solid var(--border-dim); position: sticky; top: 0; background: #0a0f1d; z-index: 10;">
+        <div class="panel-title" style="display: flex; align-items: center; gap: 0.6rem;">
+          <span>🔍</span>
+          <span>INSPECCIÓN FORENSE DE PETICIÓN Y AMENAZA — IP: <code id="inspIpTitle" style="color: var(--neon-cyan); font-size: 1rem;">...</code></span>
+          <span id="inspScoreBadge" class="badge critical">Riesgo: --/100</span>
+        </div>
+        <button type="button" class="btn btn-dim" style="padding: 0.25rem 0.65rem;" onclick="closeCandidateInspectModal()">✕ Cerrar</button>
+      </div>
+
+      <div class="panel-body" style="padding: 1.25rem; display: flex; flex-direction: column; gap: 1.15rem;">
+        <!-- 1. ¿Qué intentó hacer? Resumen de la Amenaza -->
+        <div style="background: rgba(239, 68, 68, 0.07); border: 1px solid rgba(239, 68, 68, 0.35); border-left: 4px solid var(--neon-crimson); border-radius: 6px; padding: 1rem;">
+          <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+            <div>
+              <span style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em;">¿QUÉ ESTÁ INTENTANDO HACER ESTA IP?</span>
+              <div style="font-size: 1rem; font-weight: 700; color: var(--text-main); margin-top: 0.15rem;">
+                <span id="inspRuleCode" class="badge high" style="margin-right: 0.4rem;">RULE</span>
+                <span id="inspRuleName">Cargando análisis...</span>
+              </div>
+            </div>
+            <div style="text-align: right; font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">
+              <div>Origen: <strong id="inspGeo" style="color: var(--text-main);">-</strong></div>
+              <div>Infracciones Acumuladas: <strong id="inspTotalViolations" style="color: var(--neon-amber);">0</strong></div>
+            </div>
+          </div>
+
+          <p id="inspRuleDesc" style="font-size: 0.82rem; color: var(--text-muted); margin-bottom: 0.65rem;"></p>
+
+          <div style="background: rgba(0, 0, 0, 0.45); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 4px; padding: 0.6rem 0.8rem;">
+            <div style="font-size: 0.68rem; color: var(--neon-amber); text-transform: uppercase; font-weight: 700; margin-bottom: 0.25rem;">
+              ⚡ PAYLOAD / EVIDENCIA EXACTA QUE DISPARÓ LA ALERTA:
+            </div>
+            <code id="inspMatchedPayload" style="font-family: var(--font-mono); font-size: 0.85rem; color: #fde68a; word-break: break-all;">-</code>
+          </div>
+        </div>
+
+        <!-- 2. Vista Completa de la Petición HTTP (Raw HTTP + Campos Desglosados) -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <!-- Columna Izquierda: Reconstrucción Raw HTTP -->
+          <div style="background: rgba(8, 12, 22, 0.9); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.9rem; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+              <span style="font-size: 0.75rem; font-weight: 700; color: var(--neon-cyan);">📡 CAPTURA RAW DE LA PETICIÓN HTTP</span>
+              <span id="inspReqTimestamp" style="font-size: 0.7rem; font-family: var(--font-mono); color: var(--text-dim);">-</span>
+            </div>
+            <pre id="inspRawHttp" style="margin: 0; padding: 0.85rem; background: #050811; border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 4px; color: #a5f3fc; font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-all; flex: 1; min-height: 190px; max-height: 280px; overflow-y: auto;"></pre>
+          </div>
+
+          <!-- Columna Derecha: Desglose de Todos los Atributos de la Petición -->
+          <div style="background: rgba(8, 12, 22, 0.9); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.9rem;">
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--neon-emerald); margin-bottom: 0.5rem;">
+              📋 DETALLE COMPLETO DE CAMPOS DE LA PETICIÓN
+            </div>
+            <div style="display: grid; grid-template-columns: 130px 1fr; row-gap: 0.45rem; column-gap: 0.6rem; font-size: 0.78rem;">
+              <span style="color: var(--text-dim);">Método / Código:</span>
+              <div>
+                <span id="inspMethod" class="badge medium" style="font-family: var(--font-mono);">GET</span>
+                <span id="inspStatus" class="badge high" style="font-family: var(--font-mono); margin-left: 0.35rem;">200</span>
+                <span style="color: var(--text-dim); font-size: 0.72rem; margin-left: 0.4rem;">Nodo: <strong id="inspNode" style="color: var(--text-main);">-</strong></span>
+              </div>
+
+              <span style="color: var(--text-dim);">Host / Destino:</span>
+              <code id="inspHost" style="color: var(--text-main); word-break: break-all;">-</code>
+
+              <span style="color: var(--text-dim);">URI Solicitada:</span>
+              <code id="inspUri" style="color: var(--neon-cyan); word-break: break-all;">-</code>
+
+              <span style="color: var(--text-dim);">Query Params:</span>
+              <code id="inspQuery" style="color: #fde68a; word-break: break-all;">-</code>
+
+              <span style="color: var(--text-dim);">URI Decodificada:</span>
+              <code id="inspDecoded" style="color: #fca5a5; word-break: break-all;">-</code>
+
+              <span style="color: var(--text-dim);">User-Agent:</span>
+              <code id="inspUserAgent" style="color: var(--text-muted); word-break: break-all; font-size: 0.73rem;">-</code>
+
+              <span style="color: var(--text-dim);">Referer:</span>
+              <code id="inspReferer" style="color: var(--text-muted); word-break: break-all; font-size: 0.73rem;">-</code>
+
+              <span style="color: var(--text-dim);">Tamaño / Latencia:</span>
+              <span id="inspMetrics" style="font-family: var(--font-mono); color: var(--text-main);">-</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Historial de Reglas / Alertas Disparadas por esta IP -->
+        <div>
+          <div style="font-size: 0.78rem; font-weight: 700; color: var(--neon-amber); margin-bottom: 0.45rem;">
+            🚨 HISTORIAL DE REGLAS Y HEURÍSTICAS DISPARADAS POR ESTA IP
+          </div>
+          <div style="max-height: 155px; overflow-y: auto; border: 1px solid var(--border-dim); border-radius: 6px;">
+            <table class="terminal-table">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Regla</th>
+                  <th>Severidad</th>
+                  <th>Payload Detectado</th>
+                  <th>Ruta (URI)</th>
+                </tr>
+              </thead>
+              <tbody id="inspEventsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 4. Últimas Peticiones HTTP Realizadas por esta IP (Interactivo) -->
+        <div>
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.45rem;">
+            <span style="font-size: 0.78rem; font-weight: 700; color: var(--neon-cyan);">
+              🌐 SECUENCIA DE PETICIONES HTTP RECIENTES DE ESTA IP (CLIC EN CUALQUIER FILA PARA VER SU PETICIÓN ARRIBA)
+            </span>
+          </div>
+          <div style="max-height: 185px; overflow-y: auto; border: 1px solid var(--border-dim); border-radius: 6px;">
+            <table class="terminal-table">
+              <thead>
+                <tr>
+                  <th>Hora</th>
+                  <th>Método</th>
+                  <th>URI + Parámetros</th>
+                  <th>Código HTTP</th>
+                  <th>User-Agent</th>
+                  <th>Nodo</th>
+                </tr>
+              </thead>
+              <tbody id="inspRequestsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- 5. Pie de Decisión Directa del Operador -->
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-dim);">
+          <span style="font-size: 0.76rem; color: var(--text-dim);">
+            Revisa el payload y las cabeceras antes de aplicar el bloqueo en los proxies Nginx.
+          </span>
+          <div style="display: flex; gap: 0.6rem; align-items: center;">
+            <form id="inspApproveForm" method="POST" action="" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+              <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+              <select name="duration_hours" class="form-input" style="padding: 0.35rem 0.6rem; font-size: 0.78rem; width: auto;">
+                <option value="24">Bloquear 24 Horas</option>
+                <option value="1">Bloquear 1 Hora</option>
+                <option value="168">Bloquear 7 Días</option>
+                <option value="0">Bloquear Permanente</option>
+              </select>
+              <button type="submit" class="btn btn-crimson" style="padding: 0.4rem 0.9rem;">
+                🛑 Aprobar Bloqueo
+              </button>
+            </form>
+            <form id="inspDismissForm" method="POST" action="">
+              <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+              <button type="submit" class="btn btn-dim" style="padding: 0.4rem 0.85rem;">
+                ✕ Descartar Candidato
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    window._inspRecentRequests = [];
+
+    function renderSelectedRequestDetails(req) {
+      if (!req) return;
+      document.getElementById('inspReqTimestamp').textContent = req.timestamp || '-';
+      document.getElementById('inspRawHttp').textContent = req.raw_http || '-';
+      document.getElementById('inspMethod').textContent = req.http_method || 'GET';
+      const stEl = document.getElementById('inspStatus');
+      stEl.textContent = req.status_code !== undefined ? req.status_code : '-';
+      stEl.className = (req.status_code >= 400) ? 'badge critical' : 'badge safe';
+      document.getElementById('inspNode').textContent = req.node || 'Direct';
+      document.getElementById('inspHost').textContent = req.host || '-';
+      document.getElementById('inspUri').textContent = req.uri || '/';
+      document.getElementById('inspQuery').textContent = req.query_params || '(ninguno)';
+      document.getElementById('inspDecoded').textContent = req.decoded_path || req.full_path || '/';
+      document.getElementById('inspUserAgent').textContent = req.user_agent || '(Sin User-Agent)';
+      document.getElementById('inspReferer').textContent = req.referer || '-';
+      document.getElementById('inspMetrics').textContent = `${req.bytes_sent || 0} bytes | ${req.latency_ms || 0} ms`;
+    }
+
+    function selectInspectRequestIndex(idx) {
+      const req = window._inspRecentRequests[idx];
+      if (req) {
+        renderSelectedRequestDetails(req);
+      }
+    }
+
+    function openCandidateInspectModal(candidateId) {
+      const modal = document.getElementById('candidateInspectModal');
+      if (!modal) return;
+      modal.style.display = 'flex';
+
+      document.getElementById('inspIpTitle').textContent = 'Cargando...';
+      document.getElementById('inspRuleName').textContent = 'Consultando evidencia forense...';
+      document.getElementById('inspRawHttp').textContent = 'Cargando petición HTTP...';
+      document.getElementById('inspApproveForm').action = `/mitigation/candidates/${candidateId}/approve/`;
+      document.getElementById('inspDismissForm').action = `/mitigation/candidates/${candidateId}/dismiss/`;
+
+      fetch(`/mitigation/candidates/${candidateId}/inspect/`)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then(data => {
+          const c = data.candidate || {};
+          const t = data.trigger || {};
+          const p = data.primary_request || {};
+          window._inspRecentRequests = data.recent_requests || [p];
+
+          document.getElementById('inspIpTitle').textContent = c.client_ip || '-';
+          document.getElementById('inspScoreBadge').textContent = `Riesgo: ${c.accumulated_score || 0}/100`;
+          document.getElementById('inspGeo').textContent = `${c.country_name || '-'} (${c.city || '-'})`;
+          document.getElementById('inspTotalViolations').textContent = c.total_violations || 1;
+
+          document.getElementById('inspRuleCode').textContent = t.rule_code || 'HEURISTIC';
+          document.getElementById('inspRuleName').textContent = t.rule_name || 'Actividad Maliciosa Detectada';
+          document.getElementById('inspRuleDesc').textContent = `${t.rule_description || ''} — ${c.suggested_reason || ''}`;
+          document.getElementById('inspMatchedPayload').textContent = t.matched_payload || '-';
+
+          renderSelectedRequestDetails(p);
+
+          // Renderizar tabla de eventos disparados
+          const evBody = document.getElementById('inspEventsTableBody');
+          const events = data.security_events || [];
+          if (events.length === 0) {
+            evBody.innerHTML = '<tr><td colspan="5" style="text-align:center; color: var(--text-dim);">Sin eventos adicionales registrados.</td></tr>';
+          } else {
+            evBody.innerHTML = events.map(ev => `
+              <tr>
+                <td style="font-family: var(--font-mono); font-size: 0.72rem;">${ev.timestamp}</td>
+                <td><span class="badge high">${ev.rule_code}</span> <span style="font-size: 0.72rem;">${ev.rule_name}</span></td>
+                <td><span class="badge ${ev.severity === 'CRITICAL' ? 'critical' : 'high'}">${ev.severity}</span></td>
+                <td><code style="color: #fde68a; font-size: 0.74rem; word-break: break-all;">${ev.matched_payload || '-'}</code></td>
+                <td><code style="color: var(--neon-cyan); font-size: 0.74rem; word-break: break-all;">${ev.uri || '/'}</code></td>
+              </tr>
+            `).join('');
+          }
+
+          // Renderizar tabla de peticiones HTTP recientes
+          const reqBody = document.getElementById('inspRequestsTableBody');
+          const reqs = window._inspRecentRequests;
+          if (!reqs || reqs.length === 0) {
+            reqBody.innerHTML = '<tr><td colspan="6" style="text-align:center; color: var(--text-dim);">Sin peticiones registradas.</td></tr>';
+          } else {
+            reqBody.innerHTML = reqs.map((r, i) => `
+              <tr style="cursor: pointer;" onclick="selectInspectRequestIndex(${i})" title="Haz clic para inspeccionar esta petición arriba">
+                <td style="font-family: var(--font-mono); font-size: 0.72rem;">${r.timestamp || '-'}</td>
+                <td><span style="color: var(--neon-cyan); font-weight: 700; font-family: var(--font-mono);">${r.http_method || 'GET'}</span></td>
+                <td><code style="font-size: 0.74rem; word-break: break-all; color: var(--text-main);">${r.full_path || r.uri || '/'}</code></td>
+                <td style="font-family: var(--font-mono); font-weight: 700; color: ${r.status_code >= 400 ? 'var(--neon-crimson)' : 'var(--neon-emerald)'};">${r.status_code}</td>
+                <td style="font-size: 0.72rem; color: var(--text-muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${r.user_agent || '-'}</td>
+                <td><code>${r.node || 'Direct'}</code></td>
+              </tr>
+            `).join('');
+          }
+        })
+        .catch(err => {
+          document.getElementById('inspRuleName').textContent = 'Error cargando detalles de la petición.';
+          document.getElementById('inspRawHttp').textContent = String(err);
+        });
+    }
+
+    function closeCandidateInspectModal() {
+      const modal = document.getElementById('candidateInspectModal');
+      if (modal) modal.style.display = 'none';
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') closeCandidateInspectModal();
+    });
+  </script>
+
   {% block extra_scripts %}{% endblock %}
 </body>
 </html>

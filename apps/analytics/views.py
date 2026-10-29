@@ -158,16 +158,20 @@ def api_live_stats(request):
         for n in nodes
     ]
 
-    candidates_data = [
-        {
+    candidates_data = []
+    for c in BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule').order_by('-created_at')[:5]:
+        ev = c.trigger_event
+        ev_details = ev.details if (ev and isinstance(ev.details, dict)) else {}
+        candidates_data.append({
             'id': c.id,
             'ip': c.client_ip,
             'score': c.accumulated_score,
             'reason': c.suggested_reason,
+            'rule_code': ev.rule.code if (ev and ev.rule) else 'HEURISTIC',
+            'payload': ev.matched_payload if ev else '',
+            'uri': ev_details.get('uri', ''),
             'detected_at': c.created_at.strftime('%H:%M:%S')
-        }
-        for c in BanCandidate.objects.filter(status='PENDING').order_by('-created_at')[:5]
-    ]
+        })
 
     return JsonResponse({
         'total_rps': total_rps,

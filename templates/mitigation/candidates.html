@@ -32,15 +32,30 @@
         {% for c in candidates %}
         <tr>
           <td>
-            <strong style="color: var(--text-main); font-size: 0.95rem;">{{ c.client_ip }}</strong>
+            <strong style="color: var(--text-main); font-size: 0.95rem; font-family: var(--font-mono);">{{ c.client_ip }}</strong>
+            {% if c.trigger_event and c.trigger_event.node %}
+              <div style="font-size: 0.7rem; color: var(--text-dim);">Nodo: {{ c.trigger_event.node.name }}</div>
+            {% endif %}
           </td>
           <td>
             <span class="badge critical" style="font-size: 0.8rem;">
               {{ c.accumulated_score }} / 100
             </span>
           </td>
-          <td style="color: var(--text-muted); max-width: 320px;">
-            {{ c.suggested_reason }}
+          <td style="color: var(--text-muted); max-width: 360px;">
+            <div>{{ c.suggested_reason }}</div>
+            {% if c.trigger_event %}
+              {% if c.trigger_event.matched_payload %}
+                <div style="margin-top: 0.3rem; font-size: 0.72rem; font-family: var(--font-mono); color: var(--neon-amber); background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); padding: 0.2rem 0.45rem; border-radius: 4px; word-break: break-all;">
+                  ⚡ Payload: {{ c.trigger_event.matched_payload|truncatechars:70 }}
+                </div>
+              {% endif %}
+              {% if c.trigger_event.details.uri %}
+                <div style="margin-top: 0.2rem; font-size: 0.7rem; font-family: var(--font-mono); color: var(--neon-cyan);">
+                  URI: {{ c.trigger_event.details.uri|truncatechars:60 }}
+                </div>
+              {% endif %}
+            {% endif %}
           </td>
           <td>
             {% if c.trigger_event and c.trigger_event.rule %}
@@ -54,8 +69,12 @@
             {{ c.created_at|date:"Y-m-d H:i:s" }}
           </td>
           <td style="text-align: right;">
-            <div style="display: inline-flex; gap: 0.5rem;">
-              <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}">
+            <div style="display: inline-flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; justify-content: flex-end;">
+              <button type="button" class="btn btn-cyan" style="padding: 0.35rem 0.7rem; font-size: 0.75rem;" onclick="openCandidateInspectModal({{ c.id }})" title="Inspeccionar qué intentó hacer y ver toda la petición HTTP">
+                🔍 Info / Petición
+              </button>
+
+              <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}" style="display: inline-flex; gap: 0.35rem; align-items: center;">
                 {% csrf_token %}
                 <select name="duration_hours" class="form-input" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; width: auto; display: inline-block;">
                   <option value="24">Bloquear 24 Horas</option>

@@ -5,6 +5,7 @@ app_name = 'mitigation'
 
 urlpatterns = [
     path('candidates/', views.candidates_list_view, name='candidates'),
+    path('candidates/<int:candidate_id>/inspect/', views.candidate_inspect_api_view, name='inspect_candidate'),
     path('candidates/<int:candidate_id>/approve/', views.approve_candidate_view, name='approve_candidate'),
     path('candidates/<int:candidate_id>/dismiss/', views.dismiss_candidate_view, name='dismiss_candidate'),
     path('active-bans/', views.active_bans_list_view, name='active_bans'),

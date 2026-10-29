@@ -129,6 +129,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const scoreBadge = c.score >= 80 ? 'badge critical' : 'badge high';
       const reason = c.reason || 'Detección de patrones anómalos o escaneo sospechoso.';
       const shortReason = reason.length > 90 ? reason.substring(0, 90) + '...' : reason;
+      const payloadHtml = c.payload
+        ? `<div style="font-size: 0.7rem; font-family: var(--font-mono); color: var(--neon-amber); background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); padding: 0.2rem 0.45rem; border-radius: 4px; margin-bottom: 0.65rem; word-break: break-all;">⚡ ${c.payload.length > 55 ? c.payload.substring(0, 55) + '...' : c.payload}</div>`
+        : '';
 
       html += `
         <div style="background: rgba(13, 18, 31, 0.7); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.85rem;">
@@ -138,18 +141,22 @@ document.addEventListener('DOMContentLoaded', () => {
             </span>
             <span class="${scoreBadge}">Riesgo: ${c.score}/100</span>
           </div>
-          <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.75rem;">
+          <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.4rem;">
             ${shortReason}
           </p>
-          <div style="display: flex; gap: 0.5rem;">
-            <form method="POST" action="/mitigation/candidates/approve/${c.id}/" style="flex: 1;">
+          ${payloadHtml}
+          <div style="display: flex; gap: 0.4rem;">
+            <button type="button" class="btn btn-cyan" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" onclick="openCandidateInspectModal(${c.id})" title="Ver qué intentó hacer y todos los datos de la petición">
+              🔍 Info
+            </button>
+            <form method="POST" action="/mitigation/candidates/${c.id}/approve/" style="flex: 1;">
               <input type="hidden" name="csrfmiddlewaretoken" value="${csrfToken}">
               <input type="hidden" name="duration_hours" value="24">
               <button type="submit" class="btn btn-crimson" style="width: 100%; justify-content: center; font-size: 0.75rem; padding: 0.35rem 0.6rem;">
                 🛑 Bloquear (24h)
               </button>
             </form>
-            <form method="POST" action="/mitigation/candidates/dismiss/${c.id}/">
+            <form method="POST" action="/mitigation/candidates/${c.id}/dismiss/">
               <input type="hidden" name="csrfmiddlewaretoken" value="${csrfToken}">
               <button type="submit" class="btn btn-dim" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" title="Descartar">
                 ✕ Descartar
