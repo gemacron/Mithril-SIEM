@@ -35,11 +35,22 @@
             <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
               <strong style="color: var(--text-main); font-size: 0.95rem; font-family: var(--font-mono);">{{ c.client_ip }}</strong>
               {% if c.is_cloudflare %}
-                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono);">☁️ CLOUDFLARE</span>
+                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono);" title="Nodo Edge de Cloudflare detectado dinámicamente ({{ c.cloudflare_ip|default:c.client_ip }})">☁️ NODO CLOUDFLARE</span>
               {% endif %}
             </div>
+            {% if c.real_client_ip %}
+              <div style="margin-top: 0.28rem;">
+                <span style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.55); font-size: 0.68rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px; font-family: var(--font-mono); display: inline-block;">
+                  🎯 IP Real Cliente: {{ c.real_client_ip }}
+                </span>
+              </div>
+            {% elif c.is_cloudflare %}
+              <div style="font-size: 0.68rem; color: #f6821f; margin-top: 0.2rem; font-family: var(--font-mono);">
+                ↳ Nodo Edge CF (Sin cabecera CF-Connecting-IP en este log)
+              </div>
+            {% endif %}
             {% if c.trigger_event and c.trigger_event.node %}
-              <div style="font-size: 0.7rem; color: var(--text-dim);">Nodo: {{ c.trigger_event.node.name }}</div>
+              <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.15rem;">Nodo: {{ c.trigger_event.node.name }}</div>
             {% endif %}
           </td>
           <td>
@@ -79,8 +90,14 @@
                 🔍 Info / Petición
               </button>
 
-              <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}" style="display: inline-flex; gap: 0.35rem; align-items: center;">
+              <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}" style="display: inline-flex; gap: 0.35rem; align-items: center; flex-wrap: wrap;">
                 {% csrf_token %}
+                {% if c.real_client_ip %}
+                <select name="target_ip" class="form-input" style="padding: 0.25rem 0.5rem; font-size: 0.73rem; width: auto; border-color: rgba(0, 229, 255, 0.5); color: #00e5ff;" title="Elige si deseas bloquear la IP real del cliente o la IP del nodo Cloudflare">
+                  <option value="{{ c.real_client_ip }}">🎯 Bloquear IP Real ({{ c.real_client_ip }})</option>
+                  <option value="{{ c.client_ip }}">☁️ Bloquear Nodo CF ({{ c.client_ip }})</option>
+                </select>
+                {% endif %}
                 <select name="duration_hours" class="form-input" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; width: auto; display: inline-block;">
                   <option value="24">Bloquear 24 Horas</option>
                   <option value="1">Bloquear 1 Hora</option>

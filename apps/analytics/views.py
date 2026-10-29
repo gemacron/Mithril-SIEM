@@ -7,7 +7,28 @@ from datetime import timedelta
 from apps.nodes.models import ProxyNode
 from apps.mitigation.models import BanCandidate, ActiveBan
 from apps.detection.models import TrafficLog, SecurityEvent
-from apps.detection.engine import is_cloudflare_ip, resolve_geoip
+from apps.detection.engine import is_cloudflare_ip, resolve_geoip, extract_log_ip_meta, get_cloudflare_sync_status
+
+def _enrich_candidate_cf(c):
+    ev = c.trigger_event
+    ev_details = ev.details if (ev and isinstance(ev.details, dict)) else {}
+    meta = extract_log_ip_meta(c.client_ip, ev_details)
+    if meta['is_cloudflare'] and not meta['real_client_ip']:
+        # Buscar en los últimos logs de esta IP si alguno trajo la IP real en raw_headers
+        recent_with_real = (
+            TrafficLog.objects.filter(client_ip=c.client_ip)
+            .exclude(raw_headers={})
+            .order_by('-created_at')[:10]
+        )
+        for rl in recent_with_real:
+            sub_meta = extract_log_ip_meta(rl.client_ip, rl.raw_headers)
+            if sub_meta['real_client_ip']:
+                meta['real_client_ip'] = sub_meta['real_client_ip']
+                break
+    c.is_cloudflare = meta['is_cloudflare']
+    c.cloudflare_ip = meta['cloudflare_ip']
+    c.real_client_ip = meta['real_client_ip']
+    return meta
 
 @login_required
 def dashboard_view(request):
@@ -17,7 +38,7 @@ def dashboard_view(request):
 
     candidates = list(BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule')[:5])
     for c in candidates:
-        c.is_cloudflare = is_cloudflare_ip(c.client_ip)
+        _enrich_candidate_cf(c)
     recent_events = SecurityEvent.objects.select_related('rule', 'node').order_by('-created_at')[:8]
 
     now = timezone.now()
@@ -36,13 +57,17 @@ def dashboard_view(request):
 
     for log in recent_logs:
         log.is_threat = (log.client_ip in threat_ips) or (log.status_code >= 400)
-        log.is_cloudflare = is_cloudflare_ip(log.client_ip)
+        meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
+        log.is_cloudflare = meta['is_cloudflare']
+        log.cloudflare_ip = meta['cloudflare_ip']
+        log.real_client_ip = meta['real_client_ip']
 
     total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
     threats_today = SecurityEvent.objects.filter(created_at__gte=today_start).count()
     online_nodes_count = sum(1 for n in nodes if n.status == 'ONLINE')
     pending_candidates_count = BanCandidate.objects.filter(status='PENDING').count()
     active_bans_count = ActiveBan.objects.filter(is_active=True).count()
+    cf_status = get_cloudflare_sync_status()
 
     context = {
         'nodes': nodes,
@@ -54,6 +79,7 @@ def dashboard_view(request):
         'recent_logs': recent_logs,
         'total_logs_today': total_logs_today,
         'threats_today': threats_today,
+        'cf_status': cf_status,
     }
     return render(request, 'dashboard/index.html', context)
 
@@ -79,7 +105,7 @@ def api_map_data(request):
     raw_points = list(
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(latitude__isnull=True)
-        .values('latitude', 'longitude', 'country_name', 'client_ip', 'status_code')
+        .values('latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers')
         .order_by('-created_at')[:80]
     )
     point_ips = {p['client_ip'] for p in raw_points}
@@ -100,8 +126,11 @@ def api_map_data(request):
             p['latitude'] = re_geo['latitude']
             p['longitude'] = re_geo['longitude']
             p['country_name'] = re_geo['country_name']
+        meta = extract_log_ip_meta(p['client_ip'], p.pop('raw_headers', {}))
         p['is_threat'] = (p['client_ip'] in threat_ips) or (p['status_code'] >= 400)
-        p['is_cloudflare'] = is_cloudflare_ip(p['client_ip'])
+        p['is_cloudflare'] = meta['is_cloudflare']
+        p['cloudflare_ip'] = meta['cloudflare_ip']
+        p['real_client_ip'] = meta['real_client_ip']
         recent_points.append(p)
 
     proxy_nodes = [
@@ -155,6 +184,7 @@ def api_live_stats(request):
         if lat is not None and abs(lat - (-34.6037)) < 0.01 and abs(lon - (-58.3816)) < 0.01:
             re_geo = resolve_geoip(log.client_ip)
             lat, lon = re_geo['latitude'], re_geo['longitude']
+        meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
         recent_logs_data.append({
             'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
@@ -168,7 +198,9 @@ def api_live_stats(request):
             'longitude': lon,
             'node': log.node.name if log.node else 'Direct',
             'is_threat': (log.client_ip in threat_ips) or (log.status_code >= 400),
-            'is_cloudflare': is_cloudflare_ip(log.client_ip),
+            'is_cloudflare': meta['is_cloudflare'],
+            'cloudflare_ip': meta['cloudflare_ip'],
+            'real_client_ip': meta['real_client_ip'],
         })
 
     nodes_data = [
@@ -191,6 +223,7 @@ def api_live_stats(request):
     for c in BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule').order_by('-created_at')[:5]:
         ev = c.trigger_event
         ev_details = ev.details if (ev and isinstance(ev.details, dict)) else {}
+        c_meta = _enrich_candidate_cf(c)
         candidates_data.append({
             'id': c.id,
             'ip': c.client_ip,
@@ -199,7 +232,9 @@ def api_live_stats(request):
             'rule_code': ev.rule.code if (ev and ev.rule) else 'HEURISTIC',
             'payload': ev.matched_payload if ev else '',
             'uri': ev_details.get('uri', ''),
-            'is_cloudflare': is_cloudflare_ip(c.client_ip),
+            'is_cloudflare': c_meta['is_cloudflare'],
+            'cloudflare_ip': c_meta['cloudflare_ip'],
+            'real_client_ip': c_meta['real_client_ip'],
             'detected_at': c.created_at.strftime('%H:%M:%S')
         })
 

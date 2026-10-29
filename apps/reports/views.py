@@ -5,7 +5,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse, JsonResponse
 from .models import AuditTrail
 from apps.detection.models import SecurityEvent, TrafficLog
-from apps.detection.engine import is_cloudflare_ip
+from apps.detection.engine import extract_log_ip_meta
 
 @login_required
 def reports_index_view(request):
@@ -24,11 +24,17 @@ def reports_index_view(request):
     total_traffic_count = traffic_qs.count()
     recent_traffic = list(traffic_qs[:100])
     for log in recent_traffic:
-        log.is_cloudflare = is_cloudflare_ip(log.client_ip)
+        meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
+        log.is_cloudflare = meta['is_cloudflare']
+        log.cloudflare_ip = meta['cloudflare_ip']
+        log.real_client_ip = meta['real_client_ip']
     audit_records = AuditTrail.objects.select_related('user')[:50]
     recent_events = list(SecurityEvent.objects.select_related('rule', 'node')[:50])
     for ev in recent_events:
-        ev.is_cloudflare = is_cloudflare_ip(ev.client_ip)
+        meta = extract_log_ip_meta(ev.client_ip, ev.details if isinstance(ev.details, dict) else {})
+        ev.is_cloudflare = meta['is_cloudflare']
+        ev.cloudflare_ip = meta['cloudflare_ip']
+        ev.real_client_ip = meta['real_client_ip']
 
     return render(request, 'reports/index.html', {
         'audit_records': audit_records,

@@ -72,6 +72,7 @@
           <span>🔍</span>
           <span>INSPECCIÓN FORENSE DE PETICIÓN Y AMENAZA — IP: <code id="inspIpTitle" style="color: var(--neon-cyan); font-size: 1rem;">...</code></span>
           <span id="inspCfBadge" style="display: none; background: rgba(243, 128, 32, 0.2); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.65); font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 4px; font-family: var(--font-mono);">☁️ CLOUDFLARE CDN</span>
+          <span id="inspRealIpBadge" style="display: none; background: rgba(0, 229, 255, 0.16); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.6); font-size: 0.72rem; font-weight: 800; padding: 0.15rem 0.55rem; border-radius: 4px; font-family: var(--font-mono);">🎯 IP Real: -</span>
           <span id="inspScoreBadge" class="badge critical">Riesgo: --/100</span>
         </div>
         <button type="button" class="btn btn-dim" style="padding: 0.25rem 0.65rem;" onclick="closeCandidateInspectModal()">✕ Cerrar</button>
@@ -130,6 +131,12 @@
 
               <span style="color: var(--text-dim);">Host / Destino:</span>
               <code id="inspHost" style="color: var(--text-main); word-break: break-all;">-</code>
+
+              <span style="color: var(--text-dim);">Nodo Cloudflare:</span>
+              <code id="inspCfNodeIp" style="color: #f6821f; word-break: break-all;">-</code>
+
+              <span style="color: var(--text-dim);">IP Real Cliente:</span>
+              <code id="inspRealClientIp" style="color: #00e5ff; font-weight: 700; word-break: break-all;">-</code>
 
               <span style="color: var(--text-dim);">URI Solicitada:</span>
               <code id="inspUri" style="color: var(--neon-cyan); word-break: break-all;">-</code>
@@ -203,8 +210,9 @@
             Revisa el payload y las cabeceras antes de aplicar el bloqueo en los proxies Nginx.
           </span>
           <div style="display: flex; gap: 0.6rem; align-items: center;">
-            <form id="inspApproveForm" method="POST" action="" style="display: inline-flex; gap: 0.4rem; align-items: center;">
+            <form id="inspApproveForm" method="POST" action="" style="display: inline-flex; gap: 0.4rem; align-items: center; flex-wrap: wrap;">
               <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+              <select id="inspTargetIpSelect" name="target_ip" class="form-input" style="display: none; padding: 0.35rem 0.6rem; font-size: 0.76rem; width: auto; border-color: rgba(0, 229, 255, 0.55); color: #00e5ff;"></select>
               <select name="duration_hours" class="form-input" style="padding: 0.35rem 0.6rem; font-size: 0.78rem; width: auto;">
                 <option value="24">Bloquear 24 Horas</option>
                 <option value="1">Bloquear 1 Hora</option>
@@ -240,6 +248,8 @@
       stEl.className = (req.status_code >= 400) ? 'badge critical' : 'badge safe';
       document.getElementById('inspNode').textContent = req.node || 'Direct';
       document.getElementById('inspHost').textContent = req.host || '-';
+      document.getElementById('inspCfNodeIp').textContent = req.cloudflare_ip ? `☁️ ${req.cloudflare_ip}${req.cf_ray ? ' (Ray: ' + req.cf_ray + ')' : ''}` : (req.is_cloudflare ? `☁️ ${req.client_ip}` : 'Directo (Sin Cloudflare)');
+      document.getElementById('inspRealClientIp').textContent = req.real_client_ip ? `🎯 ${req.real_client_ip}` : (req.is_cloudflare ? 'No incluida en este paquete (requiere CF-Connecting-IP / X-Forwarded-For)' : req.client_ip || '-');
       document.getElementById('inspUri').textContent = req.uri || '/';
       document.getElementById('inspQuery').textContent = req.query_params || '(ninguno)';
       document.getElementById('inspDecoded').textContent = req.decoded_path || req.full_path || '/';
@@ -281,6 +291,31 @@
           const cfBadgeEl = document.getElementById('inspCfBadge');
           if (cfBadgeEl) {
             cfBadgeEl.style.display = c.is_cloudflare ? 'inline-block' : 'none';
+            if (c.cloudflare_ip) {
+              cfBadgeEl.textContent = `☁️ NODO CF: ${c.cloudflare_ip}`;
+            }
+          }
+          const realBadgeEl = document.getElementById('inspRealIpBadge');
+          const targetIpSelect = document.getElementById('inspTargetIpSelect');
+          if (realBadgeEl) {
+            if (c.real_client_ip) {
+              realBadgeEl.style.display = 'inline-block';
+              realBadgeEl.textContent = `🎯 IP REAL CLIENTE: ${c.real_client_ip}`;
+            } else {
+              realBadgeEl.style.display = 'none';
+            }
+          }
+          if (targetIpSelect) {
+            if (c.real_client_ip && c.real_client_ip !== c.client_ip) {
+              targetIpSelect.style.display = 'inline-block';
+              targetIpSelect.innerHTML = `
+                <option value="${c.real_client_ip}">🎯 Bloquear IP Real (${c.real_client_ip})</option>
+                <option value="${c.client_ip}">☁️ Bloquear Nodo CF (${c.client_ip})</option>
+              `;
+            } else {
+              targetIpSelect.style.display = 'none';
+              targetIpSelect.innerHTML = '';
+            }
           }
           document.getElementById('inspScoreBadge').textContent = `Riesgo: ${c.accumulated_score || 0}/100`;
           document.getElementById('inspGeo').textContent = `${c.country_name || '-'} (${c.city || '-'})`;

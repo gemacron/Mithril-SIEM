@@ -3,6 +3,69 @@
 {% block title %}Reglas de Detección y Riesgo{% endblock %}
 
 {% block content %}
+<!-- Integración Dinámica con el Endpoint Oficial de Rangos CIDR de Cloudflare -->
+<div class="panel" style="margin-bottom: 1.5rem; border-color: rgba(246, 130, 31, 0.35);">
+  <div class="panel-header" style="background: rgba(246, 130, 31, 0.08);">
+    <div>
+      <div class="panel-title" style="color: #f6821f;">
+        <span>☁️</span> FEED DINÁMICO DE RANGOS CIDR DE CLOUDFLARE (API OFICIAL EN TIEMPO REAL)
+      </div>
+      <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.2rem;">
+        Sincronización automática y dinámica desde el endpoint oficial <code>https://api.cloudflare.com/client/v4/ips</code> (y respaldo <code>/ips-v4</code> + <code>/ips-v6</code>) para identificar tanto el nodo Cloudflare como la IP real del cliente (<code>CF-Connecting-IP</code> / <code>X-Forwarded-For</code>).
+      </p>
+    </div>
+    <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+      <span class="badge" style="background: rgba(246, 130, 31, 0.2); color: #f6821f; border: 1px solid rgba(246, 130, 31, 0.55); font-weight: 800;">
+        {{ cf_status.ipv4_count }} IPv4 + {{ cf_status.ipv6_count }} IPv6 ({{ cf_status.total_cidrs }} CIDRs)
+      </span>
+      <form method="POST" action="{% url 'detection:rules' %}" style="margin: 0;">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="sync_cloudflare">
+        <button type="submit" class="btn btn-dim" style="border-color: rgba(246, 130, 31, 0.55); color: #f6821f; padding: 0.38rem 0.8rem; font-size: 0.74rem; font-weight: 700;">
+          🔄 Sincronizar Endpoint Cloudflare Ahora
+        </button>
+      </form>
+    </div>
+  </div>
+  <div class="panel-body" style="padding: 0.9rem 1.25rem;">
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0.85rem; font-size: 0.76rem;">
+      <div style="background: rgba(6, 9, 16, 0.65); border: 1px solid var(--border-dim); padding: 0.6rem 0.85rem; border-radius: 6px;">
+        <div style="color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase;">Endpoint Oficial Activo</div>
+        <div style="color: var(--neon-cyan); font-family: var(--font-mono); margin-top: 0.2rem; word-break: break-all;">{{ cf_status.source }}</div>
+      </div>
+      <div style="background: rgba(6, 9, 16, 0.65); border: 1px solid var(--border-dim); padding: 0.6rem 0.85rem; border-radius: 6px;">
+        <div style="color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase;">ETag / Hash de Versión Cloudflare</div>
+        <div style="color: #f6821f; font-family: var(--font-mono); font-weight: 700; margin-top: 0.2rem;">{{ cf_status.etag }}</div>
+      </div>
+      <div style="background: rgba(6, 9, 16, 0.65); border: 1px solid var(--border-dim); padding: 0.6rem 0.85rem; border-radius: 6px;">
+        <div style="color: var(--text-dim); font-size: 0.68rem; text-transform: uppercase;">Última Sincronización Dinámica</div>
+        <div style="color: var(--neon-emerald); font-family: var(--font-mono); margin-top: 0.2rem;">{{ cf_status.last_sync_str }}</div>
+      </div>
+    </div>
+    <details style="margin-top: 0.75rem; font-size: 0.74rem; color: var(--text-muted);">
+      <summary style="cursor: pointer; color: #f6821f; font-weight: 600;">Ver los {{ cf_status.total_cidrs }} bloques CIDR dinámicos cargados en memoria (IPv4 e IPv6)</summary>
+      <div style="margin-top: 0.6rem; display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; background: rgba(0,0,0,0.45); padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim);">
+        <div>
+          <strong style="color: var(--neon-cyan); font-size: 0.72rem;">Rangos IPv4 ({{ cf_status.ipv4_count }}):</strong>
+          <div style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-main); margin-top: 0.3rem; display: flex; flex-wrap: wrap; gap: 0.35rem;">
+            {% for cidr in cf_status.ipv4_cidrs %}
+              <span style="background: rgba(246, 130, 31, 0.14); border: 1px solid rgba(246, 130, 31, 0.35); padding: 1px 6px; border-radius: 3px;">{{ cidr }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        <div>
+          <strong style="color: var(--neon-cyan); font-size: 0.72rem;">Rangos IPv6 ({{ cf_status.ipv6_count }}):</strong>
+          <div style="font-family: var(--font-mono); font-size: 0.7rem; color: var(--text-main); margin-top: 0.3rem; display: flex; flex-wrap: wrap; gap: 0.35rem;">
+            {% for cidr in cf_status.ipv6_cidrs %}
+              <span style="background: rgba(0, 229, 255, 0.12); border: 1px solid rgba(0, 229, 255, 0.3); padding: 1px 6px; border-radius: 3px;">{{ cidr }}</span>
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+    </details>
+  </div>
+</div>
+
 <!-- Creador / Editor Universal de Reglas Heurísticas y Expresiones Regulares -->
 <div class="panel" style="margin-bottom: 1.5rem;">
   <div class="panel-header">

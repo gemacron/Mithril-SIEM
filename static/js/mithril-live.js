@@ -50,10 +50,18 @@ document.addEventListener('DOMContentLoaded', () => {
     return cookieValue;
   }
 
-  function cfBadgeHtml(isCf, fullText = false) {
-    if (!isCf) return '';
-    const label = fullText ? '☁️ CLOUDFLARE' : '☁️ CF';
-    return `<span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="IP perteneciente a la red CDN/Proxy de Cloudflare">${label}</span>`;
+  function cfBadgeHtml(isCf, fullText = false, realClientIp = '', cfNodeIp = '') {
+    let html = '';
+    if (isCf) {
+      const label = fullText ? '☁️ CLOUDFLARE' : '☁️ CF';
+      const titleText = cfNodeIp ? `Nodo Cloudflare: ${cfNodeIp}` : 'IP perteneciente a la red CDN/Proxy de Cloudflare';
+      html += `<span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="${titleText}">${label}</span>`;
+    }
+    if (realClientIp) {
+      const realLabel = fullText ? `🎯 IP Real: ${realClientIp}` : `🎯 ${realClientIp}`;
+      html += `<span style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.22rem; font-family: var(--font-mono);" title="IP Real del Cliente detrás de Cloudflare">${realLabel}</span>`;
+    }
+    return html;
   }
 
   function updateKpiFast(element, newValue) {
@@ -170,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
         <div style="background: rgba(13, 18, 31, 0.7); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.85rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
             <span style="font-family: var(--font-mono); font-weight: 700; color: var(--text-main); font-size: 0.9rem; display: inline-flex; align-items: center; flex-wrap: wrap;">
-              🌐 ${c.ip} ${cfBadgeHtml(c.is_cloudflare, true)}
+              🌐 ${c.ip} ${cfBadgeHtml(c.is_cloudflare, true, c.real_client_ip, c.cloudflare_ip)}
             </span>
             <span class="${scoreBadge}">Riesgo: ${c.score}/100</span>
           </div>
@@ -250,7 +258,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const lat = parseFloat(event.latitude);
                 const lon = parseFloat(event.longitude);
                 if (!isNaN(lat) && !isNaN(lon)) {
-                  window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare);
+                  window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip);
                 }
               }
 
@@ -258,7 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <tr data-log-id="${event.id || ''}">
                   <td><span class="${badgeClass}">${badgeText}</span></td>
                   <td><strong>${event.timestamp || ''}</strong></td>
-                  <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false)}</td>
+                  <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, event.real_client_ip, event.cloudflare_ip)}</td>
                   <td>${countryDisplay}</td>
                   <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
                   <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
@@ -300,7 +308,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const lat = parseFloat(event.latitude);
         const lon = parseFloat(event.longitude);
         if (!isNaN(lat) && !isNaN(lon)) {
-          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare);
+          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip);
         }
       }
 
@@ -316,7 +324,7 @@ document.addEventListener('DOMContentLoaded', () => {
         row.innerHTML = `
           <td><span class="${badgeClass}">${badgeText}</span></td>
           <td><strong>${event.timestamp || ''}</strong></td>
-          <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false)}</td>
+          <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, event.real_client_ip, event.cloudflare_ip)}</td>
           <td>${countryDisplay}</td>
           <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
           <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>

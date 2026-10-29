@@ -140,7 +140,7 @@ class TacticalWorldMap {
     });
   }
 
-  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false) {
+  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '') {
     const coords = this.geoToCanvas(lat, lon);
     const color = isThreat ? '#ff2a5f' : (isCloudflare ? '#f6821f' : '#00e5ff');
 
@@ -158,9 +158,10 @@ class TacticalWorldMap {
     });
 
     const vec = this.getTargetNodeCoords(coords.x, coords.y);
+    const realSuffix = realClientIp ? ` ➔ 🎯${realClientIp}` : '';
     const tag = isThreat
-      ? `${isCloudflare ? '☁️CF ' : ''}${clientIp || 'ATAQUE'}`
-      : (isCloudflare ? `☁️CF ${clientIp}` : '');
+      ? `${isCloudflare ? '☁️CF ' : ''}${clientIp || 'ATAQUE'}${realSuffix}`
+      : (isCloudflare ? `☁️CF ${clientIp}${realSuffix}` : '');
     this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, isThreat, tag, isCloudflare);
 
     const existingIdx = this.points.findIndex(p => Math.abs(p.lat - lat) < 0.1 && Math.abs(p.lon - lon) < 0.1);
@@ -172,11 +173,15 @@ class TacticalWorldMap {
       if (isCloudflare) {
         this.points[existingIdx].isCloudflare = true;
       }
+      if (realClientIp) {
+        this.points[existingIdx].realClientIp = realClientIp;
+      }
     } else {
       this.points.unshift({
         lat: lat,
         lon: lon,
         ip: clientIp,
+        realClientIp: realClientIp,
         isThreat: isThreat,
         isCloudflare: isCloudflare,
         status_code: isThreat ? 403 : 200
@@ -198,9 +203,10 @@ class TacticalWorldMap {
     const coords = this.geoToCanvas(pt.lat, pt.lon);
     const vec = this.getTargetNodeCoords(coords.x, coords.y);
     const color = pt.isThreat ? '#ff2a5f' : (pt.isCloudflare ? '#f6821f' : '#00e5ff');
+    const realSuffix = pt.realClientIp ? ` ➔ 🎯${pt.realClientIp}` : '';
     const label = pt.isThreat
-      ? `${pt.isCloudflare ? '☁️CF ' : '🚨 '}${pt.ip || 'ATAQUE'}`
-      : (pt.isCloudflare ? `☁️CF ${pt.ip}` : pt.ip);
+      ? `${pt.isCloudflare ? '☁️CF ' : '🚨 '}${pt.ip || 'ATAQUE'}${realSuffix}`
+      : (pt.isCloudflare ? `☁️CF ${pt.ip}${realSuffix}` : pt.ip);
 
     this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, pt.isThreat, label, pt.isCloudflare);
     if (this.pulses.length < 25) {
@@ -239,6 +245,7 @@ class TacticalWorldMap {
             lat: parseFloat(p.latitude) || 0,
             lon: parseFloat(p.longitude) || 0,
             ip: p.client_ip || '',
+            realClientIp: p.real_client_ip || '',
             country: p.country_name || '',
             isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
             isCloudflare: Boolean(p.is_cloudflare),

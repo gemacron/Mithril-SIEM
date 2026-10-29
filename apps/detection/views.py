@@ -6,7 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.contrib import messages
 from .models import SecurityRule, TrafficLog, SecurityEvent
-from .engine import process_incoming_log, invalidate_rules_cache
+from .engine import process_incoming_log, invalidate_rules_cache, sync_cloudflare_ips, get_cloudflare_sync_status
 from apps.nodes.models import ProxyNode
 from apps.reports.models import AuditTrail
 
@@ -14,7 +14,27 @@ from apps.reports.models import AuditTrail
 def rules_list_view(request):
     if request.method == 'POST':
         action = request.POST.get('action', 'create')
-        if action == 'create':
+        if action == 'sync_cloudflare':
+            cf_state = sync_cloudflare_ips(force=True)
+            AuditTrail.objects.create(
+                user=request.user,
+                action='SYNC_CLOUDFLARE_IPS',
+                target='Cloudflare Dynamic CIDR API',
+                details={
+                    'ipv4_count': cf_state['ipv4_count'],
+                    'ipv6_count': cf_state['ipv6_count'],
+                    'etag': cf_state['etag'],
+                    'source': cf_state['source'],
+                },
+                ip_address=request.META.get('REMOTE_ADDR')
+            )
+            messages.success(
+                request,
+                f"Rangos de Cloudflare sincronizados dinámicamente desde {cf_state['source']} "
+                f"({cf_state['ipv4_count']} bloques IPv4 + {cf_state['ipv6_count']} bloques IPv6 | ETag: {cf_state['etag']})."
+            )
+            return redirect('detection:rules')
+        elif action == 'create':
             code = request.POST.get('code', '').strip().upper()
             name = request.POST.get('name', '').strip()
             description = request.POST.get('description', '').strip()
@@ -58,11 +78,24 @@ def rules_list_view(request):
 
     rules = SecurityRule.objects.all()
     active_count = rules.filter(is_active=True).count()
+    cf_status = get_cloudflare_sync_status()
     return render(request, 'settings/rules.html', {
         'rules': rules,
         'active_count': active_count,
         'categories': SecurityRule.CATEGORY_CHOICES,
+        'cf_status': cf_status,
     })
+
+@login_required
+def api_cloudflare_ips_status(request):
+    """
+    Endpoint para consultar o forzar la sincronización dinámica de los rangos CIDR oficiales de Cloudflare
+    directamente desde https://api.cloudflare.com/client/v4/ips
+    """
+    if request.method == 'POST':
+        status_data = sync_cloudflare_ips(force=True)
+        return JsonResponse({'status': 'synced', **status_data})
+    return JsonResponse({'status': 'ok', **get_cloudflare_sync_status()})
 
 @login_required
 def rule_toggle_view(request, rule_id):

@@ -114,7 +114,10 @@
               <td>
                 <code>{{ log.client_ip }}</code>
                 {% if log.is_cloudflare %}
-                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);">☁️ CF</span>
+                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="Nodo Cloudflare: {{ log.cloudflare_ip|default:log.client_ip }}">☁️ CF</span>
+                {% endif %}
+                {% if log.real_client_ip %}
+                <span style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.2rem; font-family: var(--font-mono);" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</span>
                 {% endif %}
               </td>
               <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
@@ -157,6 +160,9 @@
                   🌐 {{ c.client_ip }}
                   {% if c.is_cloudflare %}
                   <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px;">☁️ CLOUDFLARE</span>
+                  {% endif %}
+                  {% if c.real_client_ip %}
+                  <span style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px;">🎯 IP Real: {{ c.real_client_ip }}</span>
                   {% endif %}
                 </span>
                 <span class="badge critical">Riesgo: {{ c.accumulated_score }}/100</span>

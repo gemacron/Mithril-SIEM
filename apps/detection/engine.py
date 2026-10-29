@@ -1,9 +1,14 @@
+import os
 import re
+import json
 import time
+import threading
 import urllib.parse
+import urllib.request
 import ipaddress
 from datetime import timedelta
 from django.utils import timezone
+from django.core.cache import cache
 from django.db.models import F
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
@@ -50,36 +55,405 @@ def _is_in_event_cooldown(client_ip, rule_code, cooldown_sec=4.0):
     _EVENT_COOLDOWN_CACHE[key] = now_mono
     return False
 
-# Rangos oficiales de IPs de Cloudflare (IPv4 + IPv6)
-CLOUDFLARE_CIDRS = [
+# ==============================================================================
+# INTEGRACIÓN DINÁMICA DE IPs DE CLOUDFLARE (API OFICIAL + CACHÉ PERSISTENTE)
+# ==============================================================================
+CLOUDFLARE_JSON_API_URL = "https://api.cloudflare.com/client/v4/ips"
+CLOUDFLARE_IPS_V4_URL = "https://www.cloudflare.com/ips-v4"
+CLOUDFLARE_IPS_V6_URL = "https://www.cloudflare.com/ips-v6"
+CLOUDFLARE_CACHE_KEY = "mithril:cloudflare_dynamic_ips_v1"
+CLOUDFLARE_LOCAL_FILE = "/tmp/mithril_cloudflare_ips.json"
+CLOUDFLARE_SYNC_TTL_SEC = 3600  # Auto-revalidar cada 1 hora desde la API oficial de Cloudflare
+
+# Semilla inicial de respaldo únicamente en caso de arranque sin internet
+_BOOTSTRAP_IPV4 = [
     '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
     '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
     '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
     '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+]
+_BOOTSTRAP_IPV6 = [
     '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32',
     '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
 ]
-CLOUDFLARE_NETWORKS = [ipaddress.ip_network(cidr) for cidr in CLOUDFLARE_CIDRS]
+
+_CF_STATE_LOCK = threading.Lock()
+_CF_DYNAMIC_STATE = {
+    'ipv4_cidrs': list(_BOOTSTRAP_IPV4),
+    'ipv6_cidrs': list(_BOOTSTRAP_IPV6),
+    'networks': [ipaddress.ip_network(c, strict=False) for c in (_BOOTSTRAP_IPV4 + _BOOTSTRAP_IPV6)],
+    'etag': 'bootstrap',
+    'source': 'Pendiente sincronización con api.cloudflare.com',
+    'last_sync_epoch': 0.0,
+    'last_sync_str': 'Sincronizando...',
+    'syncing': False,
+    'last_error': '',
+}
 _CF_IP_CACHE = {}
+# Correlación en memoria de corto plazo: asocia (cloudflare_ip) o (uri_limpia) -> real_client_ip
+_CF_REAL_IP_CORRELATION = {}
+
+
+def _compile_cf_networks(ipv4_list, ipv6_list):
+    nets = []
+    clean_v4, clean_v6 = [], []
+    for c in ipv4_list:
+        c_str = str(c).strip()
+        if not c_str:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(c_str, strict=False))
+            clean_v4.append(c_str)
+        except Exception:
+            pass
+    for c in ipv6_list:
+        c_str = str(c).strip()
+        if not c_str:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(c_str, strict=False))
+            clean_v6.append(c_str)
+        except Exception:
+            pass
+    return clean_v4, clean_v6, nets
+
+
+def _apply_cf_state(ipv4_list, ipv6_list, etag, source, sync_epoch=None, sync_str=None):
+    clean_v4, clean_v6, nets = _compile_cf_networks(ipv4_list, ipv6_list)
+    if not nets:
+        return False
+    now_ep = sync_epoch or time.time()
+    now_str = sync_str or timezone.now().strftime('%Y-%m-%d %H:%M:%S UTC')
+    with _CF_STATE_LOCK:
+        changed = (
+            clean_v4 != _CF_DYNAMIC_STATE['ipv4_cidrs']
+            or clean_v6 != _CF_DYNAMIC_STATE['ipv6_cidrs']
+            or etag != _CF_DYNAMIC_STATE['etag']
+        )
+        _CF_DYNAMIC_STATE['ipv4_cidrs'] = clean_v4
+        _CF_DYNAMIC_STATE['ipv6_cidrs'] = clean_v6
+        _CF_DYNAMIC_STATE['networks'] = nets
+        _CF_DYNAMIC_STATE['etag'] = etag or 'dynamic'
+        _CF_DYNAMIC_STATE['source'] = source
+        _CF_DYNAMIC_STATE['last_sync_epoch'] = now_ep
+        _CF_DYNAMIC_STATE['last_sync_str'] = now_str
+        _CF_DYNAMIC_STATE['last_error'] = ''
+        if changed:
+            _CF_IP_CACHE.clear()
+    return True
+
+
+def _load_cf_from_shared_cache():
+    """Intenta recuperar los rangos dinámicos desde Redis/Django Cache o archivo persistente local."""
+    try:
+        cached = cache.get(CLOUDFLARE_CACHE_KEY)
+        if isinstance(cached, dict) and cached.get('ipv4_cidrs'):
+            _apply_cf_state(
+                cached.get('ipv4_cidrs', []),
+                cached.get('ipv6_cidrs', []),
+                cached.get('etag', 'cached'),
+                cached.get('source', CLOUDFLARE_JSON_API_URL),
+                cached.get('last_sync_epoch', time.time()),
+                cached.get('last_sync_str', ''),
+            )
+            return True
+    except Exception:
+        pass
+
+    try:
+        if os.path.exists(CLOUDFLARE_LOCAL_FILE):
+            with open(CLOUDFLARE_LOCAL_FILE, 'r', encoding='utf-8') as f:
+                disk_data = json.load(f)
+            if isinstance(disk_data, dict) and disk_data.get('ipv4_cidrs'):
+                _apply_cf_state(
+                    disk_data.get('ipv4_cidrs', []),
+                    disk_data.get('ipv6_cidrs', []),
+                    disk_data.get('etag', 'disk-cache'),
+                    disk_data.get('source', CLOUDFLARE_JSON_API_URL),
+                    disk_data.get('last_sync_epoch', 0.0),
+                    disk_data.get('last_sync_str', ''),
+                )
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def sync_cloudflare_ips(force=False):
+    """
+    Consulta dinámicamente los endpoints oficiales de Cloudflare:
+      1) Primario (JSON API v4): https://api.cloudflare.com/client/v4/ips
+      2) Secundario (Texto plano): https://www.cloudflare.com/ips-v4 y https://www.cloudflare.com/ips-v6
+    Actualiza los bloques CIDR IPv4 e IPv6 en memoria, Redis y disco sin reiniciar el SIEM.
+    """
+    if not force and _CF_DYNAMIC_STATE['syncing']:
+        return get_cloudflare_sync_status()
+
+    _CF_DYNAMIC_STATE['syncing'] = True
+    headers = {
+        'User-Agent': 'Mithril-SIEM-ThreatIntel/2.0',
+        'Accept': 'application/json, text/plain;q=0.9',
+    }
+    ipv4_list, ipv6_list = [], []
+    etag = ''
+    source_used = ''
+    err_msg = ''
+
+    # 1. Intentar API Oficial JSON v4 de Cloudflare
+    try:
+        req = urllib.request.Request(CLOUDFLARE_JSON_API_URL, headers=headers, method='GET')
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            payload = json.loads(resp.read().decode('utf-8', errors='ignore'))
+        if payload.get('success') and isinstance(payload.get('result'), dict):
+            res = payload['result']
+            ipv4_list = res.get('ipv4_cidrs', []) or []
+            ipv6_list = res.get('ipv6_cidrs', []) or []
+            etag = res.get('etag', 'cf-api-v4')
+            source_used = CLOUDFLARE_JSON_API_URL
+    except Exception as e:
+        err_msg = str(e)
+
+    # 2. Fallback a los endpoints oficiales de texto plano (/ips-v4 y /ips-v6)
+    if not ipv4_list:
+        try:
+            req4 = urllib.request.Request(CLOUDFLARE_IPS_V4_URL, headers=headers, method='GET')
+            with urllib.request.urlopen(req4, timeout=6) as r4:
+                ipv4_list = [line.strip() for line in r4.read().decode('utf-8', errors='ignore').splitlines() if line.strip()]
+            req6 = urllib.request.Request(CLOUDFLARE_IPS_V6_URL, headers=headers, method='GET')
+            with urllib.request.urlopen(req6, timeout=6) as r6:
+                ipv6_list = [line.strip() for line in r6.read().decode('utf-8', errors='ignore').splitlines() if line.strip()]
+            if ipv4_list:
+                etag = f"txt-{len(ipv4_list)}v4-{len(ipv6_list)}v6"
+                source_used = f"{CLOUDFLARE_IPS_V4_URL} + /ips-v6"
+                err_msg = ''
+        except Exception as e2:
+            err_msg = f"{err_msg} | Fallback: {e2}".strip(' |')
+
+    try:
+        if ipv4_list:
+            now_ep = time.time()
+            now_str = timezone.now().strftime('%Y-%m-%d %H:%M:%S UTC')
+            _apply_cf_state(ipv4_list, ipv6_list, etag, source_used, now_ep, now_str)
+            cache_payload = {
+                'ipv4_cidrs': _CF_DYNAMIC_STATE['ipv4_cidrs'],
+                'ipv6_cidrs': _CF_DYNAMIC_STATE['ipv6_cidrs'],
+                'etag': _CF_DYNAMIC_STATE['etag'],
+                'source': _CF_DYNAMIC_STATE['source'],
+                'last_sync_epoch': now_ep,
+                'last_sync_str': now_str,
+            }
+            try:
+                cache.set(CLOUDFLARE_CACHE_KEY, cache_payload, timeout=86400)
+            except Exception:
+                pass
+            try:
+                with open(CLOUDFLARE_LOCAL_FILE, 'w', encoding='utf-8') as f:
+                    json.dump(cache_payload, f)
+            except Exception:
+                pass
+        else:
+            _CF_DYNAMIC_STATE['last_error'] = err_msg or 'No se recibieron CIDRs desde Cloudflare'
+            _CF_DYNAMIC_STATE['last_sync_epoch'] = time.time() - (CLOUDFLARE_SYNC_TTL_SEC - 300)  # Reintentar en 5 min
+    finally:
+        _CF_DYNAMIC_STATE['syncing'] = False
+
+    return get_cloudflare_sync_status()
+
+
+def ensure_cloudflare_ips_fresh():
+    """
+    Garantiza que los rangos de Cloudflare estén actualizados desde la API oficial
+    sin bloquear jamás el hilo de análisis de tráfico.
+    """
+    now_ep = time.time()
+    if _CF_DYNAMIC_STATE['last_sync_epoch'] == 0.0:
+        _load_cf_from_shared_cache()
+
+    if (now_ep - _CF_DYNAMIC_STATE['last_sync_epoch']) > CLOUDFLARE_SYNC_TTL_SEC and not _CF_DYNAMIC_STATE['syncing']:
+        t = threading.Thread(target=sync_cloudflare_ips, kwargs={'force': False}, daemon=True)
+        t.start()
+
+
+def get_cloudflare_sync_status():
+    """Devuelve el estado actual y la lista dinámica de CIDRs de Cloudflare."""
+    ensure_cloudflare_ips_fresh()
+    with _CF_STATE_LOCK:
+        v4 = list(_CF_DYNAMIC_STATE['ipv4_cidrs'])
+        v6 = list(_CF_DYNAMIC_STATE['ipv6_cidrs'])
+        return {
+            'ipv4_cidrs': v4,
+            'ipv6_cidrs': v6,
+            'ipv4_count': len(v4),
+            'ipv6_count': len(v6),
+            'total_cidrs': len(v4) + len(v6),
+            'etag': _CF_DYNAMIC_STATE['etag'],
+            'source': _CF_DYNAMIC_STATE['source'],
+            'last_sync_str': _CF_DYNAMIC_STATE['last_sync_str'],
+            'last_error': _CF_DYNAMIC_STATE['last_error'],
+            'api_endpoint': CLOUDFLARE_JSON_API_URL,
+            'fallback_v4_endpoint': CLOUDFLARE_IPS_V4_URL,
+            'fallback_v6_endpoint': CLOUDFLARE_IPS_V6_URL,
+        }
+
 
 def is_cloudflare_ip(ip_str):
     """
-    Identifica de forma ultrarrápida (con caché en RAM) si una IP pertenece a la red Edge/CDN de Cloudflare.
+    Identifica de forma ultrarrápida (con caché en RAM + actualización dinámica desde api.cloudflare.com)
+    si una IP pertenece a la red Edge/CDN de Cloudflare.
     """
     if not ip_str:
         return False
+    ensure_cloudflare_ips_fresh()
     ip_clean = str(ip_str).strip()
     if ip_clean in _CF_IP_CACHE:
         return _CF_IP_CACHE[ip_clean]
     try:
         ip_obj = ipaddress.ip_address(ip_clean)
-        is_cf = any(ip_obj in net for net in CLOUDFLARE_NETWORKS)
+        networks = _CF_DYNAMIC_STATE['networks']
+        is_cf = any(ip_obj in net for net in networks)
     except Exception:
         is_cf = False
     if len(_CF_IP_CACHE) > 5000:
         _CF_IP_CACHE.clear()
     _CF_IP_CACHE[ip_clean] = is_cf
     return is_cf
+
+
+def _is_valid_ip(ip_candidate):
+    if not ip_candidate:
+        return False
+    s = str(ip_candidate).strip()
+    if not s or s == '-':
+        return False
+    try:
+        ipaddress.ip_address(s)
+        return True
+    except Exception:
+        return False
+
+
+def resolve_cloudflare_and_real_ip(data):
+    """
+    Separa e identifica simultáneamente:
+      1) `cloudflare_ip`: La IP del nodo Edge de Cloudflare (si la petición pasó por Cloudflare).
+      2) `real_client_ip`: La IP real del cliente de origen (extraída de CF-Connecting-IP,
+         True-Client-IP, X-Forwarded-For, X-Real-IP o correlación en memoria).
+      3) `is_cloudflare`: True si interviene un nodo de Cloudflare o cabeceras CF.
+    """
+    headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
+    raw_ip = str(data.get('client_ip') or data.get('remote_addr') or '').strip()
+
+    # Extraer posibles cabeceras de IP real enviadas por Cloudflare / Nginx
+    cf_conn_ip = str(
+        data.get('real_client_ip')
+        or data.get('cf_connecting_ip')
+        or data.get('http_cf_connecting_ip')
+        or headers.get('cf_connecting_ip')
+        or headers.get('cf-connecting-ip')
+        or headers.get('true_client_ip')
+        or headers.get('true-client-ip')
+        or ''
+    ).strip()
+
+    x_real_ip = str(
+        data.get('x_real_ip')
+        or data.get('http_x_real_ip')
+        or headers.get('x_real_ip')
+        or headers.get('x-real-ip')
+        or ''
+    ).strip()
+
+    xff_raw = str(
+        data.get('x_forwarded_for')
+        or data.get('http_x_forwarded_for')
+        or headers.get('x_forwarded_for')
+        or headers.get('x-forwarded-for')
+        or ''
+    ).strip()
+
+    explicit_cf_ip = str(
+        data.get('cloudflare_ip')
+        or headers.get('cloudflare_ip')
+        or headers.get('edge_ip')
+        or headers.get('raw_src_ip')
+        or ''
+    ).strip()
+
+    cf_ray = str(data.get('cf_ray') or data.get('http_cf_ray') or headers.get('cf_ray') or headers.get('cf-ray') or '').strip()
+    cf_country = str(data.get('cf_country') or data.get('http_cf_ipcountry') or headers.get('cf_country') or headers.get('cf_ipcountry') or headers.get('cf-ipcountry') or '').strip()
+
+    # Desglosar lista de IPs en X-Forwarded-For
+    xff_ips = []
+    if xff_raw and xff_raw != '-':
+        for part in xff_raw.split(','):
+            cand = part.strip()
+            if _is_valid_ip(cand):
+                xff_ips.append(cand)
+
+    all_candidates = []
+    for cand in [cf_conn_ip, *xff_ips, x_real_ip, explicit_cf_ip, raw_ip]:
+        if _is_valid_ip(cand) and cand not in all_candidates:
+            all_candidates.append(cand)
+
+    cf_node_ip = ''
+    real_origin_ip = ''
+
+    for cand in all_candidates:
+        if is_cloudflare_ip(cand):
+            if not cf_node_ip:
+                cf_node_ip = cand
+        else:
+            # Ignorar loopback como IP real externa si hay otra IP disponible
+            if cand not in ('127.0.0.1', '::1') and not real_origin_ip:
+                real_origin_ip = cand
+
+    is_cf = bool(cf_node_ip or cf_ray or (cf_conn_ip and _is_valid_ip(cf_conn_ip)))
+
+    # Correlación en memoria: si un paquete tiene tanto cf_node_ip como real_origin_ip,
+    # guardarlo brevemente para que líneas de log adyacentes (ej. error_log sin XFF) lo hereden
+    now_mono = time.monotonic()
+    if len(_CF_REAL_IP_CORRELATION) > 2000:
+        cutoff = now_mono - 30.0
+        for k in [k for k, v in _CF_REAL_IP_CORRELATION.items() if v.get('ts', 0) < cutoff]:
+            _CF_REAL_IP_CORRELATION.pop(k, None)
+
+    uri_clean = re.sub(r'^\[[^\]]+\]\s*', '', str(data.get('uri', '/')))
+    if cf_node_ip and real_origin_ip and cf_node_ip != real_origin_ip:
+        _CF_REAL_IP_CORRELATION[f"cf:{cf_node_ip}"] = {'real_ip': real_origin_ip, 'cf_ip': cf_node_ip, 'ts': now_mono}
+        _CF_REAL_IP_CORRELATION[f"uri:{uri_clean}"] = {'real_ip': real_origin_ip, 'cf_ip': cf_node_ip, 'ts': now_mono}
+    elif cf_node_ip and not real_origin_ip:
+        corr = _CF_REAL_IP_CORRELATION.get(f"cf:{cf_node_ip}") or _CF_REAL_IP_CORRELATION.get(f"uri:{uri_clean}")
+        if corr and (now_mono - corr.get('ts', 0)) <= 15.0:
+            real_origin_ip = corr.get('real_ip', '')
+    elif real_origin_ip and not cf_node_ip:
+        corr = _CF_REAL_IP_CORRELATION.get(f"uri:{uri_clean}")
+        if corr and corr.get('real_ip') == real_origin_ip and (now_mono - corr.get('ts', 0)) <= 15.0:
+            cf_node_ip = corr.get('cf_ip', '')
+            is_cf = bool(cf_node_ip)
+
+    return {
+        'is_cloudflare': is_cf,
+        'cloudflare_ip': cf_node_ip,
+        'real_client_ip': real_origin_ip if (real_origin_ip and real_origin_ip != cf_node_ip) else '',
+        'cf_ray': cf_ray,
+        'cf_country': cf_country,
+    }
+
+
+def extract_log_ip_meta(ip_str, headers=None):
+    """
+    Extrae metadatos de Cloudflare (`is_cloudflare`, `cloudflare_ip`, `real_client_ip`, `cf_ray`, `cf_country`)
+    a partir de una IP y un diccionario `raw_headers` o `details` almacenado en BD.
+    """
+    hdrs = headers if isinstance(headers, dict) else {}
+    nested_hdrs = hdrs.get('headers', {}) if isinstance(hdrs.get('headers'), dict) else {}
+    merged = {**nested_hdrs, **hdrs, 'client_ip': ip_str}
+    meta = resolve_cloudflare_and_real_ip(merged)
+    if not meta['is_cloudflare'] and hdrs.get('is_cloudflare'):
+        meta['is_cloudflare'] = True
+    if not meta['cloudflare_ip'] and is_cloudflare_ip(ip_str):
+        meta['cloudflare_ip'] = ip_str
+    return meta
 
 def normalize_inspection_payload(raw_text):
     """
@@ -179,11 +553,23 @@ def process_incoming_log(data, node=None):
     if not client_ip:
         return None
 
+    ip_meta = resolve_cloudflare_and_real_ip(data)
     geo = resolve_geoip(client_ip)
-    is_cf = geo.get('is_cloudflare', False)
+    is_cf = bool(ip_meta['is_cloudflare'] or geo.get('is_cloudflare', False))
+    cf_node_ip = ip_meta['cloudflare_ip'] or (client_ip if is_cf else '')
+    real_client_ip = ip_meta['real_client_ip']
+
     incoming_headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
     if is_cf:
         incoming_headers['is_cloudflare'] = True
+    if cf_node_ip:
+        incoming_headers['cloudflare_ip'] = cf_node_ip
+    if real_client_ip:
+        incoming_headers['real_client_ip'] = real_client_ip
+    if ip_meta.get('cf_ray'):
+        incoming_headers['cf_ray'] = ip_meta['cf_ray']
+    if ip_meta.get('cf_country'):
+        incoming_headers['cf_country'] = ip_meta['cf_country']
 
     # 1. Guardar log normalizado
     log = TrafficLog.objects.create(
@@ -254,6 +640,10 @@ def process_incoming_log(data, node=None):
         'country_name': log.country_name,
         'city': log.city,
         'is_cloudflare': is_cf,
+        'cloudflare_ip': cf_node_ip,
+        'real_client_ip': real_client_ip,
+        'cf_ray': ip_meta.get('cf_ray', ''),
+        'cf_country': ip_meta.get('cf_country', ''),
         'headers': log.raw_headers or {},
     }
 
@@ -384,6 +774,8 @@ def process_incoming_log(data, node=None):
             reason_text = f"Puntaje de riesgo {reputation.current_risk_score}/100 alcanzado. Disparó {reputation.total_violations} infracciones."
             if last_event and last_event.rule:
                 reason_text += f" Última infracción: {last_event.rule.name}."
+            if is_cf and real_client_ip:
+                reason_text += f" [Cloudflare Node: {cf_node_ip} ➔ IP Real Cliente: {real_client_ip}]"
 
             candidate, created = BanCandidate.objects.get_or_create(
                 client_ip=client_ip,
@@ -403,10 +795,12 @@ def process_incoming_log(data, node=None):
 
             # Notificar vía Telegram de forma asíncrona (no bloqueante) si es un candidato nuevo
             if created:
+                cf_line = f"IP Real Cliente: {real_client_ip} (vía Cloudflare {cf_node_ip})\n" if (is_cf and real_client_ip) else ""
                 send_telegram_alert(
                     title="🚨 Nuevo Candidato a Bloqueo Detectado",
                     message=(
-                        f"IP: {client_ip} ({geo['country_name']})\n"
+                        f"IP Detectada: {client_ip} ({geo['country_name']})\n"
+                        f"{cf_line}"
                         f"Score de Riesgo: {reputation.current_risk_score}/100\n"
                         f"Proxy: {node.name if node else 'N/A'}\n"
                         f"Motivo: {reason_text}\n"
@@ -441,6 +835,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
     if not channel_layer:
         return
 
+    meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
     payload = {
         'type': 'traffic_event',
         'event': {
@@ -457,7 +852,9 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'longitude': log.longitude,
             'node': log.node.name if log.node else 'Direct',
             'is_threat': is_threat,
-            'is_cloudflare': is_cloudflare_ip(log.client_ip),
+            'is_cloudflare': meta['is_cloudflare'],
+            'cloudflare_ip': meta['cloudflare_ip'],
+            'real_client_ip': meta['real_client_ip'],
             'risk_score': reputation.current_risk_score if reputation else 0,
             'violations_count': len(events) if events else 0,
         }

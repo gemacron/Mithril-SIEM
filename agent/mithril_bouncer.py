@@ -228,6 +228,7 @@ def kernel_network_mirror_worker():
 
     pending_http = {}  # (src_ip, src_port, dst_ip, dst_port) -> dict
     recent_client_activity = {}  # client_ip -> timestamp
+    last_external_edge = {"ip": "", "ts": 0.0}
     last_flush = time.time()
 
     def flush_expired_pending(now_ts):
@@ -236,6 +237,8 @@ def kernel_network_mirror_worker():
                 pending_http.pop(k, None)
                 event_json = json.dumps({
                     "client_ip": req_item["client_ip"],
+                    "real_client_ip": req_item.get("real_client_ip", ""),
+                    "cloudflare_ip": req_item.get("cloudflare_ip", ""),
                     "http_method": req_item["http_method"],
                     "uri": req_item["uri"],
                     "query_params": req_item["query_params"],
@@ -244,6 +247,7 @@ def kernel_network_mirror_worker():
                     "latency_ms": round(max(0.0, now_ts - req_item["ts"]), 4),
                     "user_agent": req_item["user_agent"],
                     "referer": req_item["referer"],
+                    "headers": req_item.get("headers", {}),
                 })
                 msg = f"<190>nginx: {event_json}".encode("utf-8", errors="ignore")
                 udp_sock.sendto(msg[:60000], (target_host, SYSLOG_PORT))
@@ -327,13 +331,31 @@ def kernel_network_mirror_worker():
                         k, v = hline.split(":", 1)
                         headers_map[k.strip().lower()] = v.strip()
 
-                # Si es tráfico proxy_pass desde Nginx a un backend, extraer la IP real del cliente externo
+                # Extraer tanto la IP Real del Cliente como la IP del nodo de Cloudflare (si aplica)
+                cf_connecting_ip = headers_map.get("cf-connecting-ip") or headers_map.get("true-client-ip") or ""
+                xff_raw = headers_map.get("x-forwarded-for", "")
+                xff_parts = [p.strip() for p in xff_raw.split(",") if p.strip()]
+                x_real_ip = headers_map.get("x-real-ip", "").strip()
+                cf_ray = headers_map.get("cf-ray", "").strip()
+                cf_country = headers_map.get("cf-ipcountry", "").strip()
+
                 real_ip = (
-                    headers_map.get("x-real-ip")
-                    or headers_map.get("cf-connecting-ip")
-                    or (headers_map.get("x-forwarded-for", "").split(",")[0].strip())
+                    cf_connecting_ip
+                    or (xff_parts[0] if xff_parts else "")
+                    or x_real_ip
                     or src_ip
                 )
+
+                # Identificar la IP de borde (nodo Cloudflare o conexión entrante externa)
+                edge_ip = src_ip
+                if src_ip.startswith(("127.", "10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31.")):
+                    if len(xff_parts) >= 2:
+                        edge_ip = xff_parts[-1]
+                    elif (now - last_external_edge["ts"]) <= 2.0 and last_external_edge["ip"]:
+                        edge_ip = last_external_edge["ip"]
+                else:
+                    last_external_edge["ip"] = src_ip
+                    last_external_edge["ts"] = now
 
                 # Ignorar peticiones desde este mismo servidor cuando Nginx ya recibió el paquete directo
                 if real_ip in ("127.0.0.1", "::1") and any(p in full_uri for p in ("/stub_status", "/nginx_status", "/metrics")):
@@ -347,15 +369,30 @@ def kernel_network_mirror_worker():
 
                 display_uri = f"[{host_hdr}] {uri}" if host_hdr and not uri.startswith("[") else uri
                 recent_client_activity[real_ip] = now
+                recent_client_activity[edge_ip] = now
+
+                req_headers_info = {
+                    "host": host_hdr,
+                    "cf_connecting_ip": cf_connecting_ip,
+                    "x_forwarded_for": xff_raw,
+                    "x_real_ip": x_real_ip,
+                    "cf_ray": cf_ray,
+                    "cf_ipcountry": cf_country,
+                    "edge_ip": edge_ip,
+                    "raw_src_ip": src_ip,
+                }
 
                 pending_http[(src_ip, src_port, dst_ip, dst_port)] = {
                     "ts": now,
-                    "client_ip": real_ip,
+                    "client_ip": edge_ip if (cf_ray or cf_connecting_ip) else real_ip,
+                    "real_client_ip": real_ip if real_ip != edge_ip else cf_connecting_ip,
+                    "cloudflare_ip": edge_ip if (cf_ray or cf_connecting_ip) else "",
                     "http_method": method,
                     "uri": display_uri,
                     "query_params": query_params,
                     "user_agent": headers_map.get("user-agent", ""),
                     "referer": headers_map.get("referer", host_hdr),
+                    "headers": req_headers_info,
                 }
 
             # 2. Respuesta HTTP en memoria (empareja el código de estado 200/404/500/403 con la petición)
@@ -369,6 +406,8 @@ def kernel_network_mirror_worker():
                     latency = round(max(0.0, now - req_item["ts"]), 4)
                     event_json = json.dumps({
                         "client_ip": req_item["client_ip"],
+                        "real_client_ip": req_item.get("real_client_ip", ""),
+                        "cloudflare_ip": req_item.get("cloudflare_ip", ""),
                         "http_method": req_item["http_method"],
                         "uri": req_item["uri"],
                         "query_params": req_item["query_params"],
@@ -377,12 +416,16 @@ def kernel_network_mirror_worker():
                         "latency_ms": latency,
                         "user_agent": req_item["user_agent"],
                         "referer": req_item["referer"],
+                        "headers": req_item.get("headers", {}),
                     })
                     msg = f"<190>nginx: {event_json}".encode("utf-8", errors="ignore")
                     udp_sock.sendto(msg[:60000], (target_host, SYSLOG_PORT))
 
             # 3. Handshake TLS ClientHello en puerto 443 (para sitios HTTPS estáticos o sin proxy_pass HTTP)
             elif dst_port == 443 and payload[0] == 0x16:
+                if not src_ip.startswith(("127.", "10.", "192.168.")):
+                    last_external_edge["ip"] = src_ip
+                    last_external_edge["ts"] = now
                 sni = extract_tls_sni(payload)
                 if sni and (now - recent_client_activity.get(src_ip, 0)) > 2.0:
                     recent_client_activity[src_ip] = now

@@ -110,7 +110,9 @@ COMBINED_LOG_REGEX = re.compile(
     r'(?P<ip>[0-9a-fA-F\.:]+)\s+-\s+(?P<user>\S+)\s+\[(?P<time>[^\]]+)\]\s+'
     r'"(?P<request>[^"]*)"\s+(?P<status>\d{3})\s+(?P<bytes>\d+|-)\s+'
     r'"(?P<referer>[^"]*)"\s+"(?P<agent>[^"]*)"'
+    r'(?P<extra>(?:\s+"[^"]*")*)'
 )
+IP_TOKEN_REGEX = re.compile(r'\b(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]{3,39})\b')
 
 INTERNAL_HEALTHCHECK_PATHS = ('/stub_status', '/nginx_status', '/metrics', '/healthz')
 recent_dedup_cache = {}
@@ -186,11 +188,38 @@ def parse_nginx_combined_syslog(raw_msg, sender_ip):
     referer = m.group('referer') if m.group('referer') != '-' else ''
     user_agent = m.group('agent') if m.group('agent') != '-' else ''
 
+    # Extraer X-Forwarded-For / CF-Connecting-IP si el formato main/extendido de Nginx lo incluye al final
+    extra_raw = (m.group('extra') or '').strip()
+    xff_extracted = ''
+    real_client_ip = ''
+    if extra_raw:
+        quoted_fields = re.findall(r'"([^"]*)"', extra_raw)
+        valid_extra_ips = []
+        for qf in quoted_fields:
+            qf_clean = qf.strip()
+            if qf_clean and qf_clean != '-':
+                for ip_m in IP_TOKEN_REGEX.findall(qf_clean):
+                    if '.' in ip_m or ':' in ip_m:
+                        valid_extra_ips.append(ip_m)
+        if valid_extra_ips:
+            xff_extracted = ', '.join(valid_extra_ips)
+            for cand_ip in valid_extra_ips:
+                if cand_ip != client_ip and cand_ip not in ('127.0.0.1', '::1'):
+                    real_client_ip = cand_ip
+                    break
+
     if vhost_tag and vhost_tag not in ('access', 'nginx') and not uri.startswith('['):
         uri = f"[{vhost_tag}] {uri}"
 
+    hdrs = {'log_type': 'access_combined', 'vhost': vhost_tag}
+    if xff_extracted:
+        hdrs['x_forwarded_for'] = xff_extracted
+    if real_client_ip:
+        hdrs['real_client_ip'] = real_client_ip
+
     return {
         'client_ip': client_ip,
+        'real_client_ip': real_client_ip,
         'http_method': http_method,
         'uri': uri,
         'query_params': query_params,
@@ -200,7 +229,7 @@ def parse_nginx_combined_syslog(raw_msg, sender_ip):
         'user_agent': user_agent,
         'referer': referer or vhost_tag,
         'node_ip': sender_ip,
-        'headers': {'log_type': 'access_combined', 'vhost': vhost_tag}
+        'headers': hdrs
     }
 
 def parse_nginx_error_syslog(raw_msg, sender_ip):
@@ -306,6 +335,26 @@ def run_udp_syslog_receiver():
                         log_obj['user_agent'] = log_obj.get('http_user_agent', '')
                     if 'referer' not in log_obj and 'http_referer' in log_obj:
                         log_obj['referer'] = log_obj.get('http_referer', '')
+                    # Preservar cabeceras de IP real de cliente detrás de Cloudflare / Proxy
+                    hdrs = log_obj.get('headers') if isinstance(log_obj.get('headers'), dict) else {}
+                    for src_k, dst_k in (
+                        ('http_cf_connecting_ip', 'cf_connecting_ip'),
+                        ('cf_connecting_ip', 'cf_connecting_ip'),
+                        ('http_x_forwarded_for', 'x_forwarded_for'),
+                        ('x_forwarded_for', 'x_forwarded_for'),
+                        ('http_x_real_ip', 'x_real_ip'),
+                        ('x_real_ip', 'x_real_ip'),
+                        ('http_cf_ray', 'cf_ray'),
+                        ('cf_ray', 'cf_ray'),
+                        ('http_cf_ipcountry', 'cf_ipcountry'),
+                        ('cf_country', 'cf_ipcountry'),
+                        ('real_client_ip', 'real_client_ip'),
+                        ('cloudflare_ip', 'cloudflare_ip'),
+                    ):
+                        val = str(log_obj.get(src_k) or '').strip()
+                        if val and val != '-':
+                            hdrs[dst_k] = val
+                    log_obj['headers'] = hdrs
                     # Ignorar chequeos internos de metricas desde loopback
                     if log_obj.get('client_ip') in ('127.0.0.1', '::1') and any(p in str(log_obj.get('uri', '')) for p in INTERNAL_HEALTHCHECK_PATHS):
                         continue

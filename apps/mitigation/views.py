@@ -9,7 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from .models import BanCandidate, ActiveBan, IpReputation, NodeBanSync
 from apps.nodes.models import ProxyNode
 from apps.detection.models import SecurityEvent, TrafficLog
-from apps.detection.engine import is_cloudflare_ip
+from apps.detection.engine import is_cloudflare_ip, extract_log_ip_meta
 from apps.reports.models import AuditTrail
 from apps.notifications.services import send_telegram_alert
 
@@ -74,12 +74,17 @@ def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_
     if host_header:
         raw_lines.append(f"Host: {host_header}")
     raw_lines.append(f"X-Real-IP: {ip_str}")
+    ip_meta = extract_log_ip_meta(ip_str, headers)
+    if ip_meta['cloudflare_ip']:
+        raw_lines.append(f"X-Cloudflare-Edge-IP: {ip_meta['cloudflare_ip']}")
+    if ip_meta['real_client_ip']:
+        raw_lines.append(f"CF-Connecting-IP: {ip_meta['real_client_ip']}")
     if user_agent:
         raw_lines.append(f"User-Agent: {user_agent}")
     if referer and referer != '-':
         raw_lines.append(f"Referer: {referer}")
     for hk, hv in headers.items():
-        if hk.lower() not in ('host', 'user-agent', 'referer', 'x-real-ip'):
+        if hk.lower() not in ('host', 'user-agent', 'referer', 'x-real-ip') and hv:
             raw_lines.append(f"{hk}: {hv}")
 
     raw_lines.append("")
@@ -93,6 +98,11 @@ def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_
         'id': req_id,
         'timestamp': ts_str,
         'client_ip': ip_str,
+        'is_cloudflare': ip_meta['is_cloudflare'],
+        'cloudflare_ip': ip_meta['cloudflare_ip'],
+        'real_client_ip': ip_meta['real_client_ip'],
+        'cf_ray': ip_meta.get('cf_ray', ''),
+        'cf_country': ip_meta.get('cf_country', ''),
         'node': node_str,
         'http_method': method,
         'host': host_header or node_str,
@@ -112,11 +122,30 @@ def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_
         'raw_http': "\n".join(raw_lines),
     }
 
+def _resolve_candidate_cf_info(c):
+    ev = c.trigger_event
+    ev_details = ev.details if (ev and isinstance(ev.details, dict)) else {}
+    meta = extract_log_ip_meta(c.client_ip, ev_details)
+    if meta['is_cloudflare'] and not meta['real_client_ip']:
+        recent_logs = TrafficLog.objects.filter(client_ip=c.client_ip).exclude(raw_headers={}).order_by('-created_at')[:15]
+        for rl in recent_logs:
+            sub = extract_log_ip_meta(rl.client_ip, rl.raw_headers)
+            if sub['real_client_ip']:
+                meta['real_client_ip'] = sub['real_client_ip']
+                if not meta['cf_ray'] and sub.get('cf_ray'):
+                    meta['cf_ray'] = sub['cf_ray']
+                break
+    c.is_cloudflare = meta['is_cloudflare']
+    c.cloudflare_ip = meta['cloudflare_ip']
+    c.real_client_ip = meta['real_client_ip']
+    c.cf_ray = meta.get('cf_ray', '')
+    return meta
+
 @login_required
 def candidates_list_view(request):
     candidates = list(BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule', 'trigger_event__node'))
     for c in candidates:
-        c.is_cloudflare = is_cloudflare_ip(c.client_ip)
+        _resolve_candidate_cf_info(c)
     return render(request, 'mitigation/candidates.html', {'candidates': candidates})
 
 @login_required
@@ -187,12 +216,22 @@ def candidate_inspect_api_view(request, candidate_id):
     if not recent_requests:
         recent_requests = [primary_request]
 
+    cand_cf = _resolve_candidate_cf_info(candidate)
+    if not cand_cf['real_client_ip']:
+        for req_item in recent_requests:
+            if req_item.get('real_client_ip'):
+                cand_cf['real_client_ip'] = req_item['real_client_ip']
+                break
+
     return JsonResponse({
         'status': 'ok',
         'candidate': {
             'id': candidate.id,
             'client_ip': ip_str,
-            'is_cloudflare': is_cloudflare_ip(ip_str),
+            'is_cloudflare': cand_cf['is_cloudflare'],
+            'cloudflare_ip': cand_cf['cloudflare_ip'],
+            'real_client_ip': cand_cf['real_client_ip'],
+            'cf_ray': cand_cf.get('cf_ray') or primary_request.get('cf_ray', ''),
             'accumulated_score': candidate.accumulated_score,
             'suggested_reason': candidate.suggested_reason,
             'status': candidate.status,
@@ -214,7 +253,8 @@ def approve_candidate_view(request, candidate_id):
         return redirect('mitigation:candidates')
 
     candidate = get_object_or_404(BanCandidate, id=candidate_id)
-    ip_str = candidate.client_ip
+    custom_target_ip = request.POST.get('target_ip', '').strip()
+    ip_str = custom_target_ip if custom_target_ip else candidate.client_ip
     duration_hours = int(request.POST.get('duration_hours', 24))
 
     expires_at = timezone.now() + timedelta(hours=duration_hours) if duration_hours > 0 else None

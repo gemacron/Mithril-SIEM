@@ -252,6 +252,10 @@ sudo systemctl enable --now mithril-bouncer.service</pre>
         </div>
         <pre id="code-nginx-format" class="terminal-box">log_format mithril_json escape=json '{'
     '"client_ip":"$remote_addr",'
+    '"real_client_ip":"$http_cf_connecting_ip",'
+    '"x_forwarded_for":"$http_x_forwarded_for",'
+    '"cf_ray":"$http_cf_ray",'
+    '"cf_country":"$http_cf_ipcountry",'
     '"time_local":"$time_iso8601",'
     '"http_method":"$request_method",'
     '"uri":"$uri",'
