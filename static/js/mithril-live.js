@@ -31,6 +31,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastNodesSignature = '';
   let lastCandidatesSignature = '';
   let isFetchingStats = false;
+  let isWsConnected = false;
+  let isFeedPaused = false;
+  const pausedEventsQueue = [];
 
   const wsQueue = [];
   let rafScheduled = false;
@@ -279,48 +282,34 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.nodes) renderNodesTable(data.nodes);
         if (data.candidates) renderCandidates(data.candidates);
 
-        if (data.recent_logs && tableBody && data.recent_logs.length > 0) {
-          const emptyRow = tableBody.querySelector('td[colspan="8"], td[colspan="7"]');
-          const firstRow = tableBody.querySelector('tr[data-log-id]');
-          const currentTopId = firstRow ? parseInt(firstRow.getAttribute('data-log-id') || '0', 10) : 0;
-          const latestServerId = data.recent_logs[0].id || 0;
+        // La tabla del Live Feed se gestiona de forma fluida y continua por WebSocket para evitar
+        // parpadeos y reseteos bruscos. El poller solo puebla la tabla en frío si no hay WebSocket activo.
+        if (!isWsConnected && data.recent_logs && tableBody && tableBody.children.length === 0) {
+          let rowsHtml = '';
+          data.recent_logs.forEach((event) => {
+            const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
+            const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
+            const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
+            const uriDisplay = event.uri || '/';
+            const countryDisplay = event.country_name || event.country_code || 'Remoto';
+            const isLoc = isEventLocal(event);
+            const hideRowStyle = (hideLocalIps && isLoc) ? 'style="display: none;"' : '';
 
-          if (emptyRow || tableBody.children.length === 0 || latestServerId > currentTopId) {
-            let rowsHtml = '';
-            data.recent_logs.forEach((event, idx) => {
-              const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
-              const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
-              const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
-              const uriDisplay = event.uri || '/';
-              const countryDisplay = event.country_name || event.country_code || 'Remoto';
-
-              // Si es un log nuevo detectado en el poller, disparar también la flecha en el mapa 2D
-              if (window.mithrilMap && event.id > currentTopId && idx < 4) {
-                const lat = parseFloat(event.latitude);
-                const lon = parseFloat(event.longitude);
-                if (!isNaN(lat) && !isNaN(lon)) {
-                  window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip);
-                }
-              }
-
-              const isLoc = isEventLocal(event);
-              const hideRowStyle = (hideLocalIps && isLoc) ? 'style="display: none;"' : '';
-
-              rowsHtml += `
-                <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" ${hideRowStyle}>
-                  <td><span class="${badgeClass}">${badgeText}</span></td>
-                  <td><strong>${event.timestamp || ''}</strong></td>
-                  <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
-                  <td>${realClientIpCellHtml(event)}</td>
-                  <td>${countryDisplay}</td>
-                  <td style="max-width: 450px; word-break: break-all;"><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem;">${uriDisplay}</code></td>
-                  <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
-                  <td><code>${event.node || 'Direct'}</code></td>
-                </tr>
-              `;
-            });
-            tableBody.innerHTML = rowsHtml;
-          }
+            rowsHtml += `
+              <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" ${hideRowStyle}>
+                <td><span class="${badgeClass}">${badgeText}</span></td>
+                <td><strong>${event.timestamp || ''}</strong></td>
+                <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
+                <td>${realClientIpCellHtml(event)}</td>
+                <td>${countryDisplay}</td>
+                <td style="max-width: 450px; word-break: break-all;"><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem;">${uriDisplay}</code></td>
+                <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
+                <td><code>${event.node || 'Direct'}</code></td>
+              </tr>
+            `;
+          });
+          tableBody.innerHTML = rowsHtml;
+          updateRowAgesAndFade();
         }
       })
       .catch(err => {
@@ -337,6 +326,47 @@ document.addEventListener('DOMContentLoaded', () => {
   // Control interactivo del filtro de IPs Locales / Balanceador
   const localIpToggle = document.getElementById('filterHideLocalIpsToggle');
   let hideLocalIps = true;
+
+  // Botón y controles de Pausa / Inspección de URLs
+  const pauseFeedBtn = document.getElementById('togglePauseFeedBtn');
+  const pauseFeedIcon = document.getElementById('pauseFeedIcon');
+  const pauseFeedText = document.getElementById('pauseFeedText');
+  const feedPausedBadge = document.getElementById('feedPausedBadge');
+
+  function setFeedPausedState(paused) {
+    isFeedPaused = paused;
+    if (pauseFeedIcon) pauseFeedIcon.textContent = paused ? '▶️' : '⏸️';
+    if (pauseFeedText) pauseFeedText.textContent = paused ? 'Reanudar Feed' : 'Pausar Feed';
+    if (feedPausedBadge) feedPausedBadge.style.display = paused ? 'inline-block' : 'none';
+    if (!paused && pausedEventsQueue.length > 0) {
+      const toFlush = pausedEventsQueue.splice(0, 15);
+      toFlush.forEach(ev => wsQueue.push(ev));
+      if (!rafScheduled) {
+        rafScheduled = true;
+        requestAnimationFrame(flushWsQueue);
+      }
+    }
+  }
+
+  if (pauseFeedBtn) {
+    pauseFeedBtn.addEventListener('click', () => {
+      setFeedPausedState(!isFeedPaused);
+    });
+  }
+
+  if (tableBody && tableBody.parentElement) {
+    // Al posar el mouse sobre la tabla, pausar temporalmente para que el operador pueda leer URLs y datos
+    tableBody.parentElement.addEventListener('mouseenter', () => {
+      if (!isFeedPaused) {
+        setFeedPausedState(true);
+      }
+    });
+    tableBody.parentElement.addEventListener('mouseleave', () => {
+      if (isFeedPaused) {
+        setFeedPausedState(false);
+      }
+    });
+  }
 
   function applyLocalFilterToDom() {
     if (!tableBody) return;
@@ -357,6 +387,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       r.style.display = isLocalRow ? 'none' : '';
     });
+    updateRowAgesAndFade();
   }
 
   if (localIpToggle) {
@@ -377,11 +408,62 @@ document.addEventListener('DOMContentLoaded', () => {
     applyLocalFilterToDom();
   }
 
+  // Desvanecimiento y caída gradual (Fade Out) hacia el fondo de la tabla
+  function updateRowAgesAndFade() {
+    if (!tableBody) return;
+    const allRows = Array.from(tableBody.querySelectorAll('tr[data-log-id]'));
+    const visibleRows = allRows.filter(r => r.style.display !== 'none');
+    const MAX_VISIBLE = 32;
+
+    visibleRows.forEach((row, idx) => {
+      if (idx < 18) {
+        row.style.opacity = '1';
+      } else if (idx < 24) {
+        row.style.opacity = '0.85';
+      } else if (idx < 28) {
+        row.style.opacity = '0.62';
+      } else if (idx < MAX_VISIBLE) {
+        row.style.opacity = '0.38';
+      } else {
+        // Fila que superó el límite visible: desvanecimiento gradual con animación CSS
+        if (!row.classList.contains('live-row-fading')) {
+          row.classList.add('live-row-fading');
+          setTimeout(() => {
+            if (row && row.parentNode) {
+              row.remove();
+            }
+          }, 600);
+        }
+      }
+    });
+
+    // Poda de seguridad para que el DOM no crezca indefinidamente
+    if (allRows.length > 70) {
+      for (let i = 70; i < allRows.length; i++) {
+        if (allRows[i] && allRows[i].parentNode) {
+          allRows[i].remove();
+        }
+      }
+    }
+  }
+
+  // Intervalo continuo para desvanecer suavemente peticiones viejas incluso en calma de tráfico
+  setInterval(updateRowAgesAndFade, 2500);
+
   function flushWsQueue() {
     rafScheduled = false;
     if (wsQueue.length === 0) return;
 
-    const batch = wsQueue.splice(-10);
+    // Si está pausado (por botón o por cursor sobre la tabla), guardar en cola en memoria sin mover el DOM
+    if (isFeedPaused) {
+      while (wsQueue.length > 0 && pausedEventsQueue.length < 60) {
+        pausedEventsQueue.push(wsQueue.shift());
+      }
+      wsQueue.length = 0;
+      return;
+    }
+
+    const batch = wsQueue.splice(-6);
     wsQueue.length = 0;
 
     let logsDelta = 0;
@@ -395,7 +477,6 @@ document.addEventListener('DOMContentLoaded', () => {
       const isLoc = isEventLocal(event);
 
       if (window.mithrilMap) {
-        // En el mapa táctico, si está activo el filtro de IPs locales y es local, no dibujamos arcos locales
         if (!(hideLocalIps && isLoc)) {
           const lat = parseFloat(event.latitude);
           const lon = parseFloat(event.longitude);
@@ -407,6 +488,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (tableBody) {
         const row = document.createElement('tr');
+        row.className = 'live-row-new'; // Deslizamiento suave de entrada
         const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
         const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
         const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
@@ -445,9 +527,7 @@ document.addEventListener('DOMContentLoaded', () => {
         emptyRow.parentElement.remove();
       }
       tableBody.insertBefore(fragment, tableBody.firstChild);
-      while (tableBody.children.length > 60) {
-        tableBody.removeChild(tableBody.lastChild);
-      }
+      updateRowAgesAndFade();
     }
   }
 
@@ -458,6 +538,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const socket = new WebSocket(socketUrl);
 
     socket.onopen = () => {
+      isWsConnected = true;
       if (indicator) {
         indicator.textContent = 'STREAM ACTIVO';
         indicator.className = 'badge safe';
@@ -467,7 +548,7 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
-        if (wsQueue.length > 40) wsQueue.shift();
+        if (wsQueue.length > 50) wsQueue.shift();
         wsQueue.push(event);
         if (!rafScheduled) {
           rafScheduled = true;
@@ -479,6 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     socket.onclose = () => {
+      isWsConnected = false;
       if (indicator) {
         indicator.textContent = 'RECONECTANDO';
         indicator.className = 'badge high';

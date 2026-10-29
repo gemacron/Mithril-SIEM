@@ -304,8 +304,45 @@ body {
   white-space: pre-wrap;
 }
 
+.terminal-table tr {
+  transition: opacity 0.6s ease, transform 0.4s ease, background 0.3s ease;
+}
+
 .terminal-table tr:hover {
-  background: rgba(0, 229, 255, 0.04);
+  background: rgba(0, 229, 255, 0.08) !important;
+}
+
+@keyframes rowSlideIn {
+  0% {
+    opacity: 0;
+    transform: translateY(-10px);
+    background: rgba(0, 229, 255, 0.16);
+  }
+  60% {
+    opacity: 1;
+    transform: translateY(0);
+    background: rgba(0, 229, 255, 0.08);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+    background: transparent;
+  }
+}
+
+.live-row-new {
+  animation: rowSlideIn 0.5s ease-out forwards;
+}
+
+.live-row-fading {
+  opacity: 0 !important;
+  transform: translateY(12px) !important;
+  pointer-events: none;
+}
+
+@keyframes pulse-orange {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.5); }
+  50% { box-shadow: 0 0 0 6px rgba(245, 158, 11, 0); }
 }
 
 /* BADGES */
