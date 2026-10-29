@@ -24,11 +24,13 @@ def dashboard_view(request):
     # Expirar bloqueos vencidos automáticamente
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=now).update(is_active=False)
 
-    threat_ips = set(
-        SecurityEvent.objects.filter(created_at__gte=since_24h).values_list('client_ip', flat=True)
-    )
-
     recent_logs = list(TrafficLog.objects.select_related('node').order_by('-created_at')[:25])
+    recent_ips = {log.client_ip for log in recent_logs}
+    threat_ips = set(
+        SecurityEvent.objects.filter(client_ip__in=recent_ips, created_at__gte=since_24h)
+        .values_list('client_ip', flat=True).distinct()
+    ) if recent_ips else set()
+
     for log in recent_logs:
         log.is_threat = (log.client_ip in threat_ips) or (log.status_code >= 400)
 
@@ -70,15 +72,22 @@ def api_map_data(request):
     )
 
     # Coordenadas recientes de incidentes y tráfico para los puntos del mapa
-    threat_ips = set(
-        SecurityEvent.objects.filter(created_at__gte=since).values_list('client_ip', flat=True)
-    )
     raw_points = list(
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(latitude__isnull=True)
         .values('latitude', 'longitude', 'country_name', 'client_ip', 'status_code')
         .order_by('-created_at')[:80]
     )
+    point_ips = {p['client_ip'] for p in raw_points}
+    threat_ips = set(
+        SecurityEvent.objects.filter(client_ip__in=point_ips, created_at__gte=since)
+        .values_list('client_ip', flat=True).distinct()
+    ) if point_ips else set()
+    candidate_ips = set(
+        BanCandidate.objects.filter(status='PENDING').values_list('client_ip', flat=True)
+    )
+    threat_ips.update(candidate_ips)
+
     recent_points = []
     for p in raw_points:
         p['is_threat'] = (p['client_ip'] in threat_ips) or (p['status_code'] >= 400)
@@ -122,10 +131,12 @@ def api_live_stats(request):
     pending_bans = BanCandidate.objects.filter(status='PENDING').count()
     active_bans = ActiveBan.objects.filter(is_active=True).count()
 
+    recent_logs_qs = list(TrafficLog.objects.select_related('node').order_by('-created_at')[:25])
+    recent_ips = {log.client_ip for log in recent_logs_qs}
     threat_ips = set(
-        SecurityEvent.objects.filter(created_at__gte=since_24h).values_list('client_ip', flat=True)
-    )
-    recent_logs_qs = TrafficLog.objects.select_related('node').order_by('-created_at')[:25]
+        SecurityEvent.objects.filter(client_ip__in=recent_ips, created_at__gte=since_24h)
+        .values_list('client_ip', flat=True).distinct()
+    ) if recent_ips else set()
     recent_logs_data = [
         {
             'id': log.id,

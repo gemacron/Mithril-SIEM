@@ -1,12 +1,10 @@
 /**
- * MITHRIL SIEM - Real-Time SOC Live Stream & Dashboard Synchronizer
- * Actualiza en tiempo real:
- * - WebSocket Live Traffic Feed con animaciones tácticas
- * - Mapa Táctico 2D (pulsos geográficos azul/rojo)
- * - 5 Contadores KPI superiores con micro-pulsos
- * - Badges de alerta en el Navbar
- * - Panel de Infraestructura de Proxies (RPS, CPU, RAM, Estado)
- * - Cola de Candidatos a Bloqueo (Autoban en espera con botones interactivos)
+ * MITHRIL SIEM - Real-Time SOC Live Stream & Dashboard Synchronizer (Zero-Freeze Edition)
+ * Optimizado para alta carga y análisis continuo sin bloqueos de UI:
+ * - Batching de WebSocket mediante requestAnimationFrame + DocumentFragment (cero Layout Thrashing)
+ * - Diffing inteligente de Candidatos a Bloqueo y Nodos (no destruye el DOM si no hubo cambios)
+ * - Poller asíncrono no solapado con AbortController
+ * - Aprobación / Descarte de candidatos vía AJAX sin detener el Mapa 2D ni el Live Stream
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -30,7 +28,14 @@ document.addEventListener('DOMContentLoaded', () => {
   // Socket status indicator
   const indicator = document.getElementById('socketStatusIndicator');
 
-  // Helper para leer cookies (CSRF)
+  let lastNodesSignature = '';
+  let lastCandidatesSignature = '';
+  let isFetchingStats = false;
+
+  // Cola de eventos WebSocket procesada por requestAnimationFrame para no bloquear el hilo principal
+  const wsQueue = [];
+  let rafScheduled = false;
+
   function getCookie(name) {
     let cookieValue = null;
     if (document.cookie && document.cookie !== '') {
@@ -46,29 +51,55 @@ document.addEventListener('DOMContentLoaded', () => {
     return cookieValue;
   }
 
-  function updateKpiWithPulse(element, newValue) {
+  function updateKpiFast(element, newValue) {
     if (!element) return;
-    const current = element.textContent.trim();
-    if (current !== String(newValue)) {
-      element.textContent = newValue;
-      element.classList.remove('kpi-pulse');
-      void element.offsetWidth;
-      element.classList.add('kpi-pulse');
+    const strVal = String(newValue);
+    if (element.textContent !== strVal) {
+      element.textContent = strVal;
     }
   }
 
-  function incrementKpi(element) {
-    if (!element) return;
-    const current = parseInt(element.textContent.trim() || '0', 10);
-    updateKpiWithPulse(element, current + 1);
+  function addKpiDelta(element, delta) {
+    if (!element || !delta) return;
+    const current = parseInt(element.textContent || '0', 10) || 0;
+    element.textContent = String(current + delta);
   }
 
+  // Acción AJAX para aprobar o descartar candidatos sin recargar ni detener el análisis del mapa
+  window.submitCandidateDecisionAjax = function (event, candidateId, actionType) {
+    if (event) event.preventDefault();
+    const csrfToken = getCookie('csrftoken') || '';
+    const formData = new FormData();
+    formData.append('csrfmiddlewaretoken', csrfToken);
+    formData.append('duration_hours', '24');
+
+    const url = `/mitigation/candidates/${candidateId}/${actionType}/`;
+    fetch(url, {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'XMLHttpRequest' },
+      body: formData
+    })
+      .then(() => {
+        lastCandidatesSignature = '';
+        fetchLiveStats();
+        if (typeof closeCandidateInspectModal === 'function') {
+          closeCandidateInspectModal();
+        }
+      })
+      .catch(err => console.debug('Error aplicando decisión:', err));
+    return false;
+  };
+
   // ==========================================
-  // RENDERIZADO DINÁMICO DE SECCIONES
+  // RENDERIZADO DIFERENCIAL DE SECCIONES
   // ==========================================
 
   function renderNodesTable(nodes) {
     if (!nodesTableBody) return;
+    const sig = JSON.stringify(nodes || []);
+    if (sig === lastNodesSignature) return;
+    lastNodesSignature = sig;
+
     if (!nodes || nodes.length === 0) {
       nodesTableBody.innerHTML = `
         <tr>
@@ -111,7 +142,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderCandidates(candidates) {
     if (!candidatesContainer) return;
-    const csrfToken = getCookie('csrftoken') || '';
+    const sig = JSON.stringify(candidates || []);
+    if (sig === lastCandidatesSignature) return;
+    lastCandidatesSignature = sig;
 
     if (!candidates || candidates.length === 0) {
       candidatesContainer.innerHTML = `
@@ -149,19 +182,12 @@ document.addEventListener('DOMContentLoaded', () => {
             <button type="button" class="btn btn-cyan" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" onclick="openCandidateInspectModal(${c.id})" title="Ver qué intentó hacer y todos los datos de la petición">
               🔍 Info
             </button>
-            <form method="POST" action="/mitigation/candidates/${c.id}/approve/" style="flex: 1;">
-              <input type="hidden" name="csrfmiddlewaretoken" value="${csrfToken}">
-              <input type="hidden" name="duration_hours" value="24">
-              <button type="submit" class="btn btn-crimson" style="width: 100%; justify-content: center; font-size: 0.75rem; padding: 0.35rem 0.6rem;">
-                🛑 Bloquear (24h)
-              </button>
-            </form>
-            <form method="POST" action="/mitigation/candidates/${c.id}/dismiss/">
-              <input type="hidden" name="csrfmiddlewaretoken" value="${csrfToken}">
-              <button type="submit" class="btn btn-dim" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" title="Descartar">
-                ✕ Descartar
-              </button>
-            </form>
+            <button type="button" class="btn btn-crimson" style="flex: 1; justify-content: center; font-size: 0.75rem; padding: 0.35rem 0.6rem;" onclick="submitCandidateDecisionAjax(event, ${c.id}, 'approve')">
+              🛑 Bloquear (24h)
+            </button>
+            <button type="button" class="btn btn-dim" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" onclick="submitCandidateDecisionAjax(event, ${c.id}, 'dismiss')" title="Descartar">
+              ✕ Descartar
+            </button>
           </div>
         </div>
       `;
@@ -171,25 +197,29 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ==========================================
-  // SINCRONIZACIÓN PERIÓDICA DE ESTADO (POLLER)
+  // SINCRONIZACIÓN PERIÓDICA NO BLOQUEANTE
   // ==========================================
 
   function fetchLiveStats() {
-    fetch('/api/live-stats/')
+    if (isFetchingStats) return;
+    isFetchingStats = true;
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4500);
+
+    fetch('/api/live-stats/', { signal: controller.signal })
       .then(res => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
       .then(data => {
-        // Actualizar KPIs
-        if (data.online_nodes !== undefined) updateKpiWithPulse(kpiOnlineNodes, data.online_nodes);
-        if (data.total_nodes !== undefined) updateKpiWithPulse(kpiTotalNodes, data.total_nodes);
-        if (data.total_logs_today !== undefined) updateKpiWithPulse(kpiTotalLogs, data.total_logs_today);
-        if (data.threats_today !== undefined) updateKpiWithPulse(kpiThreats, data.threats_today);
-        if (data.pending_bans !== undefined) updateKpiWithPulse(kpiPendingBans, data.pending_bans);
-        if (data.active_bans !== undefined) updateKpiWithPulse(kpiActiveBans, data.active_bans);
+        if (data.online_nodes !== undefined) updateKpiFast(kpiOnlineNodes, data.online_nodes);
+        if (data.total_nodes !== undefined) updateKpiFast(kpiTotalNodes, data.total_nodes);
+        if (data.total_logs_today !== undefined) updateKpiFast(kpiTotalLogs, data.total_logs_today);
+        if (data.threats_today !== undefined) updateKpiFast(kpiThreats, data.threats_today);
+        if (data.pending_bans !== undefined) updateKpiFast(kpiPendingBans, data.pending_bans);
+        if (data.active_bans !== undefined) updateKpiFast(kpiActiveBans, data.active_bans);
 
-        // Actualizar Navbar Badges
         if (navPendingBansBadge && data.pending_bans !== undefined) {
           navPendingBansBadge.textContent = data.pending_bans;
           navPendingBansBadge.style.display = data.pending_bans > 0 ? 'inline-block' : 'none';
@@ -201,9 +231,9 @@ document.addEventListener('DOMContentLoaded', () => {
           navOnlineNodesCount.textContent = data.online_nodes;
         }
 
-        // Actualizar tablas
         if (data.nodes) renderNodesTable(data.nodes);
         if (data.candidates) renderCandidates(data.candidates);
+
         if (data.recent_logs && tableBody && data.recent_logs.length > 0) {
           const emptyRow = tableBody.querySelector('td[colspan="7"]');
           const firstRow = tableBody.querySelector('tr[data-log-id]');
@@ -235,8 +265,79 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       })
       .catch(err => {
-        console.debug('Error sincronizando live-stats:', err);
+        if (err.name !== 'AbortError') {
+          console.debug('Error sincronizando live-stats:', err);
+        }
+      })
+      .finally(() => {
+        clearTimeout(timeoutId);
+        isFetchingStats = false;
       });
+  }
+
+  // ==========================================
+  // PROCESAMIENTO POR LOTES EN ANIMATION FRAME
+  // ==========================================
+
+  function flushWsQueue() {
+    rafScheduled = false;
+    if (wsQueue.length === 0) return;
+
+    // Tomar hasta los últimos 10 eventos si hubo una ráfaga masiva
+    const batch = wsQueue.splice(-10);
+    wsQueue.length = 0;
+
+    let logsDelta = 0;
+    let threatsDelta = 0;
+    const fragment = document.createDocumentFragment();
+
+    batch.forEach(event => {
+      logsDelta += 1;
+      if (event.is_threat) threatsDelta += 1;
+
+      if (window.mithrilMap) {
+        const lat = parseFloat(event.latitude);
+        const lon = parseFloat(event.longitude);
+        if (!isNaN(lat) && !isNaN(lon)) {
+          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip);
+        }
+      }
+
+      if (tableBody) {
+        const row = document.createElement('tr');
+        const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
+        const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
+        const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
+        const uriDisplay = event.uri ? (event.uri.length > 35 ? event.uri.substring(0, 35) + '...' : event.uri) : '/';
+        const countryDisplay = event.country_name || event.country_code || 'Remoto';
+
+        if (event.id) row.setAttribute('data-log-id', event.id);
+        row.innerHTML = `
+          <td><span class="${badgeClass}">${badgeText}</span></td>
+          <td><strong>${event.timestamp || ''}</strong></td>
+          <td><code>${event.client_ip || ''}</code></td>
+          <td>${countryDisplay}</td>
+          <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
+          <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
+          <td><code>${event.node || 'Direct'}</code></td>
+        `;
+        fragment.insertBefore(row, fragment.firstChild);
+      }
+    });
+
+    addKpiDelta(kpiTotalLogs, logsDelta);
+    addKpiDelta(kpiThreats, threatsDelta);
+
+    if (tableBody) {
+      const emptyRow = tableBody.querySelector('td[colspan="7"]');
+      if (emptyRow && emptyRow.parentElement) {
+        emptyRow.parentElement.remove();
+      }
+      tableBody.insertBefore(fragment, tableBody.firstChild);
+      while (tableBody.children.length > 25) {
+        tableBody.removeChild(tableBody.lastChild);
+      }
+    }
   }
 
   // ==========================================
@@ -250,7 +351,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const socket = new WebSocket(socketUrl);
 
     socket.onopen = () => {
-      console.log('🛡️ Mithril SIEM: Conectado a Live Stream WebSocket.');
       if (indicator) {
         indicator.textContent = 'STREAM ACTIVO';
         indicator.className = 'badge safe';
@@ -260,56 +360,11 @@ document.addEventListener('DOMContentLoaded', () => {
     socket.onmessage = (e) => {
       try {
         const event = JSON.parse(e.data);
-
-        // 1. Añadir pulso táctico en el mapa 2D
-        if (window.mithrilMap) {
-          const lat = parseFloat(event.latitude);
-          const lon = parseFloat(event.longitude);
-          if (!isNaN(lat) && !isNaN(lon)) {
-            window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip);
-          }
-        }
-
-        // 2. Incrementar contadores en vivo al instante
-        incrementKpi(kpiTotalLogs);
-        if (event.is_threat) {
-          incrementKpi(kpiThreats);
-        }
-
-        // 3. Insertar fila en el Live Feed
-        if (tableBody) {
-          // Limpiar fila inicial si existe
-          const emptyRow = tableBody.querySelector('td[colspan="7"]');
-          if (emptyRow && emptyRow.parentElement) {
-            emptyRow.parentElement.remove();
-          }
-
-          const row = document.createElement('tr');
-          const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
-          const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
-          const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
-          const flashClass = event.is_threat ? 'row-flash-crimson' : 'row-flash-cyan';
-          const uriDisplay = event.uri ? (event.uri.length > 35 ? event.uri.substring(0, 35) + '...' : event.uri) : '/';
-          const countryDisplay = event.country_name || event.country_code || 'Remoto';
-
-          row.className = flashClass;
-          if (event.id) row.setAttribute('data-log-id', event.id);
-          row.innerHTML = `
-            <td><span class="${badgeClass}">${badgeText}</span></td>
-            <td><strong>${event.timestamp || ''}</strong></td>
-            <td><code>${event.client_ip || ''}</code></td>
-            <td>${countryDisplay}</td>
-            <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
-            <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
-            <td><code>${event.node || 'Direct'}</code></td>
-          `;
-
-          tableBody.insertBefore(row, tableBody.firstChild);
-
-          // Limitar buffer a 25 filas visibles
-          while (tableBody.children.length > 25) {
-            tableBody.removeChild(tableBody.lastChild);
-          }
+        if (wsQueue.length > 40) wsQueue.shift();
+        wsQueue.push(event);
+        if (!rafScheduled) {
+          rafScheduled = true;
+          requestAnimationFrame(flushWsQueue);
         }
       } catch (err) {
         console.error('Error parseando evento WebSocket:', err);
@@ -317,7 +372,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     socket.onclose = () => {
-      console.warn('Mithril WebSocket desconectado. Reintentando en 3s...');
       if (indicator) {
         indicator.textContent = 'RECONECTANDO';
         indicator.className = 'badge high';
@@ -325,18 +379,15 @@ document.addEventListener('DOMContentLoaded', () => {
       setTimeout(connectSocket, 3000);
     };
 
-    socket.onerror = (err) => {
-      console.error('Error en WebSocket:', err);
+    socket.onerror = () => {
       socket.close();
     };
   }
 
-  // Iniciar cliente de streaming y poller de sincronización
   if (tableBody) {
     connectSocket();
   }
 
-  // Poller periódico cada 2.5 segundos para refrescar todas las secciones
   fetchLiveStats();
-  setInterval(fetchLiveStats, 2500);
+  setInterval(fetchLiveStats, 3000);
 });

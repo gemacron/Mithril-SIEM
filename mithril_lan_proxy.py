@@ -81,22 +81,30 @@ def run_tcp_forwarder():
             print(f"⚠️ [TCP] Error aceptando cliente: {e}", flush=True)
 
 def ingest_worker():
-    """Consumidor de cola que envía logs a la API de ingestión de Mithril"""
+    """Consumidor de cola que agrupa logs en lotes (micro-batching) y los envía a la API de Mithril sin saturar Daphne"""
     while True:
-        item = log_queue.get()
+        first_item = log_queue.get()
+        batch = [first_item]
         try:
-            payload_bytes = json.dumps(item).encode('utf-8')
+            while len(batch) < 25:
+                try:
+                    batch.append(log_queue.get_nowait())
+                except queue.Empty:
+                    break
+
+            payload_bytes = json.dumps(batch).encode('utf-8')
             headers = {
                 "Content-Type": "application/json",
-                "X-Node-IP": item.get('node_ip', '')
+                "X-Node-IP": first_item.get('node_ip', '')
             }
             req = urllib.request.Request(INGEST_URL, data=payload_bytes, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=3) as resp:
+            with urllib.request.urlopen(req, timeout=4) as resp:
                 resp.read()
         except Exception:
             pass
         finally:
-            log_queue.task_done()
+            for _ in batch:
+                log_queue.task_done()
 
 COMBINED_LOG_REGEX = re.compile(
     r'(?P<ip>[0-9a-fA-F\.:]+)\s+-\s+(?P<user>\S+)\s+\[(?P<time>[^\]]+)\]\s+'

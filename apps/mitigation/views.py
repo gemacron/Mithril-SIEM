@@ -272,8 +272,12 @@ def approve_candidate_view(request, candidate_id):
         )
     )
 
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return JsonResponse({'status': 'ok', 'action': 'approved', 'client_ip': ip_str})
+
     messages.success(request, f"IP {ip_str} bloqueada exitosamente. Se ha ordenado el bloqueo a todos los proxies.")
-    return redirect('mitigation:candidates')
+    referer = request.META.get('HTTP_REFERER')
+    return redirect(referer) if referer else redirect('mitigation:candidates')
 
 @login_required
 def dismiss_candidate_view(request, candidate_id):
@@ -297,8 +301,12 @@ def dismiss_candidate_view(request, candidate_id):
         ip_address=request.META.get('REMOTE_ADDR')
     )
 
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return JsonResponse({'status': 'ok', 'action': 'dismissed', 'client_ip': candidate.client_ip})
+
     messages.info(request, f"Candidato {candidate.client_ip} descartado.")
-    return redirect('mitigation:candidates')
+    referer = request.META.get('HTTP_REFERER')
+    return redirect(referer) if referer else redirect('mitigation:candidates')
 
 @login_required
 def active_bans_list_view(request):

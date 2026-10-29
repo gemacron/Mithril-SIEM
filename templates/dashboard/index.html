@@ -165,19 +165,12 @@
                 <button type="button" class="btn btn-cyan" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" onclick="openCandidateInspectModal({{ c.id }})" title="Ver qué intentó hacer y todos los datos de la petición">
                   🔍 Info
                 </button>
-                <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}" style="flex: 1;">
-                  {% csrf_token %}
-                  <input type="hidden" name="duration_hours" value="24">
-                  <button type="submit" class="btn btn-crimson" style="width: 100%; justify-content: center; font-size: 0.75rem; padding: 0.35rem 0.6rem;">
-                    🛑 Bloquear (24h)
-                  </button>
-                </form>
-                <form method="POST" action="{% url 'mitigation:dismiss_candidate' c.id %}">
-                  {% csrf_token %}
-                  <button type="submit" class="btn btn-dim" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" title="Descartar">
-                    ✕ Descartar
-                  </button>
-                </form>
+                <button type="button" class="btn btn-crimson" style="flex: 1; justify-content: center; font-size: 0.75rem; padding: 0.35rem 0.6rem;" onclick="submitCandidateDecisionAjax(event, {{ c.id }}, 'approve')">
+                  🛑 Bloquear (24h)
+                </button>
+                <button type="button" class="btn btn-dim" style="font-size: 0.75rem; padding: 0.35rem 0.6rem;" onclick="submitCandidateDecisionAjax(event, {{ c.id }}, 'dismiss')" title="Descartar">
+                  ✕ Descartar
+                </button>
               </div>
             </div>
             {% endfor %}

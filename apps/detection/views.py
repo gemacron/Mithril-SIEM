@@ -6,7 +6,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.contrib import messages
 from .models import SecurityRule, TrafficLog, SecurityEvent
-from .engine import process_incoming_log
+from .engine import process_incoming_log, invalidate_rules_cache
 from apps.nodes.models import ProxyNode
 from apps.reports.models import AuditTrail
 
@@ -50,6 +50,7 @@ def rules_list_view(request):
                         details={'name': rule.name, 'category': category, 'risk_points': risk_points},
                         ip_address=request.META.get('REMOTE_ADDR')
                     )
+                    invalidate_rules_cache()
                     messages.success(request, f"Regla '{rule.code}' guardada y activada exitosamente.")
                 except re.error as err:
                     messages.error(request, f"Expresión regular inválida: {err}")
@@ -71,6 +72,7 @@ def rule_toggle_view(request, rule_id):
     rule = get_object_or_404(SecurityRule, id=rule_id)
     rule.is_active = not rule.is_active
     rule.save(update_fields=['is_active'])
+    invalidate_rules_cache()
 
     AuditTrail.objects.create(
         user=request.user,
@@ -90,6 +92,7 @@ def rule_delete_view(request, rule_id):
         rule = get_object_or_404(SecurityRule, id=rule_id)
         code = rule.code
         rule.delete()
+        invalidate_rules_cache()
         AuditTrail.objects.create(
             user=request.user,
             action='DELETE_SECURITY_RULE',
