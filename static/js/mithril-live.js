@@ -57,11 +57,27 @@ document.addEventListener('DOMContentLoaded', () => {
       const titleText = cfNodeIp ? `Nodo Cloudflare: ${cfNodeIp}` : 'IP perteneciente a la red CDN/Proxy de Cloudflare';
       html += `<span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="${titleText}">${label}</span>`;
     }
-    if (realClientIp) {
-      const realLabel = fullText ? `🎯 IP Real: ${realClientIp}` : `🎯 ${realClientIp}`;
-      html += `<span style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.22rem; font-family: var(--font-mono);" title="IP Real del Cliente detrás de Cloudflare">${realLabel}</span>`;
+    if (realClientIp && fullText) {
+      html += `<span style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.22rem; font-family: var(--font-mono);" title="IP Real del Cliente detrás de Cloudflare">🎯 IP Real: ${realClientIp}</span>`;
     }
     return html;
+  }
+
+  function realClientIpCellHtml(event) {
+    if (event.real_client_ip) {
+      return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 ${event.real_client_ip}</code>`;
+    }
+    if (!event.is_cloudflare) {
+      return `<code style="color: var(--neon-emerald); font-size: 0.75rem;">${event.client_ip || '-'}</code>`;
+    }
+    const ua = String(event.user_agent || '');
+    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('Zabbix')) {
+      return `<span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por el monitor de salud de Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>`;
+    }
+    if (event.method === 'HTTPS') {
+      return `<span style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);" title="Paquete TLS ClientHello previo a las cabeceras HTTP">🔒 Handshake TLS</span>`;
+    }
+    return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Actualiza el agente en el nodo proxy para extraer CF-Connecting-IP / X-Forwarded-For">⚡ Actualizar Agente</span>`;
   }
 
   function updateKpiFast(element, newValue) {
@@ -239,7 +255,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.candidates) renderCandidates(data.candidates);
 
         if (data.recent_logs && tableBody && data.recent_logs.length > 0) {
-          const emptyRow = tableBody.querySelector('td[colspan="7"]');
+          const emptyRow = tableBody.querySelector('td[colspan="8"], td[colspan="7"]');
           const firstRow = tableBody.querySelector('tr[data-log-id]');
           const currentTopId = firstRow ? parseInt(firstRow.getAttribute('data-log-id') || '0', 10) : 0;
           const latestServerId = data.recent_logs[0].id || 0;
@@ -266,7 +282,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 <tr data-log-id="${event.id || ''}">
                   <td><span class="${badgeClass}">${badgeText}</span></td>
                   <td><strong>${event.timestamp || ''}</strong></td>
-                  <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, event.real_client_ip, event.cloudflare_ip)}</td>
+                  <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
+                  <td>${realClientIpCellHtml(event)}</td>
                   <td>${countryDisplay}</td>
                   <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
                   <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
@@ -324,7 +341,8 @@ document.addEventListener('DOMContentLoaded', () => {
         row.innerHTML = `
           <td><span class="${badgeClass}">${badgeText}</span></td>
           <td><strong>${event.timestamp || ''}</strong></td>
-          <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, event.real_client_ip, event.cloudflare_ip)}</td>
+          <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
+          <td>${realClientIpCellHtml(event)}</td>
           <td>${countryDisplay}</td>
           <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
           <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
@@ -338,7 +356,7 @@ document.addEventListener('DOMContentLoaded', () => {
     addKpiDelta(kpiThreats, threatsDelta);
 
     if (tableBody) {
-      const emptyRow = tableBody.querySelector('td[colspan="7"]');
+      const emptyRow = tableBody.querySelector('td[colspan="8"], td[colspan="7"]');
       if (emptyRow && emptyRow.parentElement) {
         emptyRow.parentElement.remove();
       }

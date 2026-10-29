@@ -855,6 +855,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': meta['real_client_ip'],
+            'user_agent': log.user_agent or '',
             'risk_score': reputation.current_risk_score if reputation else 0,
             'violations_count': len(events) if events else 0,
         }

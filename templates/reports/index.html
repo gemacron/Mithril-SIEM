@@ -55,7 +55,8 @@
           <tr>
             <th>ID</th>
             <th>Fecha y Hora (UTC)</th>
-            <th>IP Cliente</th>
+            <th>IP Nodo / Conexión</th>
+            <th>IP Real Cliente</th>
             <th>País</th>
             <th>Método / Ruta URI</th>
             <th>Código</th>
@@ -74,10 +75,20 @@
                 {% if log.is_cloudflare %}
                   <span style="background: rgba(246, 130, 31, 0.22); color: #f6821f; border: 1px solid rgba(246, 130, 31, 0.6); font-size: 0.62rem; font-weight: 800; padding: 1px 4px; border-radius: 3px;" title="Nodo Cloudflare: {{ log.cloudflare_ip|default:log.client_ip }}">☁️ CF</span>
                 {% endif %}
-                {% if log.real_client_ip %}
-                  <span style="background: rgba(0, 229, 255, 0.16); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.55); font-size: 0.62rem; font-weight: 800; padding: 1px 5px; border-radius: 3px;" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</span>
-                {% endif %}
               </div>
+            </td>
+            <td>
+              {% if log.real_client_ip %}
+                <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.74rem; font-weight: 800; padding: 1px 6px; border-radius: 4px;">🎯 {{ log.real_client_ip }}</code>
+              {% elif not log.is_cloudflare %}
+                <code style="color: var(--neon-emerald); font-size: 0.74rem;">{{ log.client_ip }}</code>
+              {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent %}
+                <span style="color: #f6821f; font-size: 0.7rem;">☁️ Sonda Healthcheck</span>
+              {% elif log.http_method == 'HTTPS' %}
+                <span style="color: var(--text-dim); font-size: 0.7rem;">🔒 Handshake TLS</span>
+              {% else %}
+                <span style="color: var(--neon-amber); font-size: 0.7rem;">⚡ Actualizar Agente</span>
+              {% endif %}
             </td>
             <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
             <td>
@@ -92,7 +103,7 @@
           </tr>
           {% empty %}
           <tr>
-            <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 2rem;">
+            <td colspan="9" style="text-align: center; color: var(--text-dim); padding: 2rem;">
               No se encontraron peticiones con los filtros seleccionados.
             </td>
           </tr>

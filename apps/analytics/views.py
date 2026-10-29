@@ -201,6 +201,7 @@ def api_live_stats(request):
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': meta['real_client_ip'],
+            'user_agent': log.user_agent or '',
         })
 
     nodes_data = [

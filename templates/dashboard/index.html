@@ -93,7 +93,8 @@
             <tr>
               <th>Tipo</th>
               <th>Hora</th>
-              <th>IP Cliente</th>
+              <th>IP Nodo / Conexión</th>
+              <th>IP Real Cliente</th>
               <th>País</th>
               <th>Método / Ruta</th>
               <th>Código</th>
@@ -116,8 +117,18 @@
                 {% if log.is_cloudflare %}
                 <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="Nodo Cloudflare: {{ log.cloudflare_ip|default:log.client_ip }}">☁️ CF</span>
                 {% endif %}
+              </td>
+              <td>
                 {% if log.real_client_ip %}
-                <span style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.2rem; font-family: var(--font-mono);" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</span>
+                  <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</code>
+                {% elif not log.is_cloudflare %}
+                  <code style="color: var(--neon-emerald); font-size: 0.75rem;">{{ log.client_ip }}</code>
+                {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent %}
+                  <span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por el monitor de salud de Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>
+                {% elif log.http_method == 'HTTPS' %}
+                  <span style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);" title="Paquete TLS ClientHello previo a las cabeceras HTTP">🔒 Handshake TLS</span>
+                {% else %}
+                  <span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Actualiza el agente en el nodo proxy para extraer CF-Connecting-IP / X-Forwarded-For">⚡ Actualizar Agente</span>
                 {% endif %}
               </td>
               <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
@@ -127,7 +138,7 @@
             </tr>
             {% empty %}
             <tr>
-              <td colspan="7" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">
+              <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 1.5rem;">
                 Esperando flujo de peticiones desde los proxies Nginx...
               </td>
             </tr>
