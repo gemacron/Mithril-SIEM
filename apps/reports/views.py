@@ -12,14 +12,36 @@ def reports_index_view(request):
     search_ip = request.GET.get('ip', '').strip()
     search_uri = request.GET.get('uri', '').strip()
     search_status = request.GET.get('status', '').strip()
+    hide_local = request.GET.get('hide_local', '1') == '1'
 
     traffic_qs = TrafficLog.objects.select_related('node').all()
     if search_ip:
         traffic_qs = traffic_qs.filter(client_ip__icontains=search_ip)
+    elif hide_local:
+        traffic_qs = (
+            traffic_qs.exclude(client_ip__startswith='192.168.')
+            .exclude(client_ip__startswith='10.')
+            .exclude(client_ip__startswith='127.')
+            .exclude(client_ip__startswith='169.254.')
+        )
     if search_uri:
         traffic_qs = traffic_qs.filter(uri__icontains=search_uri)
     if search_status.isdigit():
         traffic_qs = traffic_qs.filter(status_code=int(search_status))
+
+    def _is_private(ip):
+        if not ip:
+            return False
+        s = str(ip).strip()
+        if s.startswith(('127.', '10.', '192.168.', '169.254.')):
+            return True
+        if s.startswith('172.'):
+            parts = s.split('.')
+            if len(parts) >= 2 and parts[1].isdigit():
+                sec = int(parts[1])
+                if 16 <= sec <= 31:
+                    return True
+        return False
 
     total_traffic_count = traffic_qs.count()
     recent_traffic = list(traffic_qs[:100])
@@ -28,6 +50,8 @@ def reports_index_view(request):
         log.is_cloudflare = meta['is_cloudflare']
         log.cloudflare_ip = meta['cloudflare_ip']
         log.real_client_ip = meta['real_client_ip']
+        log.is_real_ip_local = _is_private(log.real_client_ip)
+        log.is_local_ip = log.is_real_ip_local or (not log.is_cloudflare and _is_private(log.client_ip))
     audit_records = AuditTrail.objects.select_related('user')[:50]
     recent_events = list(SecurityEvent.objects.select_related('rule', 'node')[:50])
     for ev in recent_events:
@@ -44,6 +68,7 @@ def reports_index_view(request):
         'search_ip': search_ip,
         'search_uri': search_uri,
         'search_status': search_status,
+        'hide_local': hide_local,
     })
 
 @login_required

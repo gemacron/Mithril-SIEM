@@ -332,6 +332,22 @@ def _is_valid_ip(ip_candidate):
         return False
 
 
+def is_private_local_ip(ip_str):
+    """Detecta si una dirección IP pertenece a rangos locales o RFC 1918 privados."""
+    if not ip_str:
+        return False
+    s = str(ip_str).strip()
+    if s.startswith(('127.', '10.', '192.168.', '169.254.', '::1')) or s in ('localhost', '-'):
+        return True
+    if s.startswith('172.'):
+        parts = s.split('.')
+        if len(parts) >= 2 and parts[1].isdigit():
+            sec = int(parts[1])
+            if 16 <= sec <= 31:
+                return True
+    return False
+
+
 def resolve_cloudflare_and_real_ip(data):
     """
     Separa e identifica simultáneamente:
@@ -339,6 +355,7 @@ def resolve_cloudflare_and_real_ip(data):
       2) `real_client_ip`: La IP real del cliente de origen (extraída de CF-Connecting-IP,
          True-Client-IP, X-Forwarded-For, X-Real-IP o correlación en memoria).
       3) `is_cloudflare`: True si interviene un nodo de Cloudflare o cabeceras CF.
+      4) `is_local_ip`: True si es tráfico originado en la LAN o balanceador local.
     """
     headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
     raw_ip = str(data.get('client_ip') or data.get('remote_addr') or '').strip()
@@ -398,14 +415,21 @@ def resolve_cloudflare_and_real_ip(data):
     cf_node_ip = ''
     real_origin_ip = ''
 
+    # 1. Priorizar extracción de IP pública externa del cliente y el nodo Edge Cloudflare
     for cand in all_candidates:
         if is_cloudflare_ip(cand):
             if not cf_node_ip:
                 cf_node_ip = cand
-        else:
-            # Ignorar loopback como IP real externa si hay otra IP disponible
-            if cand not in ('127.0.0.1', '::1') and not real_origin_ip:
+        elif not is_private_local_ip(cand):
+            if not real_origin_ip:
                 real_origin_ip = cand
+
+    # 2. Si no hubo IP pública externa y la petición NO vino de Cloudflare, registrar IP de la LAN
+    if not real_origin_ip and not cf_node_ip:
+        for cand in all_candidates:
+            if cand not in ('127.0.0.1', '::1') and not is_cloudflare_ip(cand):
+                real_origin_ip = cand
+                break
 
     is_cf = bool(cf_node_ip or cf_ray or (cf_conn_ip and _is_valid_ip(cf_conn_ip)))
 
@@ -431,10 +455,14 @@ def resolve_cloudflare_and_real_ip(data):
             cf_node_ip = corr.get('cf_ip', '')
             is_cf = bool(cf_node_ip)
 
+    final_real_ip = real_origin_ip if (real_origin_ip and real_origin_ip != cf_node_ip) else ''
+    is_local = is_private_local_ip(final_real_ip or raw_ip) and not is_cf
+
     return {
         'is_cloudflare': is_cf,
         'cloudflare_ip': cf_node_ip,
-        'real_client_ip': real_origin_ip if (real_origin_ip and real_origin_ip != cf_node_ip) else '',
+        'real_client_ip': final_real_ip,
+        'is_local_ip': is_local,
         'cf_ray': cf_ray,
         'cf_country': cf_country,
     }
@@ -855,6 +883,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': meta['real_client_ip'],
+            'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (log.client_ip if not meta['is_cloudflare'] else '')),
             'user_agent': log.user_agent or '',
             'risk_score': reputation.current_risk_score if reputation else 0,
             'violations_count': len(events) if events else 0,

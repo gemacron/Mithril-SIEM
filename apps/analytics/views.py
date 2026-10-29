@@ -55,12 +55,28 @@ def dashboard_view(request):
         .values_list('client_ip', flat=True).distinct()
     ) if recent_ips else set()
 
+    def _is_private(ip):
+        if not ip:
+            return False
+        s = str(ip).strip()
+        if s.startswith(('127.', '10.', '192.168.', '169.254.')):
+            return True
+        if s.startswith('172.'):
+            parts = s.split('.')
+            if len(parts) >= 2 and parts[1].isdigit():
+                sec = int(parts[1])
+                if 16 <= sec <= 31:
+                    return True
+        return False
+
     for log in recent_logs:
         log.is_threat = (log.client_ip in threat_ips) or (log.status_code >= 400)
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
         log.is_cloudflare = meta['is_cloudflare']
         log.cloudflare_ip = meta['cloudflare_ip']
         log.real_client_ip = meta['real_client_ip']
+        log.is_real_ip_local = _is_private(log.real_client_ip)
+        log.is_local_ip = log.is_real_ip_local or (not log.is_cloudflare and _is_private(log.client_ip))
 
     total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
     threats_today = SecurityEvent.objects.filter(created_at__gte=today_start).count()

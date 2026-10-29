@@ -50,6 +50,25 @@ document.addEventListener('DOMContentLoaded', () => {
     return cookieValue;
   }
 
+  function isPrivateLocalIp(ip) {
+    if (!ip) return false;
+    const s = String(ip).trim().replace(/^🎯\s*/, '');
+    if (!s || s === '-' || s === '::1' || s.startsWith('127.')) return true;
+    if (s.startsWith('10.') || s.startsWith('192.168.') || s.startsWith('169.254.')) return true;
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(s)) return true;
+    return false;
+  }
+
+  function isEventLocal(event) {
+    if (!event) return false;
+    if (event.is_local_ip === true) return true;
+    const realIp = event.real_client_ip;
+    const clientIp = event.client_ip;
+    if (realIp && isPrivateLocalIp(realIp)) return true;
+    if (!event.is_cloudflare && clientIp && isPrivateLocalIp(clientIp)) return true;
+    return false;
+  }
+
   function cfBadgeHtml(isCf, fullText = false, realClientIp = '', cfNodeIp = '') {
     let html = '';
     if (isCf) {
@@ -57,7 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const titleText = cfNodeIp ? `Nodo Cloudflare: ${cfNodeIp}` : 'IP perteneciente a la red CDN/Proxy de Cloudflare';
       html += `<span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="${titleText}">${label}</span>`;
     }
-    if (realClientIp && fullText) {
+    if (realClientIp && fullText && !isPrivateLocalIp(realClientIp)) {
       html += `<span style="background: rgba(0, 229, 255, 0.15); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.22rem; font-family: var(--font-mono);" title="IP Real del Cliente detrás de Cloudflare">🎯 IP Real: ${realClientIp}</span>`;
     }
     return html;
@@ -65,9 +84,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function realClientIpCellHtml(event) {
     if (event.real_client_ip) {
-      return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 ${event.real_client_ip}</code>`;
+      if (!isPrivateLocalIp(event.real_client_ip)) {
+        return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 ${event.real_client_ip}</code>`;
+      }
+      if (event.is_cloudflare) {
+        return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición vía nodo Cloudflare sin cabecera de cliente externo">☁️ Conexión Edge</span>`;
+      }
+      return `<span style="color: var(--neon-cyan); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada en red privada o balanceador interno">🏢 LAN (${event.real_client_ip})</span>`;
     }
     if (!event.is_cloudflare) {
+      if (isPrivateLocalIp(event.client_ip)) {
+        return `<span style="color: var(--neon-cyan); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición local / balanceador">🏢 LAN (${event.client_ip || '-'})</span>`;
+      }
       return `<code style="color: var(--neon-emerald); font-size: 0.75rem;">${event.client_ip || '-'}</code>`;
     }
     const ua = String(event.user_agent || '');
@@ -77,7 +105,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (event.method === 'HTTPS') {
       return `<span style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);" title="Paquete TLS ClientHello previo a las cabeceras HTTP">🔒 Handshake TLS</span>`;
     }
-    return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Actualiza el agente en el nodo proxy para extraer CF-Connecting-IP / X-Forwarded-For">⚡ Actualizar Agente</span>`;
+    return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición recibida vía nodo Cloudflare">☁️ Conexión Edge</span>`;
   }
 
   function updateKpiFast(element, newValue) {
@@ -306,6 +334,47 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   }
 
+  // Control interactivo del filtro de IPs Locales / Balanceador
+  const localIpToggle = document.getElementById('filterHideLocalIpsToggle');
+  let hideLocalIps = true;
+
+  function applyLocalFilterToDom() {
+    if (!tableBody) return;
+    const rows = tableBody.querySelectorAll('tr');
+    rows.forEach(r => {
+      const isLocAttr = r.getAttribute('data-is-local');
+      const rClientIp = r.getAttribute('data-client-ip');
+      const rRealIp = r.getAttribute('data-real-ip');
+      let isLocalRow = (isLocAttr === 'true');
+      if (rRealIp && isPrivateLocalIp(rRealIp)) isLocalRow = true;
+      if (rClientIp && !r.innerHTML.includes('☁️ CF') && isPrivateLocalIp(rClientIp)) isLocalRow = true;
+
+      if (isLocalRow) {
+        r.style.display = hideLocalIps ? 'none' : '';
+      } else {
+        r.style.display = '';
+      }
+    });
+  }
+
+  if (localIpToggle) {
+    const saved = localStorage.getItem('mithril_hide_local_ips');
+    if (saved !== null) {
+      hideLocalIps = (saved === 'true');
+      localIpToggle.checked = hideLocalIps;
+    } else {
+      hideLocalIps = localIpToggle.checked;
+    }
+
+    localIpToggle.addEventListener('change', () => {
+      hideLocalIps = localIpToggle.checked;
+      localStorage.setItem('mithril_hide_local_ips', hideLocalIps ? 'true' : 'false');
+      applyLocalFilterToDom();
+    });
+
+    applyLocalFilterToDom();
+  }
+
   function flushWsQueue() {
     rafScheduled = false;
     if (wsQueue.length === 0) return;
@@ -321,11 +390,16 @@ document.addEventListener('DOMContentLoaded', () => {
       logsDelta += 1;
       if (event.is_threat) threatsDelta += 1;
 
+      const isLoc = isEventLocal(event);
+
       if (window.mithrilMap) {
-        const lat = parseFloat(event.latitude);
-        const lon = parseFloat(event.longitude);
-        if (!isNaN(lat) && !isNaN(lon)) {
-          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip);
+        // En el mapa táctico, si está activo el filtro de IPs locales y es local, no dibujamos arcos locales
+        if (!(hideLocalIps && isLoc)) {
+          const lat = parseFloat(event.latitude);
+          const lon = parseFloat(event.longitude);
+          if (!isNaN(lat) && !isNaN(lon)) {
+            window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip);
+          }
         }
       }
 
@@ -338,6 +412,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const countryDisplay = event.country_name || event.country_code || 'Remoto';
 
         if (event.id) row.setAttribute('data-log-id', event.id);
+        row.setAttribute('data-is-local', isLoc ? 'true' : 'false');
+        row.setAttribute('data-client-ip', event.client_ip || '');
+        row.setAttribute('data-real-ip', event.real_client_ip || '');
+
+        if (hideLocalIps && isLoc) {
+          row.style.display = 'none';
+        }
+
         row.innerHTML = `
           <td><span class="${badgeClass}">${badgeText}</span></td>
           <td><strong>${event.timestamp || ''}</strong></td>

@@ -390,15 +390,15 @@ def kernel_network_mirror_worker():
                 if not cf_node_ip and (now - last_external_edge["ts"]) <= 2.5 and is_cf_ip(last_external_edge["ip"]):
                     cf_node_ip = last_external_edge["ip"]
 
-                if not real_origin_ip:
-                    # Si el cliente es interno en la LAN y no pasó por Cloudflare
+                if not real_origin_ip and not cf_node_ip:
+                    # Si el cliente es interno en la LAN y la petición NO pasó por Cloudflare
                     for cand in [cf_connecting_ip, *xff_parts, x_real_ip, src_ip]:
-                        if cand and cand not in ("127.0.0.1", "::1") and cand != cf_node_ip:
+                        if cand and cand not in ("127.0.0.1", "::1") and not is_cf_ip(cand):
                             real_origin_ip = cand
                             break
 
                 edge_ip = cf_node_ip or x_real_ip or (xff_parts[-1] if xff_parts else src_ip)
-                real_ip = real_origin_ip or cf_connecting_ip or (xff_parts[0] if xff_parts else "")
+                real_ip = real_origin_ip or (cf_connecting_ip if not is_local_balancer_ip(cf_connecting_ip) else "")
 
                 if not is_local_balancer_ip(src_ip):
                     last_external_edge["ip"] = src_ip

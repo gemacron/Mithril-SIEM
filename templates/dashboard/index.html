@@ -79,12 +79,18 @@
 
     <!-- Live Traffic Stream Panel -->
     <div class="panel">
-      <div class="panel-header">
+      <div class="panel-header" style="flex-wrap: wrap; gap: 0.75rem;">
         <div class="panel-title">
           <span>⚡</span> LIVE FEED (PETICIONES EN VIVO DESDE PROXIES)
         </div>
-        <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono);">
-          BUFFER: ÚLTIMAS 20 ACTIVIDADES
+        <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+          <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: var(--neon-cyan); background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.35); padding: 0.22rem 0.65rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Oculta peticiones originadas por IPs locales (192.168.x.x, 10.x.x.x, 127.0.0.1 o el propio balanceador) mostrando solo tráfico externo de Internet">
+            <input type="checkbox" id="filterHideLocalIpsToggle" style="accent-color: var(--neon-cyan); cursor: pointer; width: 14px; height: 14px;" checked>
+            <span>🛡️ Filtrar IPs Locales / Balanceador</span>
+          </label>
+          <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono);">
+            BUFFER: ÚLTIMAS 20 ACTIVIDADES
+          </div>
         </div>
       </div>
       <div class="panel-body" style="padding: 0; max-height: 280px; overflow-y: auto;">
@@ -103,7 +109,7 @@
           </thead>
           <tbody id="liveFeedTableBody">
             {% for log in recent_logs %}
-            <tr data-log-id="{{ log.id }}">
+            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.client_ip }}">
               <td>
                 {% if log.is_threat %}
                 <span class="badge critical">AMENAZA</span>
@@ -119,16 +125,18 @@
                 {% endif %}
               </td>
               <td>
-                {% if log.real_client_ip %}
+                {% if log.real_client_ip and not log.is_real_ip_local %}
                   <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</code>
-                {% elif not log.is_cloudflare %}
+                {% elif not log.is_cloudflare and not log.is_local_ip %}
                   <code style="color: var(--neon-emerald); font-size: 0.75rem;">{{ log.client_ip }}</code>
+                {% elif log.is_local_ip and not log.is_cloudflare %}
+                  <span style="color: var(--neon-cyan); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada en red privada o balanceador interno">🏢 LAN ({{ log.real_client_ip|default:log.client_ip }})</span>
                 {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent %}
                   <span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por el monitor de salud de Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>
                 {% elif log.http_method == 'HTTPS' %}
                   <span style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);" title="Paquete TLS ClientHello previo a las cabeceras HTTP">🔒 Handshake TLS</span>
                 {% else %}
-                  <span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Actualiza el agente en el nodo proxy para extraer CF-Connecting-IP / X-Forwarded-For">⚡ Actualizar Agente</span>
+                  <span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición vía nodo Cloudflare sin IP de cliente externo">☁️ Conexión Edge</span>
                 {% endif %}
               </td>
               <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>

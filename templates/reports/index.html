@@ -39,13 +39,17 @@
   </div>
 
   <div class="panel-body">
-    <form method="GET" style="display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap;">
+    <form method="GET" style="display: flex; gap: 0.75rem; margin-bottom: 1rem; flex-wrap: wrap; align-items: center;">
       <input type="text" name="ip" value="{{ search_ip }}" placeholder="Filtrar por IP (ej. 192.168.1.50)" class="form-input" style="max-width: 240px;">
       <input type="text" name="uri" value="{{ search_uri }}" placeholder="Filtrar por ruta URI (ej. /login)" class="form-input" style="max-width: 260px;">
       <input type="text" name="status" value="{{ search_status }}" placeholder="Código HTTP (ej. 404)" class="form-input" style="max-width: 170px;">
+      <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: var(--neon-cyan); background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.35); padding: 0.4rem 0.65rem; border-radius: 4px; user-select: none;">
+        <input type="checkbox" name="hide_local" value="1" {% if hide_local %}checked{% endif %} style="accent-color: var(--neon-cyan); cursor: pointer;">
+        <span>🛡️ Ocultar IPs Locales / Balanceador</span>
+      </label>
       <button type="submit" class="btn btn-cyan">🔍 Filtrar Registros</button>
-      {% if search_ip or search_uri or search_status %}
-      <a href="{% url 'reports:index' %}" class="btn btn-dim">Limpiar</a>
+      {% if search_ip or search_uri or search_status or not hide_local %}
+      <a href="{% url 'reports:index' %}" class="btn btn-dim">Restablecer</a>
       {% endif %}
     </form>
 
@@ -78,16 +82,18 @@
               </div>
             </td>
             <td>
-              {% if log.real_client_ip %}
+              {% if log.real_client_ip and not log.is_real_ip_local %}
                 <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.74rem; font-weight: 800; padding: 1px 6px; border-radius: 4px;">🎯 {{ log.real_client_ip }}</code>
-              {% elif not log.is_cloudflare %}
+              {% elif not log.is_cloudflare and not log.is_local_ip %}
                 <code style="color: var(--neon-emerald); font-size: 0.74rem;">{{ log.client_ip }}</code>
+              {% elif log.is_local_ip and not log.is_cloudflare %}
+                <span style="color: var(--neon-cyan); font-size: 0.7rem; font-family: var(--font-mono);">🏢 LAN ({{ log.real_client_ip|default:log.client_ip }})</span>
               {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent %}
                 <span style="color: #f6821f; font-size: 0.7rem;">☁️ Sonda Healthcheck</span>
               {% elif log.http_method == 'HTTPS' %}
                 <span style="color: var(--text-dim); font-size: 0.7rem;">🔒 Handshake TLS</span>
               {% else %}
-                <span style="color: var(--neon-amber); font-size: 0.7rem;">⚡ Actualizar Agente</span>
+                <span style="color: var(--neon-amber); font-size: 0.7rem;">☁️ Conexión Edge</span>
               {% endif %}
             </td>
             <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
