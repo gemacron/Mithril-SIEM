@@ -213,9 +213,9 @@ document.addEventListener('DOMContentLoaded', () => {
     candidates.forEach(c => {
       const scoreBadge = c.score >= 80 ? 'badge critical' : 'badge high';
       const reason = c.reason || 'Detección de patrones anómalos o escaneo sospechoso.';
-      const shortReason = reason.length > 90 ? reason.substring(0, 90) + '...' : reason;
+      const shortReason = reason;
       const payloadHtml = c.payload
-        ? `<div style="font-size: 0.7rem; font-family: var(--font-mono); color: var(--neon-amber); background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); padding: 0.2rem 0.45rem; border-radius: 4px; margin-bottom: 0.65rem; word-break: break-all;">⚡ ${c.payload.length > 55 ? c.payload.substring(0, 55) + '...' : c.payload}</div>`
+        ? `<div style="font-size: 0.7rem; font-family: var(--font-mono); color: var(--neon-amber); background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); padding: 0.2rem 0.45rem; border-radius: 4px; margin-bottom: 0.65rem; word-break: break-all; white-space: pre-wrap;">⚡ ${c.payload}</div>`
         : '';
 
       html += `
@@ -294,7 +294,7 @@ document.addEventListener('DOMContentLoaded', () => {
               const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
               const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
               const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
-              const uriDisplay = event.uri ? (event.uri.length > 35 ? event.uri.substring(0, 35) + '...' : event.uri) : '/';
+              const uriDisplay = event.uri || '/';
               const countryDisplay = event.country_name || event.country_code || 'Remoto';
 
               // Si es un log nuevo detectado en el poller, disparar también la flecha en el mapa 2D
@@ -306,14 +306,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
               }
 
+              const isLoc = isEventLocal(event);
+              const hideRowStyle = (hideLocalIps && isLoc) ? 'style="display: none;"' : '';
+
               rowsHtml += `
-                <tr data-log-id="${event.id || ''}">
+                <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" ${hideRowStyle}>
                   <td><span class="${badgeClass}">${badgeText}</span></td>
                   <td><strong>${event.timestamp || ''}</strong></td>
                   <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
                   <td>${realClientIpCellHtml(event)}</td>
                   <td>${countryDisplay}</td>
-                  <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
+                  <td style="max-width: 450px; word-break: break-all;"><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem;">${uriDisplay}</code></td>
                   <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
                   <td><code>${event.node || 'Direct'}</code></td>
                 </tr>
@@ -408,7 +411,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
         const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
         const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
-        const uriDisplay = event.uri ? (event.uri.length > 35 ? event.uri.substring(0, 35) + '...' : event.uri) : '/';
+        const uriDisplay = event.uri || '/';
         const countryDisplay = event.country_name || event.country_code || 'Remoto';
 
         if (event.id) row.setAttribute('data-log-id', event.id);
@@ -426,7 +429,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
           <td>${realClientIpCellHtml(event)}</td>
           <td>${countryDisplay}</td>
-          <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
+          <td style="max-width: 450px; word-break: break-all;"><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem;">${uriDisplay}</code></td>
           <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
           <td><code>${event.node || 'Direct'}</code></td>
         `;

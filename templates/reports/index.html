@@ -97,14 +97,14 @@
               {% endif %}
             </td>
             <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
-            <td>
+            <td style="max-width: 480px; word-break: break-all;">
               <span style="color: var(--neon-cyan); font-weight: 600;">{{ log.http_method }}</span>
-              <code>{{ log.uri|truncatechars:45 }}{% if log.query_params %}?{{ log.query_params|truncatechars:25 }}{% endif %}</code>
+              <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem; color: #e2e8f0;">{{ log.uri }}{% if log.query_params %}?{{ log.query_params }}{% endif %}</code>
             </td>
             <td style="{% if log.status_code >= 400 %}color: var(--neon-crimson);{% else %}color: var(--neon-emerald);{% endif %} font-weight: bold;">
               {{ log.status_code }}
             </td>
-            <td style="color: var(--text-muted); font-size: 0.72rem;">{{ log.user_agent|truncatechars:40|default:"-" }}</td>
+            <td style="color: var(--text-muted); font-size: 0.72rem; max-width: 260px; word-break: break-word;">{{ log.user_agent|default:"-" }}</td>
             <td><code>{{ log.node.name|default:"Direct" }}</code></td>
           </tr>
           {% empty %}
@@ -204,9 +204,9 @@
             <strong style="color: var(--text-main);">{{ ev.rule.name|default:"Heurística" }}</strong><br>
             <span style="font-size: 0.7rem; color: var(--text-dim);">{{ ev.rule.code }}</span>
           </td>
-          <td>
-            <code style="background: rgba(0,0,0,0.4); padding: 0.2rem 0.4rem; border-radius: 4px; color: var(--neon-crimson); font-size: 0.75rem;">
-              {{ ev.matched_payload|truncatechars:60 }}
+          <td style="max-width: 460px; word-break: break-all;">
+            <code style="background: rgba(0,0,0,0.4); padding: 0.2rem 0.4rem; border-radius: 4px; color: var(--neon-crimson); font-size: 0.75rem; word-break: break-all; white-space: pre-wrap; display: inline-block;">
+              {{ ev.matched_payload }}
             </code>
           </td>
           <td><code>{{ ev.node.name|default:"Direct" }}</code></td>

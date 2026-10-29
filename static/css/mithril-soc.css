@@ -294,6 +294,14 @@ body {
 .terminal-table td {
   padding: 0.65rem 0.85rem;
   border-bottom: 1px solid rgba(30, 41, 59, 0.4);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.terminal-table code {
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
 .terminal-table tr:hover {

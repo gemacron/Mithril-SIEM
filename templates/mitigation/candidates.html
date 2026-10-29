@@ -58,17 +58,17 @@
               {{ c.accumulated_score }} / 100
             </span>
           </td>
-          <td style="color: var(--text-muted); max-width: 360px;">
+          <td style="color: var(--text-muted); max-width: 480px; word-break: break-word;">
             <div>{{ c.suggested_reason }}</div>
             {% if c.trigger_event %}
               {% if c.trigger_event.matched_payload %}
-                <div style="margin-top: 0.3rem; font-size: 0.72rem; font-family: var(--font-mono); color: var(--neon-amber); background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); padding: 0.2rem 0.45rem; border-radius: 4px; word-break: break-all;">
-                  ⚡ Payload: {{ c.trigger_event.matched_payload|truncatechars:70 }}
+                <div style="margin-top: 0.3rem; font-size: 0.72rem; font-family: var(--font-mono); color: var(--neon-amber); background: rgba(245, 158, 11, 0.08); border: 1px solid rgba(245, 158, 11, 0.25); padding: 0.2rem 0.45rem; border-radius: 4px; word-break: break-all; white-space: pre-wrap;">
+                  ⚡ Payload: {{ c.trigger_event.matched_payload }}
                 </div>
               {% endif %}
               {% if c.trigger_event.details.uri %}
-                <div style="margin-top: 0.2rem; font-size: 0.7rem; font-family: var(--font-mono); color: var(--neon-cyan);">
-                  URI: {{ c.trigger_event.details.uri|truncatechars:60 }}
+                <div style="margin-top: 0.2rem; font-size: 0.7rem; font-family: var(--font-mono); color: var(--neon-cyan); word-break: break-all; white-space: pre-wrap;">
+                  URI: {{ c.trigger_event.details.uri }}
                 </div>
               {% endif %}
             {% endif %}
