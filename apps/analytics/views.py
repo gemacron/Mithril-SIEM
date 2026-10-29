@@ -7,6 +7,7 @@ from datetime import timedelta
 from apps.nodes.models import ProxyNode
 from apps.mitigation.models import BanCandidate, ActiveBan
 from apps.detection.models import TrafficLog, SecurityEvent
+from apps.detection.engine import is_cloudflare_ip, resolve_geoip
 
 @login_required
 def dashboard_view(request):
@@ -14,7 +15,9 @@ def dashboard_view(request):
     for n in nodes:
         n.check_health()
 
-    candidates = BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule')[:5]
+    candidates = list(BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule')[:5])
+    for c in candidates:
+        c.is_cloudflare = is_cloudflare_ip(c.client_ip)
     recent_events = SecurityEvent.objects.select_related('rule', 'node').order_by('-created_at')[:8]
 
     now = timezone.now()
@@ -33,6 +36,7 @@ def dashboard_view(request):
 
     for log in recent_logs:
         log.is_threat = (log.client_ip in threat_ips) or (log.status_code >= 400)
+        log.is_cloudflare = is_cloudflare_ip(log.client_ip)
 
     total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
     threats_today = SecurityEvent.objects.filter(created_at__gte=today_start).count()
@@ -90,7 +94,14 @@ def api_map_data(request):
 
     recent_points = []
     for p in raw_points:
+        # Si un punto histórico quedó con la misma coordenada exacta del nodo base (-34.6037, -58.3816), recalcular su origen para trazar su flecha de trayectoria
+        if p['latitude'] is not None and abs(p['latitude'] - (-34.6037)) < 0.01 and abs(p['longitude'] - (-58.3816)) < 0.01:
+            re_geo = resolve_geoip(p['client_ip'])
+            p['latitude'] = re_geo['latitude']
+            p['longitude'] = re_geo['longitude']
+            p['country_name'] = re_geo['country_name']
         p['is_threat'] = (p['client_ip'] in threat_ips) or (p['status_code'] >= 400)
+        p['is_cloudflare'] = is_cloudflare_ip(p['client_ip'])
         recent_points.append(p)
 
     proxy_nodes = [
@@ -137,8 +148,14 @@ def api_live_stats(request):
         SecurityEvent.objects.filter(client_ip__in=recent_ips, created_at__gte=since_24h)
         .values_list('client_ip', flat=True).distinct()
     ) if recent_ips else set()
-    recent_logs_data = [
-        {
+    recent_logs_data = []
+    for log in recent_logs_qs:
+        lat = log.latitude
+        lon = log.longitude
+        if lat is not None and abs(lat - (-34.6037)) < 0.01 and abs(lon - (-58.3816)) < 0.01:
+            re_geo = resolve_geoip(log.client_ip)
+            lat, lon = re_geo['latitude'], re_geo['longitude']
+        recent_logs_data.append({
             'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
             'client_ip': log.client_ip,
@@ -147,11 +164,12 @@ def api_live_stats(request):
             'status_code': log.status_code,
             'country_code': log.country_code,
             'country_name': log.country_name or log.country_code or 'Remoto',
+            'latitude': lat,
+            'longitude': lon,
             'node': log.node.name if log.node else 'Direct',
             'is_threat': (log.client_ip in threat_ips) or (log.status_code >= 400),
-        }
-        for log in recent_logs_qs
-    ]
+            'is_cloudflare': is_cloudflare_ip(log.client_ip),
+        })
 
     nodes_data = [
         {
@@ -181,6 +199,7 @@ def api_live_stats(request):
             'rule_code': ev.rule.code if (ev and ev.rule) else 'HEURISTIC',
             'payload': ev.matched_payload if ev else '',
             'uri': ev_details.get('uri', ''),
+            'is_cloudflare': is_cloudflare_ip(c.client_ip),
             'detected_at': c.created_at.strftime('%H:%M:%S')
         })
 

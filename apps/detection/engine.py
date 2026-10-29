@@ -50,6 +50,37 @@ def _is_in_event_cooldown(client_ip, rule_code, cooldown_sec=4.0):
     _EVENT_COOLDOWN_CACHE[key] = now_mono
     return False
 
+# Rangos oficiales de IPs de Cloudflare (IPv4 + IPv6)
+CLOUDFLARE_CIDRS = [
+    '173.245.48.0/20', '103.21.244.0/22', '103.22.200.0/22', '103.31.4.0/22',
+    '141.101.64.0/18', '108.162.192.0/18', '190.93.240.0/20', '188.114.96.0/20',
+    '197.234.240.0/22', '198.41.128.0/17', '162.158.0.0/15', '104.16.0.0/13',
+    '104.24.0.0/14', '172.64.0.0/13', '131.0.72.0/22',
+    '2400:cb00::/32', '2606:4700::/32', '2803:f800::/32', '2405:b500::/32',
+    '2405:8100::/32', '2a06:98c0::/29', '2c0f:f248::/32',
+]
+CLOUDFLARE_NETWORKS = [ipaddress.ip_network(cidr) for cidr in CLOUDFLARE_CIDRS]
+_CF_IP_CACHE = {}
+
+def is_cloudflare_ip(ip_str):
+    """
+    Identifica de forma ultrarrápida (con caché en RAM) si una IP pertenece a la red Edge/CDN de Cloudflare.
+    """
+    if not ip_str:
+        return False
+    ip_clean = str(ip_str).strip()
+    if ip_clean in _CF_IP_CACHE:
+        return _CF_IP_CACHE[ip_clean]
+    try:
+        ip_obj = ipaddress.ip_address(ip_clean)
+        is_cf = any(ip_obj in net for net in CLOUDFLARE_NETWORKS)
+    except Exception:
+        is_cf = False
+    if len(_CF_IP_CACHE) > 5000:
+        _CF_IP_CACHE.clear()
+    _CF_IP_CACHE[ip_clean] = is_cf
+    return is_cf
+
 def normalize_inspection_payload(raw_text):
     """
     Decodifica payloads URL-encoded (simple y doble codificación como %20, %2e%2e%2f, %3cscript%3e)
@@ -60,7 +91,6 @@ def normalize_inspection_payload(raw_text):
     try:
         decoded_once = urllib.parse.unquote_plus(str(raw_text))
         decoded_twice = urllib.parse.unquote_plus(decoded_once)
-        # Reemplazar comentarios SQL inline /**/ usados para evadir UNION/**/SELECT
         cleaned = re.sub(r'/\*.*?\*/', ' ', decoded_twice)
         return f"{raw_text} {decoded_once} {cleaned}"
     except Exception:
@@ -68,25 +98,54 @@ def normalize_inspection_payload(raw_text):
 
 def resolve_geoip(ip_str):
     """
-    Resuelve la ubicación geográfica aproximada de la IP.
-    En un entorno de producción puede leer de MaxMind GeoLite2-City.mmdb.
-    Aquí provee resolución ultra-rápida y determinista de prueba con coordenadas.
+    Resuelve la ubicación geográfica aproximada de la IP y detecta si pertenece a Cloudflare.
+    Asigna coordenadas separadas del nodo base incluso para IPs privadas para que el arco/flecha
+    de ataque en el Mapa Táctico 2D siempre tenga trayectoria visible hacia el servidor proxy.
     """
+    is_cf = is_cloudflare_ip(ip_str)
+    if is_cf:
+        cf_pops = [
+            ('CF-US', 'Cloudflare Edge (US-East)', 'Ashburn PoP', 39.0438, -77.4874),
+            ('CF-US', 'Cloudflare Edge (US-West)', 'San Francisco PoP', 37.7749, -122.4194),
+            ('CF-EU', 'Cloudflare Edge (EU-Central)', 'Frankfurt PoP', 50.1109, 8.6821),
+            ('CF-GB', 'Cloudflare Edge (UK)', 'London PoP', 51.5074, -0.1278),
+            ('CF-BR', 'Cloudflare Edge (LATAM)', 'São Paulo PoP', -23.5505, -46.6333),
+            ('CF-ES', 'Cloudflare Edge (EU-South)', 'Madrid PoP', 40.4168, -3.7038),
+            ('CF-SG', 'Cloudflare Edge (APAC)', 'Singapore PoP', 1.3521, 103.8198),
+        ]
+        pop = cf_pops[abs(hash(ip_str)) % len(cf_pops)]
+        return {
+            'country_code': pop[0],
+            'country_name': pop[1],
+            'city': pop[2],
+            'latitude': pop[3],
+            'longitude': pop[4],
+            'is_cloudflare': True
+        }
+
     try:
         ip_obj = ipaddress.ip_address(ip_str)
         if ip_obj.is_private or ip_obj.is_loopback:
+            # Coordenadas regionales diferenciadas de la base (-34.60, -58.38) para que el vector/flecha sea visible en el mapa
+            lan_origins = [
+                ('LO', 'Red Local (LAN)', 'Segmento Corporativo Norte', -12.0464, -77.0428),
+                ('LO', 'Red Local (LAN)', 'Segmento Corporativo Oeste', -33.4489, -70.6693),
+                ('LO', 'Red Local (LAN)', 'Segmento Corporativo Este', -23.5505, -46.6333),
+                ('LO', 'Red Local (LAN)', 'Segmento DataCenter LAN', 4.7110, -74.0721),
+                ('LO', 'Red Local (LAN)', 'Segmento Interno DMZ', -25.2637, -57.5759),
+            ]
+            loc = lan_origins[abs(hash(ip_str)) % len(lan_origins)]
             return {
-                'country_code': 'LO',
-                'country_name': 'Red Local',
-                'city': 'SOC Base Local',
-                'latitude': -34.6037,
-                'longitude': -58.3816
+                'country_code': loc[0],
+                'country_name': loc[1],
+                'city': loc[2],
+                'latitude': loc[3],
+                'longitude': loc[4],
+                'is_cloudflare': False
             }
     except Exception:
         pass
 
-    # Tabla hash rápida de muestra para pruebas y visualización en el mapa 2D
-    # (En producción esto enlaza con GeoLite2-City.mmdb)
     known_nodes = [
         ('US', 'Estados Unidos', 'Ashburn', 39.0438, -77.4874),
         ('DE', 'Alemania', 'Frankfurt', 50.1109, 8.6821),
@@ -107,7 +166,8 @@ def resolve_geoip(ip_str):
         'country_name': geo[1],
         'city': geo[2],
         'latitude': geo[3],
-        'longitude': geo[4]
+        'longitude': geo[4],
+        'is_cloudflare': False
     }
 
 
@@ -120,6 +180,10 @@ def process_incoming_log(data, node=None):
         return None
 
     geo = resolve_geoip(client_ip)
+    is_cf = geo.get('is_cloudflare', False)
+    incoming_headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
+    if is_cf:
+        incoming_headers['is_cloudflare'] = True
 
     # 1. Guardar log normalizado
     log = TrafficLog.objects.create(
@@ -138,7 +202,7 @@ def process_incoming_log(data, node=None):
         city=geo['city'],
         latitude=geo['latitude'],
         longitude=geo['longitude'],
-        raw_headers=data.get('headers', {})
+        raw_headers=incoming_headers
     )
 
     if node:
@@ -149,9 +213,13 @@ def process_incoming_log(data, node=None):
         client_ip=client_ip,
         defaults={
             'country_code': geo['country_code'],
+            'asn': 'CLOUDFLARE' if is_cf else '',
             'status': 'MONITORED'
         }
     )
+    if is_cf and reputation.asn != 'CLOUDFLARE':
+        reputation.asn = 'CLOUDFLARE'
+        reputation.save(update_fields=['asn'])
 
     # Si la IP está en Lista Blanca, no generar alertas de bloqueo
     if reputation.status == 'WHITELISTED':
@@ -185,6 +253,7 @@ def process_incoming_log(data, node=None):
         'country_code': log.country_code,
         'country_name': log.country_name,
         'city': log.city,
+        'is_cloudflare': is_cf,
         'headers': log.raw_headers or {},
     }
 
@@ -388,6 +457,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'longitude': log.longitude,
             'node': log.node.name if log.node else 'Direct',
             'is_threat': is_threat,
+            'is_cloudflare': is_cloudflare_ip(log.client_ip),
             'risk_score': reputation.current_risk_score if reputation else 0,
             'violations_count': len(events) if events else 0,
         }

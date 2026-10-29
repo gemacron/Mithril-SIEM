@@ -1,10 +1,10 @@
 /**
  * MITHRIL SIEM - Real-Time SOC Live Stream & Dashboard Synchronizer (Zero-Freeze Edition)
  * Optimizado para alta carga y análisis continuo sin bloqueos de UI:
- * - Batching de WebSocket mediante requestAnimationFrame + DocumentFragment (cero Layout Thrashing)
- * - Diffing inteligente de Candidatos a Bloqueo y Nodos (no destruye el DOM si no hubo cambios)
- * - Poller asíncrono no solapado con AbortController
- * - Aprobación / Descarte de candidatos vía AJAX sin detener el Mapa 2D ni el Live Stream
+ * - Identificación visual de IPs de Cloudflare (☁️ CF / CLOUDFLARE)
+ * - Disparo garantizado de flechas de ataque en el Mapa 2D tanto por WebSocket como por Poller
+ * - Batching de WebSocket mediante requestAnimationFrame + DocumentFragment
+ * - Diffing inteligente de Candidatos a Bloqueo y Nodos
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -32,7 +32,6 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastCandidatesSignature = '';
   let isFetchingStats = false;
 
-  // Cola de eventos WebSocket procesada por requestAnimationFrame para no bloquear el hilo principal
   const wsQueue = [];
   let rafScheduled = false;
 
@@ -51,6 +50,12 @@ document.addEventListener('DOMContentLoaded', () => {
     return cookieValue;
   }
 
+  function cfBadgeHtml(isCf, fullText = false) {
+    if (!isCf) return '';
+    const label = fullText ? '☁️ CLOUDFLARE' : '☁️ CF';
+    return `<span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="IP perteneciente a la red CDN/Proxy de Cloudflare">${label}</span>`;
+  }
+
   function updateKpiFast(element, newValue) {
     if (!element) return;
     const strVal = String(newValue);
@@ -65,7 +70,6 @@ document.addEventListener('DOMContentLoaded', () => {
     element.textContent = String(current + delta);
   }
 
-  // Acción AJAX para aprobar o descartar candidatos sin recargar ni detener el análisis del mapa
   window.submitCandidateDecisionAjax = function (event, candidateId, actionType) {
     if (event) event.preventDefault();
     const csrfToken = getCookie('csrftoken') || '';
@@ -89,10 +93,6 @@ document.addEventListener('DOMContentLoaded', () => {
       .catch(err => console.debug('Error aplicando decisión:', err));
     return false;
   };
-
-  // ==========================================
-  // RENDERIZADO DIFERENCIAL DE SECCIONES
-  // ==========================================
 
   function renderNodesTable(nodes) {
     if (!nodesTableBody) return;
@@ -169,8 +169,8 @@ document.addEventListener('DOMContentLoaded', () => {
       html += `
         <div style="background: rgba(13, 18, 31, 0.7); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.85rem;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
-            <span style="font-family: var(--font-mono); font-weight: 700; color: var(--text-main); font-size: 0.9rem;">
-              🌐 ${c.ip}
+            <span style="font-family: var(--font-mono); font-weight: 700; color: var(--text-main); font-size: 0.9rem; display: inline-flex; align-items: center; flex-wrap: wrap;">
+              🌐 ${c.ip} ${cfBadgeHtml(c.is_cloudflare, true)}
             </span>
             <span class="${scoreBadge}">Riesgo: ${c.score}/100</span>
           </div>
@@ -195,10 +195,6 @@ document.addEventListener('DOMContentLoaded', () => {
     html += '</div>';
     candidatesContainer.innerHTML = html;
   }
-
-  // ==========================================
-  // SINCRONIZACIÓN PERIÓDICA NO BLOQUEANTE
-  // ==========================================
 
   function fetchLiveStats() {
     if (isFetchingStats) return;
@@ -242,17 +238,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
           if (emptyRow || tableBody.children.length === 0 || latestServerId > currentTopId) {
             let rowsHtml = '';
-            data.recent_logs.forEach(event => {
+            data.recent_logs.forEach((event, idx) => {
               const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
               const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
               const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
               const uriDisplay = event.uri ? (event.uri.length > 35 ? event.uri.substring(0, 35) + '...' : event.uri) : '/';
               const countryDisplay = event.country_name || event.country_code || 'Remoto';
+
+              // Si es un log nuevo detectado en el poller, disparar también la flecha en el mapa 2D
+              if (window.mithrilMap && event.id > currentTopId && idx < 4) {
+                const lat = parseFloat(event.latitude);
+                const lon = parseFloat(event.longitude);
+                if (!isNaN(lat) && !isNaN(lon)) {
+                  window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare);
+                }
+              }
+
               rowsHtml += `
                 <tr data-log-id="${event.id || ''}">
                   <td><span class="${badgeClass}">${badgeText}</span></td>
                   <td><strong>${event.timestamp || ''}</strong></td>
-                  <td><code>${event.client_ip || ''}</code></td>
+                  <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false)}</td>
                   <td>${countryDisplay}</td>
                   <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
                   <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
@@ -275,15 +281,10 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   }
 
-  // ==========================================
-  // PROCESAMIENTO POR LOTES EN ANIMATION FRAME
-  // ==========================================
-
   function flushWsQueue() {
     rafScheduled = false;
     if (wsQueue.length === 0) return;
 
-    // Tomar hasta los últimos 10 eventos si hubo una ráfaga masiva
     const batch = wsQueue.splice(-10);
     wsQueue.length = 0;
 
@@ -299,7 +300,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const lat = parseFloat(event.latitude);
         const lon = parseFloat(event.longitude);
         if (!isNaN(lat) && !isNaN(lon)) {
-          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip);
+          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare);
         }
       }
 
@@ -315,7 +316,7 @@ document.addEventListener('DOMContentLoaded', () => {
         row.innerHTML = `
           <td><span class="${badgeClass}">${badgeText}</span></td>
           <td><strong>${event.timestamp || ''}</strong></td>
-          <td><code>${event.client_ip || ''}</code></td>
+          <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false)}</td>
           <td>${countryDisplay}</td>
           <td><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code>${uriDisplay}</code></td>
           <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
@@ -339,10 +340,6 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
   }
-
-  // ==========================================
-  // WEBSOCKET LIVE STREAM CLIENT
-  // ==========================================
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socketUrl = `${protocol}//${window.location.host}/ws/live-stream/`;

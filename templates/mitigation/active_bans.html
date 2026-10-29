@@ -13,7 +13,7 @@
         IPs actualmente bloqueadas en el firewall/Nginx de todos los proxies sincronizados.
       </p>
     </div>
-    <span class="badge critical">{{ bans.count }} ACTIVOS</span>
+    <span class="badge critical">{{ bans|length }} ACTIVOS</span>
   </div>
 
   <div class="panel-body" style="padding: 0;">
@@ -33,7 +33,12 @@
         {% for b in bans %}
         <tr>
           <td>
-            <strong style="color: var(--neon-crimson); font-size: 0.95rem;">{{ b.client_ip }}</strong>
+            <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+              <strong style="color: var(--neon-crimson); font-size: 0.95rem;">{{ b.client_ip }}</strong>
+              {% if b.is_cloudflare %}
+                <span class="badge" style="background: rgba(246, 130, 31, 0.18); color: #f6821f; border: 1px solid rgba(246, 130, 31, 0.55); font-size: 0.63rem; font-weight: 800;" title="IP de borde oficial de Cloudflare">☁️ CLOUDFLARE</span>
+              {% endif %}
+            </div>
           </td>
           <td style="color: var(--text-muted); max-width: 280px;">
             {{ b.reason }}

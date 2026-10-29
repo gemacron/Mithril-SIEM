@@ -69,8 +69,9 @@
         <div class="map-container">
           <canvas id="tacticalMapCanvas"></canvas>
           <div class="map-overlay-info">
-            • Puntos <span style="color: var(--neon-cyan);">AZULES</span>: Peticiones normales &nbsp;|&nbsp;
-            • Puntos <span style="color: var(--neon-crimson);">ROJOS</span>: Intentos Maliciosos detectados
+            • <span style="color: var(--neon-cyan);">➤ AZUL</span>: Tráfico Normal &nbsp;|&nbsp;
+            • <span style="color: var(--neon-crimson);">➤ ROJO</span>: Vector de Ataque Activo &nbsp;|&nbsp;
+            • <span style="color: #f6821f;">☁️ NARANJA</span>: Nodo Cloudflare CDN
           </div>
         </div>
       </div>
@@ -110,7 +111,12 @@
                 {% endif %}
               </td>
               <td><strong>{{ log.created_at|date:"H:i:s" }}</strong></td>
-              <td><code>{{ log.client_ip }}</code></td>
+              <td>
+                <code>{{ log.client_ip }}</code>
+                {% if log.is_cloudflare %}
+                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);">☁️ CF</span>
+                {% endif %}
+              </td>
               <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
               <td><span style="color: var(--neon-cyan); font-weight: 600;">{{ log.http_method }}</span> <code>{{ log.uri|truncatechars:35 }}</code></td>
               <td style="{% if log.status_code >= 400 %}color: var(--neon-crimson);{% else %}color: var(--neon-emerald);{% endif %} font-weight: bold;">{{ log.status_code }}</td>
@@ -147,8 +153,11 @@
             {% for c in candidates %}
             <div style="background: rgba(13, 18, 31, 0.7); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.85rem;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
-                <span style="font-family: var(--font-mono); font-weight: 700; color: var(--text-main); font-size: 0.9rem;">
+                <span style="font-family: var(--font-mono); font-weight: 700; color: var(--text-main); font-size: 0.9rem; display: inline-flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
                   🌐 {{ c.client_ip }}
+                  {% if c.is_cloudflare %}
+                  <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px;">☁️ CLOUDFLARE</span>
+                  {% endif %}
                 </span>
                 <span class="badge critical">Riesgo: {{ c.accumulated_score }}/100</span>
               </div>

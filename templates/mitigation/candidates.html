@@ -13,7 +13,7 @@
         Estas IPs han superado el umbral de riesgo de las reglas de seguridad. El sistema requiere tu confirmación para aplicar el bloqueo en los servidores Nginx.
       </p>
     </div>
-    <span class="badge high">{{ candidates.count }} PENDIENTES</span>
+    <span class="badge high">{{ candidates|length }} PENDIENTES</span>
   </div>
 
   <div class="panel-body" style="padding: 0;">
@@ -32,7 +32,12 @@
         {% for c in candidates %}
         <tr>
           <td>
-            <strong style="color: var(--text-main); font-size: 0.95rem; font-family: var(--font-mono);">{{ c.client_ip }}</strong>
+            <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
+              <strong style="color: var(--text-main); font-size: 0.95rem; font-family: var(--font-mono);">{{ c.client_ip }}</strong>
+              {% if c.is_cloudflare %}
+                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono);">☁️ CLOUDFLARE</span>
+              {% endif %}
+            </div>
             {% if c.trigger_event and c.trigger_event.node %}
               <div style="font-size: 0.7rem; color: var(--text-dim);">Nodo: {{ c.trigger_event.node.name }}</div>
             {% endif %}

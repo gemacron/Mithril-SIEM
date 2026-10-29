@@ -68,7 +68,14 @@
           <tr>
             <td style="color: var(--text-dim);">#{{ log.id }}</td>
             <td style="color: var(--text-dim);">{{ log.created_at|date:"Y-m-d H:i:s" }}</td>
-            <td><code>{{ log.client_ip }}</code></td>
+            <td>
+              <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
+                <code>{{ log.client_ip }}</code>
+                {% if log.is_cloudflare %}
+                  <span style="background: rgba(246, 130, 31, 0.22); color: #f6821f; border: 1px solid rgba(246, 130, 31, 0.6); font-size: 0.62rem; font-weight: 800; padding: 1px 4px; border-radius: 3px;" title="IP de Cloudflare CDN/WAF">☁️ CF</span>
+                {% endif %}
+              </div>
+            </td>
             <td>{{ log.country_name|default:log.country_code|default:"Remoto" }}</td>
             <td>
               <span style="color: var(--neon-cyan); font-weight: 600;">{{ log.http_method }}</span>
@@ -142,7 +149,7 @@
     <div class="panel-title">
       <span>🚨</span> ÚLTIMOS INCIDENTES DETECTADOS POR HEURÍSTICA
     </div>
-    <span class="badge critical">{{ recent_events.count }} INCIDENTES</span>
+    <span class="badge critical">{{ recent_events|length }} INCIDENTES</span>
   </div>
 
   <div class="panel-body" style="padding: 0;">
@@ -162,7 +169,14 @@
         <tr>
           <td><span class="badge critical">{{ ev.severity }}</span></td>
           <td style="color: var(--text-dim);">{{ ev.created_at|date:"Y-m-d H:i:s" }}</td>
-          <td><code>{{ ev.client_ip }}</code></td>
+          <td>
+            <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
+              <code>{{ ev.client_ip }}</code>
+              {% if ev.is_cloudflare %}
+                <span style="background: rgba(246, 130, 31, 0.22); color: #f6821f; border: 1px solid rgba(246, 130, 31, 0.6); font-size: 0.62rem; font-weight: 800; padding: 1px 4px; border-radius: 3px;" title="IP de Cloudflare CDN/WAF">☁️ CF</span>
+              {% endif %}
+            </div>
+          </td>
           <td>
             <strong style="color: var(--text-main);">{{ ev.rule.name|default:"Heurística" }}</strong><br>
             <span style="font-size: 0.7rem; color: var(--text-dim);">{{ ev.rule.code }}</span>

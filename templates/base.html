@@ -68,9 +68,10 @@
   <div id="candidateInspectModal" style="display: none; position: fixed; inset: 0; background: rgba(4, 7, 15, 0.88); backdrop-filter: blur(5px); z-index: 9999; align-items: center; justify-content: center; padding: 1.25rem;">
     <div class="panel" style="width: 100%; max-width: 1020px; max-height: 92vh; overflow-y: auto; border: 1px solid var(--neon-cyan); box-shadow: 0 0 35px rgba(0, 229, 255, 0.22);">
       <div class="panel-header" style="border-bottom: 1px solid var(--border-dim); position: sticky; top: 0; background: #0a0f1d; z-index: 10;">
-        <div class="panel-title" style="display: flex; align-items: center; gap: 0.6rem;">
+        <div class="panel-title" style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
           <span>🔍</span>
           <span>INSPECCIÓN FORENSE DE PETICIÓN Y AMENAZA — IP: <code id="inspIpTitle" style="color: var(--neon-cyan); font-size: 1rem;">...</code></span>
+          <span id="inspCfBadge" style="display: none; background: rgba(243, 128, 32, 0.2); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.65); font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 4px; font-family: var(--font-mono);">☁️ CLOUDFLARE CDN</span>
           <span id="inspScoreBadge" class="badge critical">Riesgo: --/100</span>
         </div>
         <button type="button" class="btn btn-dim" style="padding: 0.25rem 0.65rem;" onclick="closeCandidateInspectModal()">✕ Cerrar</button>
@@ -277,6 +278,10 @@
           window._inspRecentRequests = data.recent_requests || [p];
 
           document.getElementById('inspIpTitle').textContent = c.client_ip || '-';
+          const cfBadgeEl = document.getElementById('inspCfBadge');
+          if (cfBadgeEl) {
+            cfBadgeEl.style.display = c.is_cloudflare ? 'inline-block' : 'none';
+          }
           document.getElementById('inspScoreBadge').textContent = `Riesgo: ${c.accumulated_score || 0}/100`;
           document.getElementById('inspGeo').textContent = `${c.country_name || '-'} (${c.city || '-'})`;
           document.getElementById('inspTotalViolations').textContent = c.total_violations || 1;

@@ -9,6 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from .models import BanCandidate, ActiveBan, IpReputation, NodeBanSync
 from apps.nodes.models import ProxyNode
 from apps.detection.models import SecurityEvent, TrafficLog
+from apps.detection.engine import is_cloudflare_ip
 from apps.reports.models import AuditTrail
 from apps.notifications.services import send_telegram_alert
 
@@ -113,7 +114,9 @@ def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_
 
 @login_required
 def candidates_list_view(request):
-    candidates = BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule', 'trigger_event__node')
+    candidates = list(BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule', 'trigger_event__node'))
+    for c in candidates:
+        c.is_cloudflare = is_cloudflare_ip(c.client_ip)
     return render(request, 'mitigation/candidates.html', {'candidates': candidates})
 
 @login_required
@@ -189,6 +192,7 @@ def candidate_inspect_api_view(request, candidate_id):
         'candidate': {
             'id': candidate.id,
             'client_ip': ip_str,
+            'is_cloudflare': is_cloudflare_ip(ip_str),
             'accumulated_score': candidate.accumulated_score,
             'suggested_reason': candidate.suggested_reason,
             'status': candidate.status,
@@ -312,7 +316,9 @@ def dismiss_candidate_view(request, candidate_id):
 def active_bans_list_view(request):
     # Expirar automáticamente bloqueos cuyo tiempo haya concluido
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=timezone.now()).update(is_active=False)
-    bans = ActiveBan.objects.filter(is_active=True).select_related('approved_by').prefetch_related('sync_records', 'sync_records__node')
+    bans = list(ActiveBan.objects.filter(is_active=True).select_related('approved_by').prefetch_related('sync_records', 'sync_records__node'))
+    for b in bans:
+        b.is_cloudflare = is_cloudflare_ip(b.client_ip)
     return render(request, 'mitigation/active_bans.html', {'bans': bans})
 
 @login_required
