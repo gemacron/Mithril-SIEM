@@ -477,12 +477,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const isLoc = isEventLocal(event);
 
       if (window.mithrilMap) {
-        if (!(hideLocalIps && isLoc)) {
-          const lat = parseFloat(event.latitude);
-          const lon = parseFloat(event.longitude);
-          if (!isNaN(lat) && !isNaN(lon)) {
-            window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip);
-          }
+        const lat = parseFloat(event.latitude);
+        const lon = parseFloat(event.longitude);
+        if (!isNaN(lat) && !isNaN(lon)) {
+          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip, isLoc);
         }
       }
 

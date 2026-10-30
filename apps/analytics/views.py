@@ -7,7 +7,7 @@ from datetime import timedelta
 from apps.nodes.models import ProxyNode
 from apps.mitigation.models import BanCandidate, ActiveBan
 from apps.detection.models import TrafficLog, SecurityEvent
-from apps.detection.engine import is_cloudflare_ip, resolve_geoip, extract_log_ip_meta, get_cloudflare_sync_status
+from apps.detection.engine import is_cloudflare_ip, resolve_geoip, extract_log_ip_meta, get_cloudflare_sync_status, is_private_local_ip
 
 def _enrich_candidate_cf(c):
     ev = c.trigger_event
@@ -147,6 +147,7 @@ def api_map_data(request):
         p['is_cloudflare'] = meta['is_cloudflare']
         p['cloudflare_ip'] = meta['cloudflare_ip']
         p['real_client_ip'] = meta['real_client_ip']
+        p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (p['client_ip'] if not meta['is_cloudflare'] else ''))
         recent_points.append(p)
 
     proxy_nodes = [

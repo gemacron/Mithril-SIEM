@@ -28,6 +28,10 @@ class TacticalWorldMap {
     this.mouse = { x: -100, y: -100, active: false };
     this.hoverPoint = null;
 
+    this.showExternal = true;
+    this.showLocal = true;
+    this.initFilterToggles();
+
     this.resize();
     window.addEventListener('resize', () => this.resize());
 
@@ -67,6 +71,60 @@ class TacticalWorldMap {
     this.renderStaticBackground();
   }
 
+  initFilterToggles() {
+    const extToggle = document.getElementById('mapToggleExternal');
+    const locToggle = document.getElementById('mapToggleLocal');
+
+    const savedExt = localStorage.getItem('mithril_map_show_external');
+    if (savedExt !== null) {
+      this.showExternal = (savedExt === 'true');
+      if (extToggle) extToggle.checked = this.showExternal;
+    } else if (extToggle) {
+      this.showExternal = extToggle.checked;
+    }
+
+    const savedLoc = localStorage.getItem('mithril_map_show_local');
+    if (savedLoc !== null) {
+      this.showLocal = (savedLoc === 'true');
+      if (locToggle) locToggle.checked = this.showLocal;
+    } else if (locToggle) {
+      this.showLocal = locToggle.checked;
+    }
+
+    if (extToggle) {
+      extToggle.addEventListener('change', () => {
+        this.showExternal = extToggle.checked;
+        localStorage.setItem('mithril_map_show_external', this.showExternal ? 'true' : 'false');
+      });
+    }
+
+    if (locToggle) {
+      locToggle.addEventListener('change', () => {
+        this.showLocal = locToggle.checked;
+        localStorage.setItem('mithril_map_show_local', this.showLocal ? 'true' : 'false');
+      });
+    }
+  }
+
+  isLocalIp(ip) {
+    if (!ip) return false;
+    const s = String(ip).trim().replace(/^🎯\s*/, '').replace(/^🏢\s*/, '');
+    if (!s || s === '-' || s === '::1' || s.startsWith('127.')) return true;
+    if (s.startsWith('10.') || s.startsWith('192.168.') || s.startsWith('169.254.')) return true;
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(s)) return true;
+    return false;
+  }
+
+  isItemLocal(item) {
+    if (!item) return false;
+    if (item.isLocal !== undefined) return Boolean(item.isLocal);
+    if (item.is_local !== undefined) return Boolean(item.is_local);
+    if (item.realClientIp && this.isLocalIp(item.realClientIp)) return true;
+    if (!item.isCloudflare && item.ip && this.isLocalIp(item.ip)) return true;
+    if (item.country && (item.country.includes('LAN') || item.country.includes('Local'))) return true;
+    return false;
+  }
+
   geoToCanvas(lat, lon) {
     const x = ((lon + 180) / 360) * this.width;
     const y = ((90 - lat) / 180) * this.height;
@@ -88,9 +146,12 @@ class TacticalWorldMap {
     this.hoverPoint = null;
     for (let i = 0; i < this.points.length; i++) {
       const pt = this.points[i];
+      const isLoc = this.isItemLocal(pt);
+      if (isLoc && !this.showLocal) continue;
+      if (!isLoc && !this.showExternal) continue;
       const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
       if (Math.hypot(x - this.mouse.x, y - this.mouse.y) < 11) {
-        this.hoverPoint = { ...pt, screenX: x, screenY: y };
+        this.hoverPoint = { ...pt, isLocal: isLoc, screenX: x, screenY: y };
         break;
       }
     }
@@ -115,7 +176,7 @@ class TacticalWorldMap {
     return { startX: originX, startY: originY, endX: target.x, endY: target.y };
   }
 
-  spawnTrajectoryArrow(startX, startY, endX, endY, color, isThreat, labelText, isCloudflare = false) {
+  spawnTrajectoryArrow(startX, startY, endX, endY, color, isThreat, labelText, isCloudflare = false, isLocal = false) {
     if (this.arcs.length >= 28) {
       this.arcs.shift();
     }
@@ -136,13 +197,15 @@ class TacticalWorldMap {
       color,
       isThreat,
       isCloudflare,
+      isLocal,
       label: labelText || ''
     });
   }
 
-  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '') {
+  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false) {
+    const isLoc = Boolean(isLocal) || this.isLocalIp(realClientIp || clientIp);
     const coords = this.geoToCanvas(lat, lon);
-    const color = isThreat ? '#ff2a5f' : (isCloudflare ? '#f6821f' : '#00e5ff');
+    const color = isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (isCloudflare ? '#f6821f' : '#00e5ff'));
 
     if (this.pulses.length >= 35) {
       this.pulses.shift();
@@ -154,15 +217,19 @@ class TacticalWorldMap {
       maxRadius: isThreat ? 30 : 18,
       alpha: 1.0,
       color: color,
-      isThreat: isThreat
+      isThreat: isThreat,
+      isLocal: isLoc
     });
 
     const vec = this.getTargetNodeCoords(coords.x, coords.y);
     const realSuffix = realClientIp ? ` ➔ 🎯${realClientIp}` : '';
+    const prefix = isThreat
+      ? (isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : ''))
+      : (isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : ''));
     const tag = isThreat
-      ? `${isCloudflare ? '☁️CF ' : ''}${clientIp || 'ATAQUE'}${realSuffix}`
-      : (isCloudflare ? `☁️CF ${clientIp}${realSuffix}` : '');
-    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, isThreat, tag, isCloudflare);
+      ? `${prefix}${clientIp || 'ATAQUE'}${realSuffix}`
+      : `${prefix}${clientIp}${realSuffix}`;
+    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, isThreat, tag, isCloudflare, isLoc);
 
     const existingIdx = this.points.findIndex(p => Math.abs(p.lat - lat) < 0.1 && Math.abs(p.lon - lon) < 0.1);
     if (existingIdx !== -1) {
@@ -176,6 +243,7 @@ class TacticalWorldMap {
       if (realClientIp) {
         this.points[existingIdx].realClientIp = realClientIp;
       }
+      this.points[existingIdx].isLocal = isLoc;
     } else {
       this.points.unshift({
         lat: lat,
@@ -184,6 +252,8 @@ class TacticalWorldMap {
         realClientIp: realClientIp,
         isThreat: isThreat,
         isCloudflare: isCloudflare,
+        isLocal: isLoc,
+        country: isLoc ? 'Red Local (LAN)' : '',
         status_code: isThreat ? 403 : 200
       });
       if (this.points.length > 90) this.points.pop();
@@ -193,22 +263,32 @@ class TacticalWorldMap {
   emitActiveThreatVectors() {
     // Mantiene visible la flecha de ataque actual para los atacantes/candidatos recientes en el mapa
     if (!this.points || this.points.length === 0) return;
-    const threats = this.points.filter(p => p.isThreat);
-    const pool = threats.length > 0 ? threats.slice(0, 6) : this.points.slice(0, 3);
+    const activePoints = this.points.filter(p => {
+      const isLoc = this.isItemLocal(p);
+      if (isLoc && !this.showLocal) return false;
+      if (!isLoc && !this.showExternal) return false;
+      return true;
+    });
+    if (activePoints.length === 0) return;
+
+    const threats = activePoints.filter(p => p.isThreat);
+    const pool = threats.length > 0 ? threats.slice(0, 6) : activePoints.slice(0, 3);
     if (pool.length === 0) return;
 
     const pt = pool[this.threatCursorIdx % pool.length];
     this.threatCursorIdx += 1;
 
+    const isLoc = this.isItemLocal(pt);
     const coords = this.geoToCanvas(pt.lat, pt.lon);
     const vec = this.getTargetNodeCoords(coords.x, coords.y);
-    const color = pt.isThreat ? '#ff2a5f' : (pt.isCloudflare ? '#f6821f' : '#00e5ff');
+    const color = pt.isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (pt.isCloudflare ? '#f6821f' : '#00e5ff'));
     const realSuffix = pt.realClientIp ? ` ➔ 🎯${pt.realClientIp}` : '';
-    const label = pt.isThreat
-      ? `${pt.isCloudflare ? '☁️CF ' : '🚨 '}${pt.ip || 'ATAQUE'}${realSuffix}`
-      : (pt.isCloudflare ? `☁️CF ${pt.ip}${realSuffix}` : pt.ip);
+    const prefix = pt.isThreat
+      ? (pt.isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : '🚨 '))
+      : (pt.isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : ''));
+    const label = `${prefix}${pt.ip || 'TRAFICO'}${realSuffix}`;
 
-    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, pt.isThreat, label, pt.isCloudflare);
+    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, pt.isThreat, label, pt.isCloudflare, isLoc);
     if (this.pulses.length < 25) {
       this.pulses.push({
         x: vec.startX,
@@ -217,7 +297,8 @@ class TacticalWorldMap {
         maxRadius: pt.isThreat ? 24 : 15,
         alpha: 0.9,
         color: color,
-        isThreat: pt.isThreat
+        isThreat: pt.isThreat,
+        isLocal: isLoc
       });
     }
   }
@@ -249,6 +330,7 @@ class TacticalWorldMap {
             country: p.country_name || '',
             isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
             isCloudflare: Boolean(p.is_cloudflare),
+            isLocal: Boolean(p.is_local) || this.isLocalIp(p.real_client_ip || p.client_ip),
             status_code: p.status_code
           }));
           this.points = incoming.slice(0, 90);
@@ -584,11 +666,17 @@ class TacticalWorldMap {
     // 1. Copiar mapa mundial realista pre-renderizado
     ctx.drawImage(this.bgCanvas, 0, 0, this.width, this.height);
 
-    // 2. Puntos de tráfico e incidentes activos (con halo Cloudflare naranja cuando corresponda)
+    // 2. Puntos de tráfico e incidentes activos (con halo Cloudflare naranja o Violeta LAN)
     for (let i = 0; i < this.points.length; i++) {
       const pt = this.points[i];
+      const isLoc = this.isItemLocal(pt);
+      if (isLoc && !this.showLocal) continue;
+      if (!isLoc && !this.showExternal) continue;
+
       const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
-      const color = pt.isThreat ? '#ff2a5f' : (pt.isCloudflare ? '#f6821f' : '#00e5ff');
+      const color = pt.isThreat
+        ? '#ff2a5f'
+        : (isLoc ? '#c084fc' : (pt.isCloudflare ? '#f6821f' : '#00e5ff'));
 
       ctx.save();
       ctx.beginPath();
@@ -598,9 +686,9 @@ class TacticalWorldMap {
 
       ctx.beginPath();
       ctx.arc(x, y, pt.isThreat ? 7.5 : 6.0, 0, Math.PI * 2);
-      ctx.strokeStyle = pt.isCloudflare ? '#f6821f' : color;
+      ctx.strokeStyle = pt.isCloudflare ? '#f6821f' : (isLoc ? '#c084fc' : color);
       ctx.globalAlpha = pt.isThreat ? 0.55 : 0.35;
-      ctx.lineWidth = pt.isCloudflare ? 1.5 : 1.0;
+      ctx.lineWidth = (pt.isCloudflare || isLoc) ? 1.5 : 1.0;
       ctx.stroke();
       ctx.restore();
     }
@@ -608,6 +696,14 @@ class TacticalWorldMap {
     // 3. Arcos de trayectoria balística con Flecha Direccional de Ataque (➤) y Estela Luminosa
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const arc = this.arcs[i];
+      const isLoc = this.isItemLocal(arc);
+      if ((isLoc && !this.showLocal) || (!isLoc && !this.showExternal)) {
+        arc.progress += arc.speed;
+        if (arc.progress >= 1.0) {
+          this.arcs.splice(i, 1);
+        }
+        continue;
+      }
       const { startX, startY, midX, midY, endX, endY, progress: t, color, isThreat, label } = arc;
 
       ctx.save();
@@ -717,6 +813,16 @@ class TacticalWorldMap {
     // 5. Ondas sónicas pulsantes en vivo
     for (let i = this.pulses.length - 1; i >= 0; i--) {
       const p = this.pulses[i];
+      const isLoc = Boolean(p.isLocal);
+      if ((isLoc && !this.showLocal) || (!isLoc && !this.showExternal)) {
+        p.radius += 0.65;
+        p.alpha -= 0.028;
+        if (p.alpha <= 0 || p.radius >= p.maxRadius) {
+          this.pulses.splice(i, 1);
+        }
+        continue;
+      }
+
       ctx.save();
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
@@ -754,14 +860,15 @@ class TacticalWorldMap {
 
       if (this.hoverPoint) {
         const hp = this.hoverPoint;
-        const cfTag = hp.isCloudflare ? ' [☁️ CLOUDFLARE]' : '';
-        const text = `${hp.ip}${cfTag} (${hp.country || 'Remoto'}) [HTTP ${hp.status_code || 200}]`;
-        const boxW = text.length * 6.5 + 14;
-        const boxX = Math.min(this.width - boxW - 6, hp.screenX + 12);
+        const cfTag = hp.isCloudflare ? ' [☁️ CF]' : (hp.isLocal ? ' [🏢 LAN]' : '');
+        const realTag = hp.realClientIp ? ` ➔ 🎯${hp.realClientIp}` : '';
+        const text = `${hp.ip}${realTag}${cfTag} (${hp.country || (hp.isLocal ? 'Red Local' : 'Remoto')}) [HTTP ${hp.status_code || 200}]`;
+        const boxW = text.length * 6.5 + 16;
+        const boxX = Math.min(this.width - boxW - 6, Math.max(6, hp.screenX + 12));
         const boxY = Math.max(6, hp.screenY - 26);
 
         ctx.fillStyle = 'rgba(8, 13, 25, 0.94)';
-        ctx.strokeStyle = hp.isThreat ? '#ff2a5f' : (hp.isCloudflare ? '#f6821f' : '#00e5ff');
+        ctx.strokeStyle = hp.isThreat ? '#ff2a5f' : (hp.isLocal ? '#c084fc' : (hp.isCloudflare ? '#f6821f' : '#00e5ff'));
         ctx.lineWidth = 1.2;
         ctx.fillRect(boxX, boxY, boxW, 22);
         ctx.strokeRect(boxX, boxY, boxW, 22);
