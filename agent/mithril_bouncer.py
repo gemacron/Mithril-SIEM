@@ -390,15 +390,18 @@ def kernel_network_mirror_worker():
                 if not cf_node_ip and (now - last_external_edge["ts"]) <= 2.5 and is_cf_ip(last_external_edge["ip"]):
                     cf_node_ip = last_external_edge["ip"]
 
-                if not real_origin_ip:
-                    # Si no hubo IP pública externa, registrar la IP local / balanceador interno
+                is_via_cloudflare = bool(cf_node_ip or is_cf_ip(src_ip) or cf_ray or cf_country)
+
+                # Si NO vino de Cloudflare y tampoco hubo IP pública externa (tráfico directo por LAN),
+                # registrar la IP local del equipo emisor de la red interna
+                if not is_via_cloudflare and not real_origin_ip:
                     for cand in [cf_connecting_ip, *xff_parts, x_real_ip, src_ip]:
                         if cand and cand not in ("127.0.0.1", "::1") and not is_cf_ip(cand):
                             real_origin_ip = cand
                             break
 
-                edge_ip = cf_node_ip or x_real_ip or (xff_parts[-1] if xff_parts else src_ip)
-                real_ip = real_origin_ip or cf_connecting_ip or (xff_parts[0] if xff_parts else "")
+                edge_ip = cf_node_ip or (src_ip if is_cf_ip(src_ip) else (xff_parts[-1] if xff_parts else src_ip))
+                real_ip = real_origin_ip or (cf_connecting_ip if not is_local_balancer_ip(cf_connecting_ip) else "")
 
                 if not is_local_balancer_ip(src_ip):
                     last_external_edge["ip"] = src_ip
@@ -409,7 +412,7 @@ def kernel_network_mirror_worker():
                     continue
 
                 host_hdr = headers_map.get("host", "")
-                if host_hdr and real_ip and real_ip != edge_ip:
+                if host_hdr and real_ip and real_ip != edge_ip and not is_local_balancer_ip(real_ip):
                     host_last_real_ip[host_hdr] = {"real_ip": real_ip, "cf_ip": cf_node_ip, "ts": now}
 
                 if "?" in full_uri:
@@ -485,6 +488,8 @@ def kernel_network_mirror_worker():
                     recent_client_activity[src_ip] = now
                     corr_info = host_last_real_ip.get(sni, {})
                     corr_real_ip = corr_info.get("real_ip", "") if (now - corr_info.get("ts", 0)) <= 30.0 else ""
+                    if is_local_balancer_ip(corr_real_ip):
+                        corr_real_ip = ""
                     event_json = json.dumps({
                         "client_ip": src_ip,
                         "real_client_ip": corr_real_ip,

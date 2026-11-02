@@ -64,6 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function isEventLocal(event) {
     if (!event) return false;
+    if (event.is_cloudflare) return false; // Tráfico proveniente de Cloudflare Edge nunca es puramente local
     if (event.is_local_ip === true) return true;
     const realIp = event.real_client_ip;
     const clientIp = event.client_ip;
@@ -86,26 +87,26 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function realClientIpCellHtml(event) {
-    if (event.real_client_ip) {
-      if (!isPrivateLocalIp(event.real_client_ip)) {
-        return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 ${event.real_client_ip}</code>`;
-      }
-      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / Balanceador">🏢 ${event.real_client_ip}</code>`;
-    }
-    if (!event.is_cloudflare) {
-      if (isPrivateLocalIp(event.client_ip)) {
-        return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / Balanceador">🏢 ${event.client_ip || '-'}</code>`;
-      }
-      return `<code style="color: var(--neon-emerald); font-size: 0.75rem;">${event.client_ip || '-'}</code>`;
+    if (event.real_client_ip && !isPrivateLocalIp(event.real_client_ip)) {
+      return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 ${event.real_client_ip}</code>`;
     }
     const ua = String(event.user_agent || '');
-    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('Zabbix')) {
-      return `<span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por el monitor de salud de Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>`;
+    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('Zabbix') || ua.includes('UptimeRobot')) {
+      return `<span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por monitor de salud Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>`;
     }
-    if (event.method === 'HTTPS') {
+    if (event.method === 'HTTPS' || event.http_method === 'HTTPS' || ua.includes('TLS SNI')) {
       return `<span style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);" title="Paquete TLS ClientHello previo a las cabeceras HTTP">🔒 Handshake TLS</span>`;
     }
-    return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición recibida vía nodo Cloudflare">☁️ Conexión Edge</span>`;
+    if (event.is_cloudflare) {
+      return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición recibida vía nodo Cloudflare">☁️ Conexión Edge</span>`;
+    }
+    if (event.real_client_ip && isPrivateLocalIp(event.real_client_ip)) {
+      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏢 ${event.real_client_ip}</code>`;
+    }
+    if (isPrivateLocalIp(event.client_ip)) {
+      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏢 ${event.client_ip || '-'}</code>`;
+    }
+    return `<code style="color: var(--neon-emerald); font-size: 0.75rem;">${event.client_ip || '-'}</code>`;
   }
 
   function updateKpiFast(element, newValue) {

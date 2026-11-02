@@ -114,6 +114,12 @@ COMBINED_LOG_REGEX = re.compile(
 )
 IP_TOKEN_REGEX = re.compile(r'\b(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]{3,39})\b')
 
+def is_private_ip(ip_str):
+    if not ip_str:
+        return False
+    s = str(ip_str).strip()
+    return s.startswith(('10.', '192.168.', '127.', '172.16.', '172.17.', '172.18.', '172.19.', '172.2', '172.30.', '172.31.')) or s == '::1'
+
 INTERNAL_HEALTHCHECK_PATHS = ('/stub_status', '/nginx_status', '/metrics', '/healthz')
 recent_dedup_cache = {}
 DEDUP_WINDOW_SEC = 1.5
@@ -203,10 +209,16 @@ def parse_nginx_combined_syslog(raw_msg, sender_ip):
                         valid_extra_ips.append(ip_m)
         if valid_extra_ips:
             xff_extracted = ', '.join(valid_extra_ips)
+            # Priorizar IPs públicas de clientes externos sobre IPs locales de balanceador
             for cand_ip in valid_extra_ips:
-                if cand_ip != client_ip and cand_ip not in ('127.0.0.1', '::1'):
+                if cand_ip != client_ip and not is_private_ip(cand_ip):
                     real_client_ip = cand_ip
                     break
+            if not real_client_ip:
+                for cand_ip in valid_extra_ips:
+                    if cand_ip != client_ip and cand_ip not in ('127.0.0.1', '::1'):
+                        real_client_ip = cand_ip
+                        break
 
     if vhost_tag and vhost_tag not in ('access', 'nginx') and not uri.startswith('['):
         uri = f"[{vhost_tag}] {uri}"
