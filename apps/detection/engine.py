@@ -435,26 +435,19 @@ def resolve_cloudflare_and_real_ip(data):
                 break
 
     # Correlación en memoria: si un paquete tiene tanto cf_node_ip como real_origin_ip,
-    # guardarlo brevemente para que líneas de log adyacentes (ej. error_log sin XFF) lo hereden
+    # guardarlo brevemente por nodo Cloudflare (máx 3s para subrecursos inmediatos del mismo cliente)
     now_mono = time.monotonic()
     if len(_CF_REAL_IP_CORRELATION) > 2000:
-        cutoff = now_mono - 30.0
+        cutoff = now_mono - 10.0
         for k in [k for k, v in _CF_REAL_IP_CORRELATION.items() if v.get('ts', 0) < cutoff]:
             _CF_REAL_IP_CORRELATION.pop(k, None)
 
-    uri_clean = re.sub(r'^\[[^\]]+\]\s*', '', str(data.get('uri', '/')))
     if cf_node_ip and real_origin_ip and cf_node_ip != real_origin_ip:
         _CF_REAL_IP_CORRELATION[f"cf:{cf_node_ip}"] = {'real_ip': real_origin_ip, 'cf_ip': cf_node_ip, 'ts': now_mono}
-        _CF_REAL_IP_CORRELATION[f"uri:{uri_clean}"] = {'real_ip': real_origin_ip, 'cf_ip': cf_node_ip, 'ts': now_mono}
     elif cf_node_ip and not real_origin_ip:
-        corr = _CF_REAL_IP_CORRELATION.get(f"cf:{cf_node_ip}") or _CF_REAL_IP_CORRELATION.get(f"uri:{uri_clean}")
-        if corr and (now_mono - corr.get('ts', 0)) <= 15.0:
+        corr = _CF_REAL_IP_CORRELATION.get(f"cf:{cf_node_ip}")
+        if corr and (now_mono - corr.get('ts', 0)) <= 3.0:
             real_origin_ip = corr.get('real_ip', '')
-    elif real_origin_ip and not cf_node_ip:
-        corr = _CF_REAL_IP_CORRELATION.get(f"uri:{uri_clean}")
-        if corr and corr.get('real_ip') == real_origin_ip and (now_mono - corr.get('ts', 0)) <= 15.0:
-            cf_node_ip = corr.get('cf_ip', '')
-            is_cf = bool(cf_node_ip)
 
     final_real_ip = real_origin_ip if (real_origin_ip and real_origin_ip != cf_node_ip) else ''
     is_local = False if is_cf else is_private_local_ip(final_real_ip or raw_ip)

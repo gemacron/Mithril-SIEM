@@ -486,13 +486,9 @@ def kernel_network_mirror_worker():
                 sni = extract_tls_sni(payload)
                 if sni and (now - recent_client_activity.get(src_ip, 0)) > 2.5:
                     recent_client_activity[src_ip] = now
-                    corr_info = host_last_real_ip.get(sni, {})
-                    corr_real_ip = corr_info.get("real_ip", "") if (now - corr_info.get("ts", 0)) <= 30.0 else ""
-                    if is_local_balancer_ip(corr_real_ip):
-                        corr_real_ip = ""
                     event_json = json.dumps({
                         "client_ip": src_ip,
-                        "real_client_ip": corr_real_ip,
+                        "real_client_ip": "",
                         "cloudflare_ip": src_ip if is_cf_ip(src_ip) else "",
                         "http_method": "HTTPS",
                         "uri": f"[{sni}] /",
@@ -505,7 +501,7 @@ def kernel_network_mirror_worker():
                         "headers": {
                             "host": sni,
                             "cloudflare_ip": src_ip if is_cf_ip(src_ip) else "",
-                            "real_client_ip": corr_real_ip,
+                            "real_client_ip": "",
                         }
                     })
                     msg = f"<190>nginx: {event_json}".encode("utf-8", errors="ignore")

@@ -464,8 +464,11 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const batch = wsQueue.splice(-6);
-    wsQueue.length = 0;
+    const batch = wsQueue.splice(0, Math.min(wsQueue.length, 12));
+    if (wsQueue.length > 0 && !rafScheduled) {
+      rafScheduled = true;
+      requestAnimationFrame(flushWsQueue);
+    }
 
     let logsDelta = 0;
     let threatsDelta = 0;
