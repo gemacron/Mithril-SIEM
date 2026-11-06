@@ -127,15 +127,18 @@ def init_firewall():
             print(f"⚠️ [FIREWALL] Error iniciando ipset: {e}")
 
 def apply_blocklist(banned_ips):
-    """Aplica la lista de IPs denegadas en el firewall o archivo de Nginx"""
+    """
+    Aplica la lista de IPs denegadas en el firewall (ipset/iptables) para bloquear accesos directos
+    Y en el archivo de Nginx (deny <ip>;) para bloquear clientes que llegan a través de Cloudflare.
+    """
     if BLOCK_METHOD == "monitor":
         print(f"👁️ [MONITOR-PASIVO] {len(banned_ips)} IPs en lista negra (modo solo lectura, sin tocar firewall ni Nginx).")
         return
+
+    # 1. Bloqueo en Kernel / Firewall con ipset (para conexiones TCP directas)
     if BLOCK_METHOD == "ipset":
         try:
-            # Asegurar que la regla INPUT exista (por si firewalld se recargo en Rocky Linux / RHEL)
             init_firewall()
-            # Reemplazo atomico usando un set temporal
             subprocess.run(["ipset", "create", "mithril_temp", "hash:ip", "-exist"], check=True)
             subprocess.run(["ipset", "flush", "mithril_temp"], check=True)
             for ip in banned_ips:
@@ -144,27 +147,26 @@ def apply_blocklist(banned_ips):
             subprocess.run(["ipset", "destroy", "mithril_temp"], check=True)
             print(f"✅ [IPSET] {len(banned_ips)} IPs bloqueadas en kernel/firewall.")
         except Exception as e:
-            print(f"❌ [IPSET] Error aplicando bloqueo por ipset: {e}")
-    else:
-        # Metodo configuracion Nginx
-        try:
-            os.makedirs(os.path.dirname(NGINX_BLOCK_FILE), exist_ok=True)
-            content = "# Mithril SIEM - Lista de Bloqueo Dinamica\n"
-            for ip in banned_ips:
-                content += f"deny {ip};\n"
-            
-            with open(NGINX_BLOCK_FILE, "w") as f:
-                f.write(content)
-            
-            # Validar sintaxis antes de recargar
-            test = subprocess.run(["nginx", "-t"], capture_output=True, text=True, check=False)
-            if test.returncode == 0:
-                subprocess.run(["nginx", "-s", "reload"], check=False)
-                print(f"✅ [NGINX] {len(banned_ips)} IPs sincronizadas en {NGINX_BLOCK_FILE} y Nginx recargado.")
-            else:
-                print(f"❌ [NGINX] Error en sintaxis de Nginx: {test.stderr}")
-        except Exception as e:
-            print(f"❌ [NGINX] Error escribiendo lista de bloqueo: {e}")
+            print(f"⚠️ [IPSET] Error aplicando bloqueo por ipset: {e}")
+
+    # 2. Bloqueo en Nginx (para tráfico de clientes reales detrás de Cloudflare)
+    try:
+        os.makedirs(os.path.dirname(NGINX_BLOCK_FILE), exist_ok=True)
+        content = "# Mithril SIEM - Lista de Bloqueo Dinamica\n"
+        for ip in banned_ips:
+            content += f"deny {ip};\n"
+        
+        with open(NGINX_BLOCK_FILE, "w") as f:
+            f.write(content)
+        
+        test = subprocess.run(["nginx", "-t"], capture_output=True, text=True, check=False)
+        if test.returncode == 0:
+            subprocess.run(["nginx", "-s", "reload"], check=False)
+            print(f"✅ [NGINX] {len(banned_ips)} IPs sincronizadas en {NGINX_BLOCK_FILE} y Nginx recargado.")
+        else:
+            print(f"❌ [NGINX] Error en sintaxis de Nginx: {test.stderr}")
+    except Exception as e:
+        print(f"⚠️ [NGINX] Error escribiendo lista de bloqueo en Nginx: {e}")
 
 HTTP_METHODS_BYTES = (b"GET ", b"POST ", b"PUT ", b"DELETE ", b"HEAD ", b"OPTIONS ", b"PATCH ")
 

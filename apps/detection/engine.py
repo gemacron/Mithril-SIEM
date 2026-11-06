@@ -554,17 +554,23 @@ def resolve_geoip(ip_str):
 
 def process_incoming_log(data, node=None):
     """
-    Procesa, normaliza, enriquece e inspecciona cada petición recibida de Nginx
+    Procesa, normaliza, enriquece e inspecciona cada petición recibida de Nginx.
+    Evalúa, puntúa y genera candidatos a bloqueo SIEMPRE sobre la IP del cliente real
+    (sin importar si se conecta a través de un nodo Cloudflare o de forma directa).
     """
-    client_ip = data.get('client_ip', '').strip()
-    if not client_ip:
+    raw_conn_ip = data.get('client_ip', '').strip()
+    if not raw_conn_ip:
         return None
 
     ip_meta = resolve_cloudflare_and_real_ip(data)
-    geo = resolve_geoip(client_ip)
-    is_cf = bool(ip_meta['is_cloudflare'] or geo.get('is_cloudflare', False))
-    cf_node_ip = ip_meta['cloudflare_ip'] or (client_ip if is_cf else '')
+    is_cf = ip_meta['is_cloudflare']
+    cf_node_ip = ip_meta['cloudflare_ip'] or (raw_conn_ip if is_cf else '')
     real_client_ip = ip_meta['real_client_ip']
+
+    # La IP real del cliente que realiza la petición (detrás de Cloudflare o directo):
+    target_client_ip = real_client_ip if (is_cf and real_client_ip) else raw_conn_ip
+
+    geo = resolve_geoip(target_client_ip)
 
     incoming_headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
     if is_cf:
@@ -573,15 +579,16 @@ def process_incoming_log(data, node=None):
         incoming_headers['cloudflare_ip'] = cf_node_ip
     if real_client_ip:
         incoming_headers['real_client_ip'] = real_client_ip
+    incoming_headers['connection_ip'] = raw_conn_ip
     if ip_meta.get('cf_ray'):
         incoming_headers['cf_ray'] = ip_meta['cf_ray']
     if ip_meta.get('cf_country'):
         incoming_headers['cf_country'] = ip_meta['cf_country']
 
-    # 1. Guardar log normalizado
+    # 1. Guardar log normalizado con la IP del cliente real para indexación y búsqueda
     log = TrafficLog.objects.create(
         node=node,
-        client_ip=client_ip,
+        client_ip=target_client_ip,
         http_method=data.get('http_method', 'GET').upper(),
         uri=data.get('uri', '/'),
         query_params=data.get('query_params', ''),
@@ -601,16 +608,16 @@ def process_incoming_log(data, node=None):
     if node:
         ProxyNode.objects.filter(id=node.id).update(total_logs_processed=F('total_logs_processed') + 1)
 
-    # 2. Consultar o crear reputación de la IP
+    # 2. Consultar o crear reputación de la IP del CLIENTE
     reputation, _ = IpReputation.objects.get_or_create(
-        client_ip=client_ip,
+        client_ip=target_client_ip,
         defaults={
             'country_code': geo['country_code'],
-            'asn': 'CLOUDFLARE' if is_cf else '',
+            'asn': 'CLOUDFLARE' if (is_cf and not real_client_ip) else '',
             'status': 'MONITORED'
         }
     )
-    if is_cf and reputation.asn != 'CLOUDFLARE':
+    if is_cf and not real_client_ip and reputation.asn != 'CLOUDFLARE':
         reputation.asn = 'CLOUDFLARE'
         reputation.save(update_fields=['asn'])
 
@@ -662,9 +669,9 @@ def process_incoming_log(data, node=None):
         if rule.code == 'R-AUTH-BRUTE-401':
             if log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(normalized_uri)):
                 matched_any_rule = True
-                if not _is_in_event_cooldown(client_ip, rule.code, cooldown_sec=3.0):
+                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
                     recent_auth_fails = TrafficLog.objects.filter(
-                        client_ip=client_ip,
+                        client_ip=target_client_ip,
                         status_code__in=[401, 403],
                         created_at__gte=window_start
                     ).count()
@@ -672,7 +679,7 @@ def process_incoming_log(data, node=None):
                         event = SecurityEvent.objects.create(
                             node=node,
                             rule=rule,
-                            client_ip=client_ip,
+                            client_ip=target_client_ip,
                             severity='HIGH',
                             matched_payload=f"{recent_auth_fails} respuestas {log.status_code} en {log.uri} ({rule.threshold_seconds}s)",
                             details={**base_req_details, 'count_auth_fails': recent_auth_fails}
@@ -684,9 +691,9 @@ def process_incoming_log(data, node=None):
         elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
             if log.status_code == 404:
                 matched_any_rule = True
-                if not _is_in_event_cooldown(client_ip, rule.code, cooldown_sec=3.0):
+                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
                     recent_404_count = TrafficLog.objects.filter(
-                        client_ip=client_ip,
+                        client_ip=target_client_ip,
                         status_code=404,
                         created_at__gte=window_start
                     ).count()
@@ -694,7 +701,7 @@ def process_incoming_log(data, node=None):
                         event = SecurityEvent.objects.create(
                             node=node,
                             rule=rule,
-                            client_ip=client_ip,
+                            client_ip=target_client_ip,
                             severity='HIGH',
                             matched_payload=f"{recent_404_count} errores 404 en {rule.threshold_seconds}s ({log.uri})",
                             details={**base_req_details, 'count_404': recent_404_count}
@@ -704,9 +711,9 @@ def process_incoming_log(data, node=None):
 
         # C. Detección Heurística de Ráfaga / Flood DoS por IP (Rate Limit sin regex)
         elif not rule.pattern_regex and rule.category == 'RATE_LIMIT':
-            if not _is_in_event_cooldown(client_ip, rule.code, cooldown_sec=4.0):
+            if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=4.0):
                 recent_req_count = TrafficLog.objects.filter(
-                    client_ip=client_ip,
+                    client_ip=target_client_ip,
                     created_at__gte=window_start
                 ).count()
                 if recent_req_count >= rule.threshold_count:
@@ -714,7 +721,7 @@ def process_incoming_log(data, node=None):
                     event = SecurityEvent.objects.create(
                         node=node,
                         rule=rule,
-                        client_ip=client_ip,
+                        client_ip=target_client_ip,
                         severity='CRITICAL' if rule.risk_points >= 60 else 'HIGH',
                         matched_payload=f"Ráfaga DoS: {recent_req_count} reqs en {rule.threshold_seconds}s",
                         details={**base_req_details, 'request_count': recent_req_count, 'window_seconds': rule.threshold_seconds}
@@ -728,12 +735,12 @@ def process_incoming_log(data, node=None):
             if match:
                 matched_any_rule = True
                 matched_text = match.group(0)
-                if not _is_in_event_cooldown(client_ip, rule.code, cooldown_sec=2.5):
+                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=2.5):
                     should_trigger = True
 
                     if rule.threshold_count > 1:
                         recent_matches = SecurityEvent.objects.filter(
-                            client_ip=client_ip,
+                            client_ip=target_client_ip,
                             rule=rule,
                             created_at__gte=window_start
                         ).count() + 1
@@ -741,7 +748,7 @@ def process_incoming_log(data, node=None):
                             SecurityEvent.objects.create(
                                 node=node,
                                 rule=rule,
-                                client_ip=client_ip,
+                                client_ip=target_client_ip,
                                 severity='LOW',
                                 matched_payload=f"[{recent_matches}/{rule.threshold_count}] {matched_text}",
                                 details={**base_req_details, 'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
@@ -753,7 +760,7 @@ def process_incoming_log(data, node=None):
                         event = SecurityEvent.objects.create(
                             node=node,
                             rule=rule,
-                            client_ip=client_ip,
+                            client_ip=target_client_ip,
                             severity=severity,
                             matched_payload=matched_text,
                             details={**base_req_details, 'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
@@ -761,7 +768,7 @@ def process_incoming_log(data, node=None):
                         triggered_events.append(event)
                         risk_to_add += rule.risk_points
 
-    # 4. Actualizar puntaje de riesgo de la IP
+    # 4. Actualizar puntaje de riesgo de la IP DEL CLIENTE
     if risk_to_add > 0:
         reputation.current_risk_score = min(100, reputation.current_risk_score + risk_to_add)
         reputation.total_violations += len(triggered_events)
@@ -775,45 +782,49 @@ def process_incoming_log(data, node=None):
 
         reputation.save()
 
-        # 5. Generar Candidato a Bloqueo (Dry-Run / Autoban Simulado) sin detener el análisis posterior
+        # 5. Generar Candidato a Bloqueo para la IP del CLIENTE
         if reputation.current_risk_score >= 80:
-            last_event = triggered_events[0] if triggered_events else None
-            reason_text = f"Puntaje de riesgo {reputation.current_risk_score}/100 alcanzado. Disparó {reputation.total_violations} infracciones."
-            if last_event and last_event.rule:
-                reason_text += f" Última infracción: {last_event.rule.name}."
-            if is_cf and real_client_ip:
-                reason_text += f" [Cloudflare Node: {cf_node_ip} ➔ IP Real Cliente: {real_client_ip}]"
+            if is_cloudflare_ip(target_client_ip):
+                # Los nodos CDN de Cloudflare son compartidos y nunca deben bloquearse
+                pass
+            else:
+                last_event = triggered_events[0] if triggered_events else None
+                reason_text = f"Puntaje de riesgo {reputation.current_risk_score}/100 alcanzado. Disparó {reputation.total_violations} infracciones."
+                if last_event and last_event.rule:
+                    reason_text += f" Última infracción: {last_event.rule.name}."
+                if is_cf and cf_node_ip:
+                    reason_text += f" (Petición recibida a través de Cloudflare Edge: {cf_node_ip})"
 
-            candidate, created = BanCandidate.objects.get_or_create(
-                client_ip=client_ip,
-                status='PENDING',
-                defaults={
-                    'accumulated_score': reputation.current_risk_score,
-                    'suggested_reason': reason_text,
-                    'trigger_event': last_event
-                }
-            )
-            if not created:
-                candidate.accumulated_score = reputation.current_risk_score
-                candidate.suggested_reason = reason_text
-                if last_event:
-                    candidate.trigger_event = last_event
-                candidate.save(update_fields=['accumulated_score', 'suggested_reason', 'trigger_event'])
-
-            # Notificar vía Telegram de forma asíncrona (no bloqueante) si es un candidato nuevo
-            if created:
-                cf_line = f"IP Real Cliente: {real_client_ip} (vía Cloudflare {cf_node_ip})\n" if (is_cf and real_client_ip) else ""
-                send_telegram_alert(
-                    title="🚨 Nuevo Candidato a Bloqueo Detectado",
-                    message=(
-                        f"IP Detectada: {client_ip} ({geo['country_name']})\n"
-                        f"{cf_line}"
-                        f"Score de Riesgo: {reputation.current_risk_score}/100\n"
-                        f"Proxy: {node.name if node else 'N/A'}\n"
-                        f"Motivo: {reason_text}\n"
-                        f"Estado: Esperando aprobación del operador en Mithril SIEM."
-                    )
+                candidate, created = BanCandidate.objects.get_or_create(
+                    client_ip=target_client_ip,
+                    status='PENDING',
+                    defaults={
+                        'accumulated_score': reputation.current_risk_score,
+                        'suggested_reason': reason_text,
+                        'trigger_event': last_event
+                    }
                 )
+                if not created:
+                    candidate.accumulated_score = reputation.current_risk_score
+                    candidate.suggested_reason = reason_text
+                    if last_event:
+                        candidate.trigger_event = last_event
+                    candidate.save(update_fields=['accumulated_score', 'suggested_reason', 'trigger_event'])
+
+                # Notificar vía Telegram de forma asíncrona (no bloqueante) si es un candidato nuevo
+                if created:
+                    cf_line = f"Conexión vía Cloudflare Node: {cf_node_ip}\n" if (is_cf and cf_node_ip) else ""
+                    send_telegram_alert(
+                        title="🚨 Nuevo Candidato a Bloqueo Detectado",
+                        message=(
+                            f"IP Cliente: {target_client_ip} ({geo['country_name']})\n"
+                            f"{cf_line}"
+                            f"Score de Riesgo: {reputation.current_risk_score}/100\n"
+                            f"Proxy: {node.name if node else 'N/A'}\n"
+                            f"Motivo: {reason_text}\n"
+                            f"Estado: Esperando aprobación del operador en Mithril SIEM."
+                        )
+                    )
 
     # 6. Emitir evento en vivo por WebSockets al SOC (incluso si ya es candidato, el mapa sigue analizando)
     is_threat = (
@@ -843,12 +854,13 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
         return
 
     meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
+    connection_ip = log.raw_headers.get('connection_ip') or log.client_ip
     payload = {
         'type': 'traffic_event',
         'event': {
             'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
-            'client_ip': log.client_ip,
+            'client_ip': connection_ip,
             'method': log.http_method,
             'uri': log.uri,
             'status_code': log.status_code,
@@ -861,8 +873,8 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'is_threat': is_threat,
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
-            'real_client_ip': meta['real_client_ip'],
-            'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (log.client_ip if not meta['is_cloudflare'] else '')),
+            'real_client_ip': meta['real_client_ip'] if meta['is_cloudflare'] else '',
+            'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (connection_ip if not meta['is_cloudflare'] else '')),
             'user_agent': log.user_agent or '',
             'risk_score': reputation.current_risk_score if reputation else 0,
             'violations_count': len(events) if events else 0,
