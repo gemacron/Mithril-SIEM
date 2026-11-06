@@ -90,8 +90,6 @@ _CF_DYNAMIC_STATE = {
     'last_error': '',
 }
 _CF_IP_CACHE = {}
-# Correlación en memoria de corto plazo: asocia (cloudflare_ip) o (uri_limpia) -> real_client_ip
-_CF_REAL_IP_CORRELATION = {}
 
 
 def _compile_cf_networks(ipv4_list, ipv6_list):
@@ -350,56 +348,47 @@ def is_private_local_ip(ip_str):
 
 def resolve_cloudflare_and_real_ip(data):
     """
-    Separa e identifica simultáneamente:
+    Separa e identifica simultáneamente con precisión absoluta:
       1) `cloudflare_ip`: La IP del nodo Edge de Cloudflare (si la petición pasó por Cloudflare).
-      2) `real_client_ip`: La IP real del cliente de origen (extraída de CF-Connecting-IP,
-         True-Client-IP, X-Forwarded-For, X-Real-IP o correlación en memoria).
-      3) `is_cloudflare`: True si interviene un nodo de Cloudflare o cabeceras CF.
-      4) `is_local_ip`: True si es tráfico originado en la LAN o balanceador local.
+      2) `real_client_ip`: La IP real del cliente de origen (extraída estrictamente de cabeceras HTTP
+         reales de ESTA petición: CF-Connecting-IP, True-Client-IP, X-Forwarded-For).
+      3) `is_cloudflare`: True si la conexión proviene de un nodo de Cloudflare o trae cabeceras CF.
+      4) `is_local_ip`: True si es tráfico originado directamente en la LAN o balanceador local.
     """
     headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
     raw_ip = str(data.get('client_ip') or data.get('remote_addr') or '').strip()
+    http_method = str(data.get('http_method') or data.get('method') or '').upper()
+    user_agent = str(data.get('user_agent') or '')
 
-    # Extraer posibles cabeceras de IP real enviadas por Cloudflare / Nginx
-    cf_conn_ip = str(
-        data.get('real_client_ip')
-        or data.get('cf_connecting_ip')
-        or data.get('http_cf_connecting_ip')
-        or headers.get('cf_connecting_ip')
+    # 1. Detección de Handshakes TLS ClientHello
+    # Un paquete de Handshake TLS en puerto 443 es previo a la desencriptación HTTP,
+    # por lo que por definición criptográfica NO posee cabeceras HTTP CF-Connecting-IP.
+    if http_method == 'HTTPS' or 'TLS SNI' in user_agent or 'ClientHello' in user_agent:
+        is_cf = is_cloudflare_ip(raw_ip)
+        return {
+            'is_cloudflare': is_cf,
+            'cloudflare_ip': raw_ip if is_cf else '',
+            'real_client_ip': '',
+            'is_local_ip': False if is_cf else is_private_local_ip(raw_ip),
+            'cf_ray': '',
+            'cf_country': '',
+        }
+
+    # 2. Extracción de cabeceras de cliente reales
+    cf_header_ip = str(
+        headers.get('cf_connecting_ip')
         or headers.get('cf-connecting-ip')
         or headers.get('true_client_ip')
         or headers.get('true-client-ip')
+        or data.get('cf_connecting_ip')
+        or data.get('http_cf_connecting_ip')
         or ''
     ).strip()
 
-    x_real_ip = str(
-        data.get('x_real_ip')
-        or data.get('http_x_real_ip')
-        or headers.get('x_real_ip')
-        or headers.get('x-real-ip')
-        or ''
-    ).strip()
+    cf_ray = str(headers.get('cf_ray') or headers.get('cf-ray') or data.get('cf_ray') or '').strip()
+    cf_country = str(headers.get('cf_country') or headers.get('cf-country') or headers.get('cf_ipcountry') or headers.get('cf-ipcountry') or data.get('cf_country') or '').strip()
 
-    xff_raw = str(
-        data.get('x_forwarded_for')
-        or data.get('http_x_forwarded_for')
-        or headers.get('x_forwarded_for')
-        or headers.get('x-forwarded-for')
-        or ''
-    ).strip()
-
-    explicit_cf_ip = str(
-        data.get('cloudflare_ip')
-        or headers.get('cloudflare_ip')
-        or headers.get('edge_ip')
-        or headers.get('raw_src_ip')
-        or ''
-    ).strip()
-
-    cf_ray = str(data.get('cf_ray') or data.get('http_cf_ray') or headers.get('cf_ray') or headers.get('cf-ray') or '').strip()
-    cf_country = str(data.get('cf_country') or data.get('http_cf_ipcountry') or headers.get('cf_country') or headers.get('cf_ipcountry') or headers.get('cf-ipcountry') or '').strip()
-
-    # Desglosar lista de IPs en X-Forwarded-For
+    xff_raw = str(headers.get('x_forwarded_for') or headers.get('x-forwarded-for') or data.get('x_forwarded_for') or '').strip()
     xff_ips = []
     if xff_raw and xff_raw != '-':
         for part in xff_raw.split(','):
@@ -407,50 +396,46 @@ def resolve_cloudflare_and_real_ip(data):
             if _is_valid_ip(cand):
                 xff_ips.append(cand)
 
-    all_candidates = []
-    for cand in [cf_conn_ip, *xff_ips, x_real_ip, explicit_cf_ip, raw_ip]:
-        if _is_valid_ip(cand) and cand not in all_candidates:
-            all_candidates.append(cand)
+    x_real_ip = str(headers.get('x_real_ip') or headers.get('x-real-ip') or data.get('x_real_ip') or '').strip()
 
-    cf_node_ip = ''
-    real_origin_ip = ''
+    # Detección de si la conexión interviene Cloudflare Edge
+    is_cf_node = is_cloudflare_ip(raw_ip)
+    is_cf = bool(is_cf_node or cf_ray or cf_country or (cf_header_ip and _is_valid_ip(cf_header_ip)))
+    cf_node_ip = raw_ip if is_cf_node else (str(headers.get('cloudflare_ip') or data.get('cloudflare_ip') or '') if is_cf else '')
 
-    # 1. Priorizar extracción de IP pública externa del cliente y el nodo Edge Cloudflare
-    for cand in all_candidates:
-        if is_cloudflare_ip(cand):
-            if not cf_node_ip:
-                cf_node_ip = cand
-        elif not is_private_local_ip(cand):
-            if not real_origin_ip:
-                real_origin_ip = cand
+    real_client_ip = ''
 
-    is_cf = bool(cf_node_ip or cf_ray or (cf_conn_ip and _is_valid_ip(cf_conn_ip)) or explicit_cf_ip)
+    if is_cf:
+        # Petición a través de Cloudflare:
+        # El cliente real DEBE venir de CF-Connecting-IP, True-Client-IP o del cliente original en X-Forwarded-For.
+        if _is_valid_ip(cf_header_ip) and not is_cloudflare_ip(cf_header_ip) and not is_private_local_ip(cf_header_ip):
+            real_client_ip = cf_header_ip
+        else:
+            # Buscar en X-Forwarded-For la IP pública que no sea de Cloudflare ni local
+            for cand in xff_ips:
+                if not is_cloudflare_ip(cand) and not is_private_local_ip(cand):
+                    real_client_ip = cand
+                    break
 
-    # 2. Si no hubo IP pública externa, registrar la IP local / LAN del cliente privado SOLO si NO vino de Cloudflare
-    # (Si la petición pasó por Cloudflare, la IP del balanceador o LAN local NUNCA debe adjudicarse como cliente)
-    if not is_cf and not real_origin_ip:
-        for cand in all_candidates:
-            if cand not in ('127.0.0.1', '::1') and not is_cloudflare_ip(cand):
-                real_origin_ip = cand
+        # Si NO vino ninguna cabecera de cliente externa:
+        # ES UNA SONDA DE SALUD (HEALTHCHECK) INTERNA DE CLOUDFLARE O UN RECURSO INTERNO DE EDGE.
+        # NUNCA asignar IPs de otros clientes ni la IP local del balanceador.
+        final_real_ip = real_client_ip
+        is_local = False
+    else:
+        # Petición directa que no pasó por Cloudflare (ej. LAN interna o acceso IP directo):
+        # 1. Comprobar X-Forwarded-For / X-Real-IP
+        direct_cand = ''
+        for cand in [x_real_ip, *xff_ips]:
+            if _is_valid_ip(cand) and not is_cloudflare_ip(cand):
+                direct_cand = cand
                 break
-
-    # Correlación en memoria: si un paquete tiene tanto cf_node_ip como real_origin_ip,
-    # guardarlo brevemente por nodo Cloudflare (máx 3s para subrecursos inmediatos del mismo cliente)
-    now_mono = time.monotonic()
-    if len(_CF_REAL_IP_CORRELATION) > 2000:
-        cutoff = now_mono - 10.0
-        for k in [k for k, v in _CF_REAL_IP_CORRELATION.items() if v.get('ts', 0) < cutoff]:
-            _CF_REAL_IP_CORRELATION.pop(k, None)
-
-    if cf_node_ip and real_origin_ip and cf_node_ip != real_origin_ip:
-        _CF_REAL_IP_CORRELATION[f"cf:{cf_node_ip}"] = {'real_ip': real_origin_ip, 'cf_ip': cf_node_ip, 'ts': now_mono}
-    elif cf_node_ip and not real_origin_ip:
-        corr = _CF_REAL_IP_CORRELATION.get(f"cf:{cf_node_ip}")
-        if corr and (now_mono - corr.get('ts', 0)) <= 3.0:
-            real_origin_ip = corr.get('real_ip', '')
-
-    final_real_ip = real_origin_ip if (real_origin_ip and real_origin_ip != cf_node_ip) else ''
-    is_local = False if is_cf else is_private_local_ip(final_real_ip or raw_ip)
+        final_cand = direct_cand or raw_ip
+        if _is_valid_ip(final_cand) and final_cand not in ('127.0.0.1', '::1'):
+            final_real_ip = final_cand
+        else:
+            final_real_ip = ''
+        is_local = is_private_local_ip(final_real_ip or raw_ip)
 
     return {
         'is_cloudflare': is_cf,

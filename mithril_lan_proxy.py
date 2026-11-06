@@ -122,16 +122,16 @@ def is_private_ip(ip_str):
 
 INTERNAL_HEALTHCHECK_PATHS = ('/stub_status', '/nginx_status', '/metrics', '/healthz')
 recent_dedup_cache = {}
-DEDUP_WINDOW_SEC = 1.5
+DEDUP_WINDOW_SEC = 0.05
 
 def is_duplicate_event(log_obj):
     """
-    Evita duplicar eventos cuando un mismo servidor Nginx registra la misma peticion
-    en multiples formatos o archivos simultaneamente (ej. syslog + access.log + custom.log).
+    Evita procesar paquetes UDP de red duplicados en milisegundos (<50ms).
+    No descarta peticiones legítimas consecutivas de usuarios o clientes.
     """
     now = time.time()
     if len(recent_dedup_cache) > 2000:
-        cutoff = now - DEDUP_WINDOW_SEC
+        cutoff = now - 1.0
         for k in [k for k, ts in recent_dedup_cache.items() if ts < cutoff]:
             recent_dedup_cache.pop(k, None)
 
@@ -144,6 +144,8 @@ def is_duplicate_event(log_obj):
         clean_uri,
         str(log_obj.get('query_params', '')),
         int(log_obj.get('status_code') or 200),
+        int(log_obj.get('bytes_sent') or 0),
+        str(log_obj.get('user_agent', ''))[:30],
     )
     last_ts = recent_dedup_cache.get(sig)
     if last_ts and (now - last_ts) < DEDUP_WINDOW_SEC:

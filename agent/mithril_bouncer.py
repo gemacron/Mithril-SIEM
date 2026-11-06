@@ -258,7 +258,6 @@ def kernel_network_mirror_worker():
     pending_http = {}  # (src_ip, src_port, dst_ip, dst_port) -> dict
     recent_client_activity = {}  # client_ip -> timestamp
     last_external_edge = {"ip": "", "ts": 0.0}
-    host_last_real_ip = {}  # host -> {"real_ip": str, "cf_ip": str, "ts": float}
     last_flush = time.time()
 
     def flush_expired_pending(now_ts):
@@ -412,9 +411,6 @@ def kernel_network_mirror_worker():
                     continue
 
                 host_hdr = headers_map.get("host", "")
-                if host_hdr and real_ip and real_ip != edge_ip and not is_local_balancer_ip(real_ip):
-                    host_last_real_ip[host_hdr] = {"real_ip": real_ip, "cf_ip": cf_node_ip, "ts": now}
-
                 if "?" in full_uri:
                     uri, query_params = full_uri.split("?", 1)
                 else:
