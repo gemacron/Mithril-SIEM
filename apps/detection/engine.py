@@ -454,7 +454,26 @@ def extract_log_ip_meta(ip_str, headers=None):
     """
     hdrs = headers if isinstance(headers, dict) else {}
     nested_hdrs = hdrs.get('headers', {}) if isinstance(hdrs.get('headers'), dict) else {}
-    merged = {**nested_hdrs, **hdrs, 'client_ip': ip_str}
+    merged = {**nested_hdrs, **hdrs}
+
+    # Si ya se procesó y almacenó previamente en raw_headers, retornar directamente
+    stored_real = merged.get('real_client_ip') or ''
+    stored_cf = merged.get('cloudflare_ip') or ''
+    is_cf_flag = bool(merged.get('is_cloudflare'))
+
+    if is_cf_flag or stored_cf or (stored_real and stored_real != ip_str):
+        is_cf = is_cf_flag or bool(stored_cf) or is_cloudflare_ip(ip_str) or is_cloudflare_ip(merged.get('connection_ip'))
+        cf_node = stored_cf or (ip_str if is_cloudflare_ip(ip_str) else str(merged.get('connection_ip') or ''))
+        return {
+            'is_cloudflare': is_cf,
+            'cloudflare_ip': cf_node if is_cf else '',
+            'real_client_ip': stored_real,
+            'is_local_ip': is_private_local_ip(stored_real or ip_str),
+            'cf_ray': str(merged.get('cf_ray') or ''),
+            'cf_country': str(merged.get('cf_country') or merged.get('cf_ipcountry') or ''),
+        }
+
+    merged['client_ip'] = ip_str
     meta = resolve_cloudflare_and_real_ip(merged)
     if not meta['is_cloudflare'] and hdrs.get('is_cloudflare'):
         meta['is_cloudflare'] = True
@@ -623,6 +642,13 @@ def process_incoming_log(data, node=None):
 
     # Si la IP está en Lista Blanca, no generar alertas de bloqueo
     if reputation.status == 'WHITELISTED':
+        broadcast_to_soc(log, is_threat=False, reputation=reputation)
+        return log
+
+    # Si la petición viene a través de Cloudflare pero no tiene cliente final
+    # (es una sonda de salud interna de Cloudflare, monitor de uptime o TLS handshake),
+    # no evaluar reglas de ataque o DoS sobre el nodo compartido de Cloudflare.
+    if is_cf and not real_client_ip:
         broadcast_to_soc(log, is_threat=False, reputation=reputation)
         return log
 
@@ -873,7 +899,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'is_threat': is_threat,
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
-            'real_client_ip': meta['real_client_ip'] if meta['is_cloudflare'] else '',
+            'real_client_ip': meta['real_client_ip'] or '',
             'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (connection_ip if not meta['is_cloudflare'] else '')),
             'user_agent': log.user_agent or '',
             'risk_score': reputation.current_risk_score if reputation else 0,
