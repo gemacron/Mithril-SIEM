@@ -124,7 +124,7 @@
           </thead>
           <tbody id="liveFeedTableBody">
             {% for log in recent_logs %}
-            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.client_ip }}">
+            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.client_ip }}" onclick="openLogInspectModal({{ log.id }})" style="cursor: pointer;" title="Haz clic para verificar los detalles técnicos de esta petición">
               <td>
                 {% if log.is_threat %}
                 <span class="badge critical">AMENAZA</span>

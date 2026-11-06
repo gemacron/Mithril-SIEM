@@ -297,7 +297,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const hideRowStyle = (hideLocalIps && isLoc) ? 'style="display: none;"' : '';
 
             rowsHtml += `
-              <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" ${hideRowStyle}>
+              <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" style="cursor: pointer; ${hideLocalIps && isLoc ? 'display: none;' : ''}" onclick="if (typeof openLogInspectModal === 'function') openLogInspectModal(${event.id || 0})" title="Haz clic para verificar los detalles técnicos de esta petición">
                 <td><span class="${badgeClass}">${badgeText}</span></td>
                 <td><strong>${event.timestamp || ''}</strong></td>
                 <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
@@ -497,7 +497,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const uriDisplay = event.uri || '/';
         const countryDisplay = event.country_name || event.country_code || 'Remoto';
 
-        if (event.id) row.setAttribute('data-log-id', event.id);
+        if (event.id) {
+          row.setAttribute('data-log-id', event.id);
+          row.style.cursor = 'pointer';
+          row.setAttribute('title', 'Haz clic para verificar los detalles técnicos y estado de seguridad de esta petición');
+          row.addEventListener('click', () => {
+            if (typeof openLogInspectModal === 'function') {
+              openLogInspectModal(event.id);
+            }
+          });
+        }
         row.setAttribute('data-is-local', isLoc ? 'true' : 'false');
         row.setAttribute('data-client-ip', event.client_ip || '');
         row.setAttribute('data-real-ip', event.real_client_ip || '');

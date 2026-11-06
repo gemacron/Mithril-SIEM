@@ -64,6 +64,77 @@
     {{ MITHRIL_APP_NAME }} &copy; 2026 — Plataforma SIEM Táctica de Detección y Mitigación para Nginx Proxies.
   </footer>
 
+  <!-- Modal Global de Verificación Técnica de Petición HTTP -->
+  <div id="logInspectModal" style="display: none; position: fixed; inset: 0; background: rgba(4, 7, 15, 0.88); backdrop-filter: blur(5px); z-index: 9999; align-items: center; justify-content: center; padding: 1.25rem;">
+    <div class="panel" style="width: 100%; max-width: 980px; max-height: 92vh; overflow-y: auto; border: 1px solid var(--neon-cyan); box-shadow: 0 0 35px rgba(0, 229, 255, 0.22);">
+      <div class="panel-header" style="border-bottom: 1px solid var(--border-dim); position: sticky; top: 0; background: #0a0f1d; z-index: 10;">
+        <div class="panel-title" style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+          <span>📋</span>
+          <span>VERIFICACIÓN TÉCNICA DE PETICIÓN — REGISTRO: <code id="logInspIdTitle" style="color: var(--neon-cyan); font-size: 1rem;">...</code></span>
+          <span id="logInspSecurityBadge" class="badge safe">VERIFICANDO...</span>
+          <span id="logInspCfBadge" style="display: none; background: rgba(243, 128, 32, 0.2); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.65); font-size: 0.72rem; font-weight: 700; padding: 0.15rem 0.5rem; border-radius: 4px; font-family: var(--font-mono);">☁️ CLOUDFLARE</span>
+        </div>
+        <button type="button" class="btn btn-dim" style="padding: 0.25rem 0.65rem;" onclick="closeLogInspectModal()">✕ Cerrar</button>
+      </div>
+
+      <div class="panel-body" style="padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem;">
+        <!-- 1. Estado de Auditoría de Seguridad -->
+        <div id="logInspSecurityBox" style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.35); border-left: 4px solid var(--neon-emerald); border-radius: 6px; padding: 0.9rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem;">
+            <div>
+              <div style="font-size: 0.72rem; color: var(--text-dim); text-transform: uppercase;">EVALUACIÓN DEL MOTOR DE SEGURIDAD MITHRIL</div>
+              <div id="logInspSecuritySummary" style="font-size: 0.95rem; font-weight: 700; color: var(--text-main); margin-top: 0.2rem;">
+                ✅ Petición Analizada: Tráfico Normal (Sin vectores de ataque detectados)
+              </div>
+            </div>
+            <div style="text-align: right; font-size: 0.75rem; font-family: var(--font-mono);">
+              <div>Score de Riesgo IP: <strong id="logInspRiskScore" style="color: var(--neon-emerald);">0/100</strong></div>
+              <div>Estado Reputación: <strong id="logInspRepStatus" style="color: var(--neon-cyan);">MONITOREADA</strong></div>
+            </div>
+          </div>
+          <div id="logInspAlertsContainer" style="display: none; margin-top: 0.65rem;"></div>
+        </div>
+
+        <!-- 2. Detalle y Reconstrucción Raw -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <!-- Columna Izquierda: Raw HTTP -->
+          <div style="background: rgba(8, 12, 22, 0.9); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.9rem; display: flex; flex-direction: column;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+              <span style="font-size: 0.75rem; font-weight: 700; color: var(--neon-cyan);">📡 CAPTURA DE LA PETICIÓN HTTP</span>
+              <span id="logInspTimestamp" style="font-size: 0.7rem; font-family: var(--font-mono); color: var(--text-dim);">-</span>
+            </div>
+            <pre id="logInspRawHttp" style="margin: 0; padding: 0.85rem; background: #050811; border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 4px; color: #a5f3fc; font-family: var(--font-mono); font-size: 0.78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-all; flex: 1; min-height: 190px; max-height: 280px; overflow-y: auto;"></pre>
+          </div>
+
+          <!-- Columna Derecha: Parámetros del Servidor -->
+          <div style="background: rgba(8, 12, 22, 0.9); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.9rem;">
+            <span style="font-size: 0.75rem; font-weight: 700; color: var(--neon-cyan); display: block; margin-bottom: 0.6rem;">🔬 PARÁMETROS TÉCNICOS VERIFICADOS</span>
+            <div style="display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.78rem; font-family: var(--font-mono);">
+              <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">IP Cliente:</span> <code id="logInspClientIp" style="color: var(--neon-cyan); font-weight: 700;">-</code></div>
+              <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">IP Conexión (Edge/LAN):</span> <code id="logInspConnIp" style="color: #cbd5e1;">-</code></div>
+              <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Ubicación / País:</span> <strong id="logInspCountry" style="color: var(--text-main);">-</strong></div>
+              <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Método / Protocolo:</span> <strong id="logInspMethod" style="color: var(--neon-cyan);">-</strong></div>
+              <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Código Estado HTTP:</span> <strong id="logInspStatus" style="color: var(--neon-emerald);">-</strong></div>
+              <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Latencia / Tiempo:</span> <span id="logInspLatency" style="color: var(--text-muted);">-</span></div>
+              <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Bytes Enviados:</span> <span id="logInspBytes" style="color: var(--text-muted);">-</span></div>
+              <div style="display: flex; justify-content: space-between;"><span style="color: var(--text-dim);">Proxy / Nodo:</span> <span id="logInspNode" style="color: var(--text-muted);">-</span></div>
+            </div>
+            <div style="margin-top: 0.6rem; border-top: 1px solid var(--border-dim); padding-top: 0.5rem; font-size: 0.74rem;">
+              <div style="color: var(--text-dim); margin-bottom: 0.2rem;">User-Agent:</div>
+              <code id="logInspUserAgent" style="display: block; font-size: 0.7rem; color: var(--text-muted); max-height: 48px; overflow-y: auto; word-break: break-all; background: #050811; padding: 0.3rem 0.5rem; border-radius: 3px;">-</code>
+            </div>
+          </div>
+        </div>
+
+        <!-- 3. Cabeceras HTTP Completas -->
+        <div style="background: rgba(8, 12, 22, 0.7); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.85rem;">
+          <div style="font-size: 0.75rem; font-weight: 700; color: var(--neon-cyan); margin-bottom: 0.5rem;">📋 CABECERAS HTTP REGISTRADAS (HEADERS)</div>
+          <pre id="logInspHeadersJson" style="margin: 0; padding: 0.65rem 0.85rem; background: #050811; border: 1px solid var(--border-dim); border-radius: 4px; color: #cbd5e1; font-family: var(--font-mono); font-size: 0.73rem; max-height: 140px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;"></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal Global de Inspección Forense de Candidato a Bloqueo -->
   <div id="candidateInspectModal" style="display: none; position: fixed; inset: 0; background: rgba(4, 7, 15, 0.88); backdrop-filter: blur(5px); z-index: 9999; align-items: center; justify-content: center; padding: 1.25rem;">
     <div class="panel" style="width: 100%; max-width: 1020px; max-height: 92vh; overflow-y: auto; border: 1px solid var(--neon-cyan); box-shadow: 0 0 35px rgba(0, 229, 255, 0.22);">
@@ -374,8 +445,109 @@
       if (modal) modal.style.display = 'none';
     }
 
+    function openLogInspectModal(logId) {
+      if (!logId) return;
+      const modal = document.getElementById('logInspectModal');
+      if (!modal) return;
+      modal.style.display = 'flex';
+
+      if (typeof setFeedPausedState === 'function') {
+        setFeedPausedState(true);
+      }
+
+      document.getElementById('logInspIdTitle').textContent = '#' + logId;
+      document.getElementById('logInspSecurityBadge').textContent = 'VERIFICANDO...';
+      document.getElementById('logInspSecurityBadge').className = 'badge low';
+      document.getElementById('logInspRawHttp').textContent = 'Consultando verificación técnica del registro #' + logId + '...';
+
+      fetch('/detection/api/log/' + logId + '/')
+        .then(res => {
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return res.json();
+        })
+        .then(data => {
+          if (data.status !== 'ok' || !data.log) throw new Error('Respuesta inválida');
+          const l = data.log;
+          const s = data.security;
+
+          document.getElementById('logInspIdTitle').textContent = '#' + l.id;
+          document.getElementById('logInspTimestamp').textContent = l.timestamp;
+          document.getElementById('logInspRawHttp').textContent = l.raw_http || '-';
+          document.getElementById('logInspClientIp').textContent = l.client_ip || '-';
+          document.getElementById('logInspConnIp').textContent = l.connection_ip || '-';
+          document.getElementById('logInspCountry').textContent = (l.country_name || l.country_code || 'Desconocido') + (l.city ? ' (' + l.city + ')' : '');
+          document.getElementById('logInspMethod').textContent = l.http_method + ' ' + (l.uri || '/');
+          document.getElementById('logInspStatus').textContent = l.status_code;
+          document.getElementById('logInspStatus').style.color = l.status_code >= 400 ? 'var(--neon-crimson)' : 'var(--neon-emerald)';
+          document.getElementById('logInspLatency').textContent = l.latency_ms + ' ms';
+          document.getElementById('logInspBytes').textContent = l.bytes_sent + ' bytes';
+          document.getElementById('logInspNode').textContent = l.node_name;
+          document.getElementById('logInspUserAgent').textContent = l.user_agent || '-';
+          document.getElementById('logInspHeadersJson').textContent = JSON.stringify(l.headers || {}, null, 2);
+
+          const cfBadge = document.getElementById('logInspCfBadge');
+          if (cfBadge) {
+            cfBadge.style.display = l.is_cloudflare ? 'inline-block' : 'none';
+            if (l.cloudflare_ip) cfBadge.title = 'Nodo Cloudflare: ' + l.cloudflare_ip;
+          }
+
+          // Evaluación de seguridad y auditoría
+          const secBadge = document.getElementById('logInspSecurityBadge');
+          const secBox = document.getElementById('logInspSecurityBox');
+          const secSumm = document.getElementById('logInspSecuritySummary');
+          const alertsCont = document.getElementById('logInspAlertsContainer');
+
+          document.getElementById('logInspRiskScore').textContent = s.risk_score + '/100';
+          document.getElementById('logInspRiskScore').style.color = s.risk_score >= 80 ? 'var(--neon-crimson)' : (s.risk_score >= 40 ? 'var(--neon-amber)' : 'var(--neon-emerald)');
+          document.getElementById('logInspRepStatus').textContent = s.reputation_status;
+
+          if (s.is_threat || (s.events && s.events.length > 0)) {
+            secBadge.textContent = 'AMENAZA DETECTADA';
+            secBadge.className = 'badge critical';
+            secBox.style.background = 'rgba(239, 68, 68, 0.08)';
+            secBox.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+            secBox.style.borderLeftColor = 'var(--neon-crimson)';
+            secSumm.innerHTML = '⚠️ <span style="color: var(--neon-crimson);">Esta petición activó ' + (s.events ? s.events.length : 0) + ' regla(s) de seguridad o respuesta anómala.</span>';
+
+            if (s.events && s.events.length > 0) {
+              alertsCont.style.display = 'block';
+              alertsCont.innerHTML = s.events.map(ev => `
+                <div style="background: rgba(0,0,0,0.45); border: 1px solid rgba(239,68,68,0.35); padding: 0.45rem 0.75rem; border-radius: 4px; margin-top: 0.4rem; font-size: 0.75rem;">
+                  <span class="badge ${ev.severity === 'CRITICAL' ? 'critical' : 'high'}" style="margin-right: 0.4rem;">${ev.rule_code}</span>
+                  <strong>${ev.rule_name}</strong> (${ev.category})
+                  <div style="font-family: var(--font-mono); color: #fde68a; margin-top: 0.2rem; word-break: break-all;">⚡ Coincidencia: ${ev.matched_payload || '-'}</div>
+                </div>
+              `).join('');
+            } else {
+              alertsCont.style.display = 'none';
+            }
+          } else {
+            secBadge.textContent = 'VERIFICADA: LIMPIA';
+            secBadge.className = 'badge safe';
+            secBox.style.background = 'rgba(16, 185, 129, 0.08)';
+            secBox.style.borderColor = 'rgba(16, 185, 129, 0.35)';
+            secBox.style.borderLeftColor = 'var(--neon-emerald)';
+            secSumm.innerHTML = '✅ <span style="color: var(--neon-emerald);">Petición verificada por el motor de seguridad: Tráfico legítimo sin vectores maliciosos.</span>';
+            alertsCont.style.display = 'none';
+          }
+        })
+        .catch(err => {
+          document.getElementById('logInspSecurityBadge').textContent = 'ERROR';
+          document.getElementById('logInspSecurityBadge').className = 'badge high';
+          document.getElementById('logInspRawHttp').textContent = 'Error al consultar registro #' + logId + ': ' + String(err);
+        });
+    }
+
+    function closeLogInspectModal() {
+      const modal = document.getElementById('logInspectModal');
+      if (modal) modal.style.display = 'none';
+    }
+
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') closeCandidateInspectModal();
+      if (e.key === 'Escape') {
+        closeCandidateInspectModal();
+        closeLogInspectModal();
+      }
     });
   </script>
 

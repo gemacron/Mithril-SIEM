@@ -8,5 +8,6 @@ urlpatterns = [
     path('rules/<int:rule_id>/toggle/', views.rule_toggle_view, name='rule_toggle'),
     path('rules/<int:rule_id>/delete/', views.rule_delete_view, name='rule_delete'),
     path('api/ingest/', views.api_ingest, name='api_ingest'),
+    path('api/log/<int:log_id>/', views.log_inspect_api_view, name='api_log_inspect'),
     path('api/cloudflare-ips/', views.api_cloudflare_ips_status, name='api_cloudflare_ips'),
 ]

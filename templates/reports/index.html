@@ -70,7 +70,7 @@
         </thead>
         <tbody>
           {% for log in recent_traffic %}
-          <tr>
+          <tr onclick="openLogInspectModal({{ log.id }})" style="cursor: pointer;" title="Haz clic para verificar los detalles técnicos de esta petición">
             <td style="color: var(--text-dim);">#{{ log.id }}</td>
             <td style="color: var(--text-dim);">{{ log.created_at|date:"Y-m-d H:i:s" }}</td>
             <td>

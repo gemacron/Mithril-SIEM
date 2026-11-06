@@ -5,8 +5,10 @@ from django.contrib.auth.decorators import login_required
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.contrib import messages
+from datetime import timedelta
 from .models import SecurityRule, TrafficLog, SecurityEvent
-from .engine import process_incoming_log, invalidate_rules_cache, sync_cloudflare_ips, get_cloudflare_sync_status
+from .engine import process_incoming_log, invalidate_rules_cache, sync_cloudflare_ips, get_cloudflare_sync_status, extract_log_ip_meta
+from apps.mitigation.models import IpReputation
 from apps.nodes.models import ProxyNode
 from apps.reports.models import AuditTrail
 
@@ -180,4 +182,86 @@ def api_ingest(request):
     return JsonResponse({
         'status': 'ok',
         'processed_records': processed_count
+    })
+
+@login_required
+def log_inspect_api_view(request, log_id):
+    """
+    Devuelve la verificación técnica forense de una petición HTTP individual:
+    - Estado de seguridad y reglas de detección verificadas
+    - Metadatos de la IP del cliente (real y Cloudflare)
+    - Reconstrucción de la petición HTTP completa
+    """
+    log = get_object_or_404(TrafficLog.objects.select_related('node'), id=log_id)
+    meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
+    reputation = IpReputation.objects.filter(client_ip=log.client_ip).first()
+
+    events = list(SecurityEvent.objects.filter(client_ip=log.client_ip, details__log_id=log.id).select_related('rule'))
+    if not events:
+        w_start = log.created_at - timedelta(seconds=1)
+        w_end = log.created_at + timedelta(seconds=1)
+        events = list(SecurityEvent.objects.filter(client_ip=log.client_ip, created_at__gte=w_start, created_at__lte=w_end).select_related('rule'))
+
+    events_data = [{
+        'id': ev.id,
+        'rule_code': ev.rule.code,
+        'rule_name': ev.rule.name,
+        'severity': ev.severity,
+        'matched_payload': ev.matched_payload,
+        'category': ev.rule.get_category_display() if hasattr(ev.rule, 'get_category_display') else ev.rule.category,
+    } for ev in events]
+
+    headers = log.raw_headers if isinstance(log.raw_headers, dict) else {}
+    connection_ip = headers.get('connection_ip') or log.client_ip
+    real_ip = meta['real_client_ip'] or (log.client_ip if not meta['is_cloudflare'] else '')
+
+    full_path = f"{log.uri}?{log.query_params}" if log.query_params else log.uri
+    raw_lines = [f"{log.http_method} {full_path} HTTP/1.1"]
+    raw_lines.append(f"Host: {headers.get('host', 'servidor')}")
+    if headers.get('user_agent') or log.user_agent:
+        raw_lines.append(f"User-Agent: {headers.get('user_agent') or log.user_agent}")
+    if headers.get('referer') or log.referer:
+        raw_lines.append(f"Referer: {headers.get('referer') or log.referer}")
+    if meta['is_cloudflare']:
+        if meta['cloudflare_ip']:
+            raw_lines.append(f"CF-Connecting-IP: {real_ip}")
+            raw_lines.append(f"CF-Ray: {headers.get('cf_ray', '-')}")
+            raw_lines.append(f"CF-IPCountry: {headers.get('cf_country', headers.get('cf_ipcountry', '-'))}")
+    if headers.get('x_forwarded_for'):
+        raw_lines.append(f"X-Forwarded-For: {headers.get('x_forwarded_for')}")
+    if headers.get('x_real_ip'):
+        raw_lines.append(f"X-Real-IP: {headers.get('x_real_ip')}")
+
+    return JsonResponse({
+        'status': 'ok',
+        'log': {
+            'id': log.id,
+            'timestamp': log.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'node_name': log.node.name if log.node else 'Direct',
+            'client_ip': log.client_ip,
+            'connection_ip': connection_ip,
+            'real_client_ip': real_ip,
+            'is_cloudflare': meta['is_cloudflare'],
+            'cloudflare_ip': meta['cloudflare_ip'],
+            'http_method': log.http_method,
+            'uri': log.uri,
+            'query_params': log.query_params,
+            'status_code': log.status_code,
+            'bytes_sent': log.bytes_sent,
+            'latency_ms': log.latency_ms,
+            'user_agent': log.user_agent,
+            'referer': log.referer,
+            'country_code': log.country_code,
+            'country_name': log.country_name,
+            'city': log.city,
+            'headers': headers,
+            'raw_http': "\n".join(raw_lines),
+        },
+        'security': {
+            'is_threat': len(events_data) > 0 or log.status_code >= 400,
+            'risk_score': reputation.current_risk_score if reputation else 0,
+            'reputation_status': reputation.status if reputation else 'MONITORED',
+            'total_violations': reputation.total_violations if reputation else 0,
+            'events': events_data,
+        }
     })
