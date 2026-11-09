@@ -69,6 +69,10 @@
             <input type="checkbox" id="mapToggleLocal" style="accent-color: #c084fc; cursor: pointer; width: 14px; height: 14px;" checked>
             <span>🏢 Tráfico Local (LAN)</span>
           </label>
+          <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: #f6821f; background: rgba(246, 130, 31, 0.08); border: 1px solid rgba(246, 130, 31, 0.35); padding: 0.2rem 0.55rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Mostrar u ocultar vectores y arcos de sondas de Cloudflare">
+            <input type="checkbox" id="mapToggleProbes" style="accent-color: #f6821f; cursor: pointer; width: 14px; height: 14px;" checked>
+            <span>☁️ Sondas Cloudflare</span>
+          </label>
           <div style="display: flex; align-items: center; gap: 0.45rem;">
             <span style="font-size: 0.72rem; color: var(--text-dim); font-family: var(--font-mono);">STREAM:</span>
             <span id="socketStatusIndicator" class="badge medium">CONECTANDO</span>
@@ -296,6 +300,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{% static 'js/mithril-map.js' %}"></script>
-<script src="{% static 'js/mithril-live.js' %}"></script>
+<script src="{% static 'js/mithril-map.js' %}?v=20261109c"></script>
+<script src="{% static 'js/mithril-live.js' %}?v=20261109c"></script>
 {% endblock %}

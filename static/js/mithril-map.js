@@ -30,6 +30,7 @@ class TacticalWorldMap {
 
     this.showExternal = true;
     this.showLocal = true;
+    this.showProbes = true;
     this.initFilterToggles();
 
     this.resize();
@@ -74,6 +75,7 @@ class TacticalWorldMap {
   initFilterToggles() {
     const extToggle = document.getElementById('mapToggleExternal');
     const locToggle = document.getElementById('mapToggleLocal');
+    const probesToggle = document.getElementById('mapToggleProbes');
 
     const savedExt = localStorage.getItem('mithril_map_show_external');
     if (savedExt !== null) {
@@ -91,6 +93,14 @@ class TacticalWorldMap {
       this.showLocal = locToggle.checked;
     }
 
+    const savedProbes = localStorage.getItem('mithril_map_show_probes');
+    if (savedProbes !== null) {
+      this.showProbes = (savedProbes === 'true');
+      if (probesToggle) probesToggle.checked = this.showProbes;
+    } else if (probesToggle) {
+      this.showProbes = probesToggle.checked;
+    }
+
     if (extToggle) {
       extToggle.addEventListener('change', () => {
         this.showExternal = extToggle.checked;
@@ -102,6 +112,13 @@ class TacticalWorldMap {
       locToggle.addEventListener('change', () => {
         this.showLocal = locToggle.checked;
         localStorage.setItem('mithril_map_show_local', this.showLocal ? 'true' : 'false');
+      });
+    }
+
+    if (probesToggle) {
+      probesToggle.addEventListener('change', () => {
+        this.showProbes = probesToggle.checked;
+        localStorage.setItem('mithril_map_show_probes', this.showProbes ? 'true' : 'false');
       });
     }
   }
@@ -176,7 +193,7 @@ class TacticalWorldMap {
     return { startX: originX, startY: originY, endX: target.x, endY: target.y };
   }
 
-  spawnTrajectoryArrow(startX, startY, endX, endY, color, isThreat, labelText, isCloudflare = false, isLocal = false) {
+  spawnTrajectoryArrow(startX, startY, endX, endY, color, isThreat, labelText, isCloudflare = false, isLocal = false, isProbe = false) {
     if (this.arcs.length >= 28) {
       this.arcs.shift();
     }
@@ -198,12 +215,20 @@ class TacticalWorldMap {
       isThreat,
       isCloudflare,
       isLocal,
+      isProbe: Boolean(isProbe),
       label: labelText || ''
     });
   }
 
-  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false) {
+  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false) {
     const isLoc = Boolean(isLocal) || this.isLocalIp(realClientIp || clientIp);
+    const probe = Boolean(isProbe) || (isCloudflare && !realClientIp);
+
+    // Respetar de inmediato los filtros activos en el mapa táctico
+    if (isLoc && !this.showLocal) return;
+    if (!isLoc && !this.showExternal) return;
+    if (probe && !this.showProbes) return;
+
     const coords = this.geoToCanvas(lat, lon);
     const color = isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (isCloudflare ? '#f6821f' : '#00e5ff'));
 
@@ -218,7 +243,8 @@ class TacticalWorldMap {
       alpha: 1.0,
       color: color,
       isThreat: isThreat,
-      isLocal: isLoc
+      isLocal: isLoc,
+      isProbe: probe
     });
 
     const vec = this.getTargetNodeCoords(coords.x, coords.y);
@@ -229,7 +255,7 @@ class TacticalWorldMap {
     const tag = isThreat
       ? `${prefix}${clientIp || 'ATAQUE'}${realSuffix}`
       : `${prefix}${clientIp}${realSuffix}`;
-    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, isThreat, tag, isCloudflare, isLoc);
+    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, isThreat, tag, isCloudflare, isLoc, probe);
 
     const existingIdx = this.points.findIndex(p => Math.abs(p.lat - lat) < 0.1 && Math.abs(p.lon - lon) < 0.1);
     if (existingIdx !== -1) {
@@ -244,6 +270,7 @@ class TacticalWorldMap {
         this.points[existingIdx].realClientIp = realClientIp;
       }
       this.points[existingIdx].isLocal = isLoc;
+      this.points[existingIdx].isProbe = probe;
     } else {
       this.points.unshift({
         lat: lat,
@@ -253,6 +280,7 @@ class TacticalWorldMap {
         isThreat: isThreat,
         isCloudflare: isCloudflare,
         isLocal: isLoc,
+        isProbe: probe,
         country: isLoc ? 'Red Local (LAN)' : '',
         status_code: isThreat ? 403 : 200
       });
@@ -265,8 +293,10 @@ class TacticalWorldMap {
     if (!this.points || this.points.length === 0) return;
     const activePoints = this.points.filter(p => {
       const isLoc = this.isItemLocal(p);
+      const isPrb = Boolean(p.isProbe);
       if (isLoc && !this.showLocal) return false;
       if (!isLoc && !this.showExternal) return false;
+      if (isPrb && !this.showProbes) return false;
       return true;
     });
     if (activePoints.length === 0) return;
@@ -288,7 +318,7 @@ class TacticalWorldMap {
       : (pt.isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : ''));
     const label = `${prefix}${pt.ip || 'TRAFICO'}${realSuffix}`;
 
-    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, pt.isThreat, label, pt.isCloudflare, isLoc);
+    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, pt.isThreat, label, pt.isCloudflare, isLoc, pt.isProbe);
     if (this.pulses.length < 25) {
       this.pulses.push({
         x: vec.startX,
@@ -298,7 +328,8 @@ class TacticalWorldMap {
         alpha: 0.9,
         color: color,
         isThreat: pt.isThreat,
-        isLocal: isLoc
+        isLocal: isLoc,
+        isProbe: Boolean(pt.isProbe)
       });
     }
   }
@@ -670,8 +701,10 @@ class TacticalWorldMap {
     for (let i = 0; i < this.points.length; i++) {
       const pt = this.points[i];
       const isLoc = this.isItemLocal(pt);
+      const isPrb = Boolean(pt.isProbe);
       if (isLoc && !this.showLocal) continue;
       if (!isLoc && !this.showExternal) continue;
+      if (isPrb && !this.showProbes) continue;
 
       const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
       const color = pt.isThreat
@@ -697,7 +730,8 @@ class TacticalWorldMap {
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const arc = this.arcs[i];
       const isLoc = this.isItemLocal(arc);
-      if ((isLoc && !this.showLocal) || (!isLoc && !this.showExternal)) {
+      const isPrb = Boolean(arc.isProbe);
+      if ((isLoc && !this.showLocal) || (!isLoc && !this.showExternal) || (isPrb && !this.showProbes)) {
         arc.progress += arc.speed;
         if (arc.progress >= 1.0) {
           this.arcs.splice(i, 1);
@@ -814,7 +848,8 @@ class TacticalWorldMap {
     for (let i = this.pulses.length - 1; i >= 0; i--) {
       const p = this.pulses[i];
       const isLoc = Boolean(p.isLocal);
-      if ((isLoc && !this.showLocal) || (!isLoc && !this.showExternal)) {
+      const isPrb = Boolean(p.isProbe);
+      if ((isLoc && !this.showLocal) || (!isLoc && !this.showExternal) || (isPrb && !this.showProbes)) {
         p.radius += 0.65;
         p.alpha -= 0.028;
         if (p.alpha <= 0 || p.radius >= p.maxRadius) {

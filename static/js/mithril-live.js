@@ -33,6 +33,8 @@ document.addEventListener('DOMContentLoaded', () => {
   let isFetchingStats = false;
   let isWsConnected = false;
   let isFeedPaused = false;
+  let hideLocalIps = true;
+  let hideProbes = false;
   const pausedEventsQueue = [];
 
   const wsQueue = [];
@@ -334,10 +336,6 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   }
 
-  // Control interactivo del filtro de IPs Locales / Balanceador
-  const localIpToggle = document.getElementById('filterHideLocalIpsToggle');
-  let hideLocalIps = true;
-
   // Botón y controles de Pausa / Inspección de URLs
   const pauseFeedBtn = document.getElementById('togglePauseFeedBtn');
   const pauseFeedIcon = document.getElementById('pauseFeedIcon');
@@ -414,11 +412,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Control interactivo del filtro de IPs Locales / Balanceador
   const localIpToggle = document.getElementById('filterHideLocalIpsToggle');
-  let hideLocalIps = true;
 
   // Control interactivo del filtro de Sondas Cloudflare / Handshakes
   const probesToggle = document.getElementById('filterHideProbesToggle');
-  let hideProbes = false;
 
   if (localIpToggle) {
     const saved = localStorage.getItem('mithril_hide_local_ips');
@@ -531,12 +527,13 @@ document.addEventListener('DOMContentLoaded', () => {
       if (event.is_threat) threatsDelta += 1;
 
       const isLoc = isEventLocal(event);
+      const isProbe = isEventProbe(event);
 
       if (window.mithrilMap) {
         const lat = parseFloat(event.latitude);
         const lon = parseFloat(event.longitude);
         if (!isNaN(lat) && !isNaN(lon)) {
-          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip, isLoc);
+          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip, isLoc, isProbe);
         }
       }
 
@@ -559,7 +556,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           });
         }
-        const isProbe = isEventProbe(event);
         row.setAttribute('data-is-local', isLoc ? 'true' : 'false');
         row.setAttribute('data-is-probe', isProbe ? 'true' : 'false');
         row.setAttribute('data-client-ip', event.client_ip || '');

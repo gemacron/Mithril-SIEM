@@ -48,3 +48,4 @@ for l in with_real:
 print("\n--- ÚLTIMAS 5 PETICIONES CRUDAS CON HEADERS ---")
 for l in TrafficLog.objects.order_by('-id')[:5]:
     print(f"ID {l.id} | Método: {l.http_method} | URI: {l.uri} | UA: {l.user_agent} | Headers: {l.raw_headers}")
+

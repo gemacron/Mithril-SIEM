@@ -148,6 +148,7 @@ def api_map_data(request):
         p['cloudflare_ip'] = meta['cloudflare_ip']
         p['real_client_ip'] = meta['real_client_ip']
         p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (p['client_ip'] if not meta['is_cloudflare'] else ''))
+        p['is_probe'] = bool(meta['is_cloudflare'] and not meta['real_client_ip'])
         recent_points.append(p)
 
     proxy_nodes = [
