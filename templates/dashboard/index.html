@@ -103,6 +103,10 @@
             <input type="checkbox" id="filterHideLocalIpsToggle" style="accent-color: var(--neon-cyan); cursor: pointer; width: 14px; height: 14px;" checked>
             <span>🛡️ Filtrar IPs Locales / Balanceador</span>
           </label>
+          <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: #f6821f; background: rgba(246, 130, 31, 0.08); border: 1px solid rgba(246, 130, 31, 0.35); padding: 0.22rem 0.65rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Oculta las sondas automáticas repetitivas (Cloudflare Traffic Manager, TLS Handshakes) para visualizar con claridad las peticiones con IP de clientes/usuarios reales">
+            <input type="checkbox" id="filterHideProbesToggle" style="accent-color: #f6821f; cursor: pointer; width: 14px; height: 14px;">
+            <span>☁️ Ocultar Sondas / Handshakes</span>
+          </label>
           <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono);">
             BUFFER ACTIVO
           </div>
@@ -124,7 +128,7 @@
           </thead>
           <tbody id="liveFeedTableBody">
             {% for log in recent_logs %}
-            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.client_ip }}" onclick="openLogInspectModal({{ log.id }})" style="cursor: pointer;" title="Haz clic para verificar los detalles técnicos de esta petición">
+            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.client_ip }}" data-is-probe="{% if 'Cloudflare-Traffic-Manager' in log.user_agent or 'TLS SNI' in log.user_agent or log.http_method == 'HTTPS' or not log.real_client_ip and log.is_cloudflare %}true{% else %}false{% endif %}" onclick="openLogInspectModal({{ log.id }})" style="cursor: pointer;" title="Haz clic para verificar los detalles técnicos de esta petición">
               <td>
                 {% if log.is_threat %}
                 <span class="badge critical">AMENAZA</span>

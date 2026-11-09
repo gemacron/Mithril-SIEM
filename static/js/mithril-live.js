@@ -73,6 +73,15 @@ document.addEventListener('DOMContentLoaded', () => {
     return false;
   }
 
+  function isEventProbe(event) {
+    if (!event) return false;
+    const ua = String(event.user_agent || '');
+    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('TLS SNI')) return true;
+    if (event.method === 'HTTPS' || event.http_method === 'HTTPS') return true;
+    if (!event.real_client_ip && event.is_cloudflare) return true;
+    return false;
+  }
+
   function cfBadgeHtml(isCf, fullText = false, realClientIp = '', cfNodeIp = '') {
     let html = '';
     if (isCf) {
@@ -294,10 +303,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const uriDisplay = event.uri || '/';
             const countryDisplay = event.country_name || event.country_code || 'Remoto';
             const isLoc = isEventLocal(event);
-            const hideRowStyle = (hideLocalIps && isLoc) ? 'style="display: none;"' : '';
+            const isProbe = isEventProbe(event);
+            const hideRow = (hideLocalIps && isLoc) || (hideProbes && isProbe);
 
             rowsHtml += `
-              <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" style="cursor: pointer; ${hideLocalIps && isLoc ? 'display: none;' : ''}" onclick="if (typeof openLogInspectModal === 'function') openLogInspectModal(${event.id || 0})" title="Haz clic para verificar los detalles técnicos de esta petición">
+              <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-is-probe="${isProbe ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" style="cursor: pointer; ${hideRow ? 'display: none;' : ''}" onclick="if (typeof openLogInspectModal === 'function') openLogInspectModal(${event.id || 0})" title="Haz clic para verificar los detalles técnicos de esta petición">
                 <td><span class="${badgeClass}">${badgeText}</span></td>
                 <td><strong>${event.timestamp || ''}</strong></td>
                 <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
@@ -369,27 +379,46 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  function applyLocalFilterToDom() {
+  function applyFiltersToDom() {
     if (!tableBody) return;
     const rows = tableBody.querySelectorAll('tr[data-log-id], tr[data-client-ip], tr[data-is-local]');
     rows.forEach(r => {
-      if (!hideLocalIps) {
-        // Al destildar, mostrar inmediatamente todas las filas
-        r.style.display = '';
-        return;
-      }
-      const isLocAttr = r.getAttribute('data-is-local');
-      const rClientIp = r.getAttribute('data-client-ip');
-      const rRealIp = r.getAttribute('data-real-ip');
-      let isLocalRow = (isLocAttr === 'true');
-      if (rRealIp && isPrivateLocalIp(rRealIp)) isLocalRow = true;
-      if (rClientIp && isPrivateLocalIp(rClientIp)) isLocalRow = true;
-      if (r.innerText.includes('192.168.') || r.innerText.includes('10.') || r.innerText.includes('🏢')) isLocalRow = true;
+      let hide = false;
 
-      r.style.display = isLocalRow ? 'none' : '';
+      // 1. Filtro de IPs Locales
+      if (hideLocalIps) {
+        const isLocAttr = r.getAttribute('data-is-local');
+        const rClientIp = r.getAttribute('data-client-ip');
+        const rRealIp = r.getAttribute('data-real-ip');
+        let isLocalRow = (isLocAttr === 'true');
+        if (rRealIp && isPrivateLocalIp(rRealIp)) isLocalRow = true;
+        if (rClientIp && isPrivateLocalIp(rClientIp)) isLocalRow = true;
+        if (r.innerText.includes('192.168.') || r.innerText.includes('10.') || r.innerText.includes('🏢')) isLocalRow = true;
+        if (isLocalRow) hide = true;
+      }
+
+      // 2. Filtro de Sondas Automáticas / Handshakes
+      if (!hide && hideProbes) {
+        const isProbeAttr = r.getAttribute('data-is-probe');
+        if (isProbeAttr === 'true') {
+          hide = true;
+        } else if (r.innerText.includes('Sonda Healthcheck') || r.innerText.includes('Handshake TLS')) {
+          hide = true;
+        }
+      }
+
+      r.style.display = hide ? 'none' : '';
     });
     updateRowAgesAndFade();
   }
+
+  // Control interactivo del filtro de IPs Locales / Balanceador
+  const localIpToggle = document.getElementById('filterHideLocalIpsToggle');
+  let hideLocalIps = true;
+
+  // Control interactivo del filtro de Sondas Cloudflare / Handshakes
+  const probesToggle = document.getElementById('filterHideProbesToggle');
+  let hideProbes = false;
 
   if (localIpToggle) {
     const saved = localStorage.getItem('mithril_hide_local_ips');
@@ -403,11 +432,27 @@ document.addEventListener('DOMContentLoaded', () => {
     localIpToggle.addEventListener('change', () => {
       hideLocalIps = localIpToggle.checked;
       localStorage.setItem('mithril_hide_local_ips', hideLocalIps ? 'true' : 'false');
-      applyLocalFilterToDom();
+      applyFiltersToDom();
     });
-
-    applyLocalFilterToDom();
   }
+
+  if (probesToggle) {
+    const savedProbes = localStorage.getItem('mithril_hide_probes');
+    if (savedProbes !== null) {
+      hideProbes = (savedProbes === 'true');
+      probesToggle.checked = hideProbes;
+    } else {
+      hideProbes = probesToggle.checked;
+    }
+
+    probesToggle.addEventListener('change', () => {
+      hideProbes = probesToggle.checked;
+      localStorage.setItem('mithril_hide_probes', hideProbes ? 'true' : 'false');
+      applyFiltersToDom();
+    });
+  }
+
+  applyFiltersToDom();
 
   // Desvanecimiento y caída gradual (Fade Out) hacia el fondo de la tabla
   function updateRowAgesAndFade() {
@@ -438,9 +483,16 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     });
 
-    // Poda de seguridad para que el DOM no crezca indefinidamente
-    if (allRows.length > 70) {
-      for (let i = 70; i < allRows.length; i++) {
+    // Poda inteligente: conserva filas visibles para no vaciar la tabla si hay muchas sondas ocultas
+    if (visibleRows.length > 36) {
+      for (let i = 36; i < visibleRows.length; i++) {
+        if (visibleRows[i] && visibleRows[i].parentNode) {
+          visibleRows[i].remove();
+        }
+      }
+    }
+    if (allRows.length > 120) {
+      for (let i = 120; i < allRows.length; i++) {
         if (allRows[i] && allRows[i].parentNode) {
           allRows[i].remove();
         }
@@ -507,11 +559,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           });
         }
+        const isProbe = isEventProbe(event);
         row.setAttribute('data-is-local', isLoc ? 'true' : 'false');
+        row.setAttribute('data-is-probe', isProbe ? 'true' : 'false');
         row.setAttribute('data-client-ip', event.client_ip || '');
         row.setAttribute('data-real-ip', event.real_client_ip || '');
 
-        if (hideLocalIps && isLoc) {
+        if ((hideLocalIps && isLoc) || (hideProbes && isProbe)) {
           row.style.display = 'none';
         }
 
