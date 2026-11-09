@@ -13,6 +13,7 @@ from django.db.models import F
 from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 from .models import TrafficLog, SecurityRule, SecurityEvent
+from apps.nodes.models import ProxyNode
 from apps.mitigation.models import IpReputation, BanCandidate, ActiveBan
 from apps.notifications.services import send_telegram_alert
 
