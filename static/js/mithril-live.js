@@ -428,6 +428,14 @@ document.addEventListener('DOMContentLoaded', () => {
     localIpToggle.addEventListener('change', () => {
       hideLocalIps = localIpToggle.checked;
       localStorage.setItem('mithril_hide_local_ips', hideLocalIps ? 'true' : 'false');
+      const mapLoc = document.getElementById('mapToggleLocal');
+      if (mapLoc && mapLoc.checked !== !hideLocalIps) {
+        mapLoc.checked = !hideLocalIps;
+        if (window.mithrilMap) {
+          window.mithrilMap.showLocal = !hideLocalIps;
+          window.mithrilMap.onFilterChanged();
+        }
+      }
       applyFiltersToDom();
     });
   }
@@ -444,10 +452,19 @@ document.addEventListener('DOMContentLoaded', () => {
     probesToggle.addEventListener('change', () => {
       hideProbes = probesToggle.checked;
       localStorage.setItem('mithril_hide_probes', hideProbes ? 'true' : 'false');
+      const mapPrb = document.getElementById('mapToggleProbes');
+      if (mapPrb && mapPrb.checked !== !hideProbes) {
+        mapPrb.checked = !hideProbes;
+        if (window.mithrilMap) {
+          window.mithrilMap.showProbes = !hideProbes;
+          window.mithrilMap.onFilterChanged();
+        }
+      }
       applyFiltersToDom();
     });
   }
 
+  window.applyLiveFeedFilters = applyFiltersToDom;
   applyFiltersToDom();
 
   // Desvanecimiento y caída gradual (Fade Out) hacia el fondo de la tabla

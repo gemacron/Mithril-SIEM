@@ -121,7 +121,7 @@ def api_map_data(request):
     raw_points = list(
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(latitude__isnull=True)
-        .values('latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers')
+        .values('latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method')
         .order_by('-created_at')[:80]
     )
     point_ips = {p['client_ip'] for p in raw_points}
@@ -143,12 +143,19 @@ def api_map_data(request):
             p['longitude'] = re_geo['longitude']
             p['country_name'] = re_geo['country_name']
         meta = extract_log_ip_meta(p['client_ip'], p.pop('raw_headers', {}))
+        ua = p.pop('user_agent', '') or ''
+        method = p.pop('http_method', '') or ''
         p['is_threat'] = (p['client_ip'] in threat_ips) or (p['status_code'] >= 400)
         p['is_cloudflare'] = meta['is_cloudflare']
         p['cloudflare_ip'] = meta['cloudflare_ip']
         p['real_client_ip'] = meta['real_client_ip']
         p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (p['client_ip'] if not meta['is_cloudflare'] else ''))
-        p['is_probe'] = bool(meta['is_cloudflare'] and not meta['real_client_ip'])
+        p['is_probe'] = bool(
+            (meta['is_cloudflare'] and not meta['real_client_ip'])
+            or 'Cloudflare-Traffic-Manager' in ua
+            or 'TLS SNI' in ua
+            or method == 'HTTPS'
+        )
         recent_points.append(p)
 
     proxy_nodes = [

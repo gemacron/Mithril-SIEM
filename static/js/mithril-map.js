@@ -105,6 +105,7 @@ class TacticalWorldMap {
       extToggle.addEventListener('change', () => {
         this.showExternal = extToggle.checked;
         localStorage.setItem('mithril_map_show_external', this.showExternal ? 'true' : 'false');
+        this.onFilterChanged();
       });
     }
 
@@ -112,6 +113,14 @@ class TacticalWorldMap {
       locToggle.addEventListener('change', () => {
         this.showLocal = locToggle.checked;
         localStorage.setItem('mithril_map_show_local', this.showLocal ? 'true' : 'false');
+        const feedLocToggle = document.getElementById('filterHideLocalIpsToggle');
+        if (feedLocToggle && feedLocToggle.checked !== !this.showLocal) {
+          feedLocToggle.checked = !this.showLocal;
+          if (typeof window.applyLiveFeedFilters === 'function') {
+            window.applyLiveFeedFilters();
+          }
+        }
+        this.onFilterChanged();
       });
     }
 
@@ -119,8 +128,38 @@ class TacticalWorldMap {
       probesToggle.addEventListener('change', () => {
         this.showProbes = probesToggle.checked;
         localStorage.setItem('mithril_map_show_probes', this.showProbes ? 'true' : 'false');
+        const feedProbesToggle = document.getElementById('filterHideProbesToggle');
+        if (feedProbesToggle && feedProbesToggle.checked !== !this.showProbes) {
+          feedProbesToggle.checked = !this.showProbes;
+          if (typeof window.applyLiveFeedFilters === 'function') {
+            window.applyLiveFeedFilters();
+          }
+        }
+        this.onFilterChanged();
       });
     }
+  }
+
+  onFilterChanged() {
+    // 1. Poda inmediata de arcos balísticos en vuelo que no cumplan los filtros activos
+    this.arcs = this.arcs.filter(arc => {
+      const isLoc = this.isItemLocal(arc);
+      const isPrb = Boolean(arc.isProbe);
+      if (isLoc && !this.showLocal) return false;
+      if (!isLoc && !this.showExternal) return false;
+      if (isPrb && !this.showProbes) return false;
+      return true;
+    });
+
+    // 2. Poda inmediata de ondas de pulso que no cumplan los filtros activos
+    this.pulses = this.pulses.filter(p => {
+      const isLoc = Boolean(p.isLocal);
+      const isPrb = Boolean(p.isProbe);
+      if (isLoc && !this.showLocal) return false;
+      if (!isLoc && !this.showExternal) return false;
+      if (isPrb && !this.showProbes) return false;
+      return true;
+    });
   }
 
   isLocalIp(ip) {
@@ -362,6 +401,7 @@ class TacticalWorldMap {
             isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
             isCloudflare: Boolean(p.is_cloudflare),
             isLocal: Boolean(p.is_local) || this.isLocalIp(p.real_client_ip || p.client_ip),
+            isProbe: Boolean(p.is_probe) || (Boolean(p.is_cloudflare) && !p.real_client_ip),
             status_code: p.status_code
           }));
           this.points = incoming.slice(0, 90);
