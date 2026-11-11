@@ -255,6 +255,20 @@ def approve_candidate_view(request, candidate_id):
     candidate = get_object_or_404(BanCandidate, id=candidate_id)
     custom_target_ip = request.POST.get('target_ip', '').strip()
     ip_str = custom_target_ip if custom_target_ip else candidate.client_ip
+
+    # REGLA CRÍTICA DE SEGURIDAD: Inmunidad total para IPs de Cloudflare
+    if is_cloudflare_ip(ip_str):
+        cand_meta = _resolve_candidate_cf_info(candidate)
+        real_ip = cand_meta.get('real_client_ip')
+        if real_ip and not is_cloudflare_ip(real_ip):
+            ip_str = real_ip
+        else:
+            msg = f"La IP {ip_str} pertenece a los rangos oficiales de Cloudflare y está estrictamente protegida contra bloqueos."
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                return JsonResponse({'status': 'error', 'message': msg}, status=400)
+            messages.error(request, msg)
+            return redirect('mitigation:candidates')
+
     duration_hours = int(request.POST.get('duration_hours', 24))
 
     expires_at = timezone.now() + timedelta(hours=duration_hours) if duration_hours > 0 else None
@@ -407,7 +421,8 @@ def api_node_sync_bans(request):
     # Expirar automáticamente bloqueos vencidos antes de enviar la lista al bouncer
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=timezone.now()).update(is_active=False)
     active_bans = ActiveBan.objects.filter(is_active=True)
-    ban_ips = [b.client_ip for b in active_bans]
+    # Filtro de seguridad absoluto: bajo ninguna circunstancia sincronizar una IP de Cloudflare
+    ban_ips = [b.client_ip for b in active_bans if not is_cloudflare_ip(b.client_ip)]
 
     # Confirmar sincronización
     NodeBanSync.objects.filter(node=node, ban__in=active_bans).update(

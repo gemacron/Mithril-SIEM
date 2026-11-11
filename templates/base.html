@@ -381,11 +381,26 @@
               targetIpSelect.style.display = 'inline-block';
               targetIpSelect.innerHTML = `
                 <option value="${c.real_client_ip}">🎯 Bloquear IP Real (${c.real_client_ip})</option>
-                <option value="${c.client_ip}">☁️ Bloquear Nodo CF (${c.client_ip})</option>
               `;
             } else {
               targetIpSelect.style.display = 'none';
               targetIpSelect.innerHTML = '';
+            }
+          }
+          const approveBtn = document.querySelector('#inspApproveForm button[type="submit"]');
+          if (approveBtn) {
+            if (c.is_cloudflare && !c.real_client_ip) {
+              approveBtn.disabled = true;
+              approveBtn.style.opacity = '0.5';
+              approveBtn.style.cursor = 'not-allowed';
+              approveBtn.textContent = '🛡️ Nodo CF Protegido';
+              approveBtn.title = 'Las IPs de Cloudflare están protegidas y no pueden ser bloqueadas';
+            } else {
+              approveBtn.disabled = false;
+              approveBtn.style.opacity = '1';
+              approveBtn.style.cursor = 'pointer';
+              approveBtn.textContent = '🛑 Aprobar Bloqueo';
+              approveBtn.title = '';
             }
           }
           document.getElementById('inspScoreBadge').textContent = `Riesgo: ${c.accumulated_score || 0}/100`;

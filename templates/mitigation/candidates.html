@@ -93,10 +93,8 @@
               <form method="POST" action="{% url 'mitigation:approve_candidate' c.id %}" style="display: inline-flex; gap: 0.35rem; align-items: center; flex-wrap: wrap;">
                 {% csrf_token %}
                 {% if c.real_client_ip %}
-                <select name="target_ip" class="form-input" style="padding: 0.25rem 0.5rem; font-size: 0.73rem; width: auto; border-color: rgba(0, 229, 255, 0.5); color: #00e5ff;" title="Elige si deseas bloquear la IP real del cliente o la IP del nodo Cloudflare">
-                  <option value="{{ c.real_client_ip }}">🎯 Bloquear IP Real ({{ c.real_client_ip }})</option>
-                  <option value="{{ c.client_ip }}">☁️ Bloquear Nodo CF ({{ c.client_ip }})</option>
-                </select>
+                <input type="hidden" name="target_ip" value="{{ c.real_client_ip }}">
+                <span style="font-size: 0.72rem; color: #00e5ff; font-family: var(--font-mono); background: rgba(0, 229, 255, 0.1); border: 1px solid rgba(0, 229, 255, 0.4); padding: 0.2rem 0.45rem; border-radius: 4px;" title="El bloqueo se aplicará exclusivamente sobre la IP Real del cliente">🎯 IP Real: {{ c.real_client_ip }}</span>
                 {% endif %}
                 <select name="duration_hours" class="form-input" style="padding: 0.25rem 0.5rem; font-size: 0.75rem; width: auto; display: inline-block;">
                   <option value="24">Bloquear 24 Horas</option>
@@ -104,9 +102,15 @@
                   <option value="168">Bloquear 7 Días</option>
                   <option value="0">Permanente</option>
                 </select>
+                {% if c.is_cloudflare and not c.real_client_ip %}
+                <button type="button" class="btn btn-dim" disabled style="opacity: 0.5; cursor: not-allowed; padding: 0.35rem 0.75rem;" title="Las IPs de Cloudflare están protegidas y no pueden ser bloqueadas">
+                  🛡️ Nodo Protegido
+                </button>
+                {% else %}
                 <button type="submit" class="btn btn-crimson" style="padding: 0.35rem 0.75rem;">
                   🛑 Aprobar Bloqueo
                 </button>
+                {% endif %}
               </form>
 
               <form method="POST" action="{% url 'mitigation:dismiss_candidate' c.id %}">
