@@ -77,6 +77,7 @@ def dashboard_view(request):
         log.real_client_ip = meta['real_client_ip']
         log.is_real_ip_local = _is_private(log.real_client_ip)
         log.is_local_ip = log.is_real_ip_local or (not log.is_cloudflare and _is_private(log.client_ip))
+        log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip and bool(log.real_client_ip or log.client_ip)))
 
     total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
     threats_today = SecurityEvent.objects.filter(created_at__gte=today_start).count()
@@ -150,6 +151,7 @@ def api_map_data(request):
         p['cloudflare_ip'] = meta['cloudflare_ip']
         p['real_client_ip'] = meta['real_client_ip']
         p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (p['client_ip'] if not meta['is_cloudflare'] else ''))
+        p['is_direct_public_ip'] = meta.get('is_direct_public_ip', (not p['is_cloudflare'] and not p['is_local'] and bool(p['real_client_ip'] or p['client_ip'])))
         p['is_probe'] = bool(
             (meta['is_cloudflare'] and not meta['real_client_ip'])
             or 'Cloudflare-Traffic-Manager' in ua

@@ -98,8 +98,13 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function realClientIpCellHtml(event) {
-    if (event.real_client_ip && !isPrivateLocalIp(event.real_client_ip)) {
+    if (event.is_cloudflare && event.real_client_ip && !isPrivateLocalIp(event.real_client_ip)) {
       return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 ${event.real_client_ip}</code>`;
+    }
+    const isDirectPub = Boolean(event.is_direct_public_ip) || (!event.is_cloudflare && !isPrivateLocalIp(event.client_ip) && !isPrivateLocalIp(event.real_client_ip || ''));
+    if (isDirectPub) {
+      const targetIp = event.real_client_ip || event.client_ip || '-';
+      return `<code style="background: rgba(239, 68, 68, 0.16); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.55); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="Petición directa a la IP Pública del servidor (Bypass de Cloudflare / Origen)">🎯 DIRECTO A IP: ${targetIp}</code>`;
     }
     const ua = String(event.user_agent || '');
     if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('Zabbix') || ua.includes('UptimeRobot')) {
@@ -573,7 +578,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           });
         }
+        const isDir = Boolean(event.is_direct_public_ip) || (!event.is_cloudflare && !isLoc);
         row.setAttribute('data-is-local', isLoc ? 'true' : 'false');
+        row.setAttribute('data-is-direct', isDir ? 'true' : 'false');
         row.setAttribute('data-is-probe', isProbe ? 'true' : 'false');
         row.setAttribute('data-client-ip', event.client_ip || '');
         row.setAttribute('data-real-ip', event.real_client_ip || '');

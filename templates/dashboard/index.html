@@ -132,7 +132,7 @@
           </thead>
           <tbody id="liveFeedTableBody">
             {% for log in recent_logs %}
-            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.client_ip }}" data-is-probe="{% if 'Cloudflare-Traffic-Manager' in log.user_agent or 'TLS SNI' in log.user_agent or log.http_method == 'HTTPS' or not log.real_client_ip and log.is_cloudflare %}true{% else %}false{% endif %}" onclick="openLogInspectModal({{ log.id }})" style="cursor: pointer;" title="Haz clic para verificar los detalles técnicos de esta petición">
+            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-is-direct="{% if log.is_direct_public_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.client_ip }}" data-is-probe="{% if 'Cloudflare-Traffic-Manager' in log.user_agent or 'TLS SNI' in log.user_agent or log.http_method == 'HTTPS' or not log.real_client_ip and log.is_cloudflare %}true{% else %}false{% endif %}" onclick="openLogInspectModal({{ log.id }})" style="cursor: pointer;" title="Haz clic para verificar los detalles técnicos de esta petición">
               <td>
                 {% if log.is_threat %}
                 <span class="badge critical">AMENAZA</span>
@@ -148,8 +148,10 @@
                 {% endif %}
               </td>
               <td>
-                {% if log.real_client_ip and not log.is_real_ip_local %}
+                {% if log.real_client_ip and not log.is_real_ip_local and log.is_cloudflare %}
                   <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</code>
+                {% elif log.is_direct_public_ip or (not log.is_cloudflare and not log.is_local_ip) %}
+                  <code style="background: rgba(239, 68, 68, 0.16); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.55); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="Petición directa a la IP Pública del servidor (Bypass de Cloudflare / Origen)">🎯 DIRECTO A IP: {{ log.real_client_ip|default:log.client_ip }}</code>
                 {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent or 'UptimeRobot' in log.user_agent %}
                   <span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por monitor de salud Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>
                 {% elif log.http_method == 'HTTPS' or 'TLS SNI' in log.user_agent %}

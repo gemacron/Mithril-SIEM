@@ -438,11 +438,14 @@ def resolve_cloudflare_and_real_ip(data):
             final_real_ip = ''
         is_local = is_private_local_ip(final_real_ip or raw_ip)
 
+    is_direct_pub = (not is_cf) and (not is_local) and bool(final_real_ip)
+
     return {
         'is_cloudflare': is_cf,
         'cloudflare_ip': cf_node_ip,
         'real_client_ip': final_real_ip,
         'is_local_ip': is_local,
+        'is_direct_public_ip': is_direct_pub,
         'cf_ray': cf_ray,
         'cf_country': cf_country,
     }
@@ -465,11 +468,16 @@ def extract_log_ip_meta(ip_str, headers=None):
     if is_cf_flag or stored_cf or (stored_real and stored_real != ip_str):
         is_cf = is_cf_flag or bool(stored_cf) or is_cloudflare_ip(ip_str) or is_cloudflare_ip(merged.get('connection_ip'))
         cf_node = stored_cf or (ip_str if is_cloudflare_ip(ip_str) else str(merged.get('connection_ip') or ''))
+        is_loc = is_private_local_ip(stored_real or ip_str)
+        is_direct_val = merged.get('is_direct_public_ip')
+        if is_direct_val is None:
+            is_direct_val = (not is_cf) and (not is_loc) and bool(stored_real or ip_str)
         return {
             'is_cloudflare': is_cf,
             'cloudflare_ip': cf_node if is_cf else '',
             'real_client_ip': stored_real,
-            'is_local_ip': is_private_local_ip(stored_real or ip_str),
+            'is_local_ip': is_loc,
+            'is_direct_public_ip': bool(is_direct_val),
             'cf_ray': str(merged.get('cf_ray') or ''),
             'cf_country': str(merged.get('cf_country') or merged.get('cf_ipcountry') or ''),
         }
@@ -600,6 +608,8 @@ def process_incoming_log(data, node=None):
     if real_client_ip:
         incoming_headers['real_client_ip'] = real_client_ip
     incoming_headers['connection_ip'] = raw_conn_ip
+    is_direct = ip_meta.get('is_direct_public_ip', False) or ((not is_cf) and not is_private_local_ip(target_client_ip))
+    incoming_headers['is_direct_public_ip'] = is_direct
     if ip_meta.get('cf_ray'):
         incoming_headers['cf_ray'] = ip_meta['cf_ray']
     if ip_meta.get('cf_country'):
@@ -683,6 +693,7 @@ def process_incoming_log(data, node=None):
         'is_cloudflare': is_cf,
         'cloudflare_ip': cf_node_ip,
         'real_client_ip': real_client_ip,
+        'is_direct_public_ip': is_direct,
         'cf_ray': ip_meta.get('cf_ray', ''),
         'cf_country': ip_meta.get('cf_country', ''),
         'headers': log.raw_headers or {},
@@ -692,8 +703,26 @@ def process_incoming_log(data, node=None):
         compiled_rx = getattr(rule, '_compiled_regex', None)
         window_start = now - timedelta(seconds=max(1, rule.threshold_seconds))
 
+        # E. Detección de Acceso Directo por IP Pública (Bypass Cloudflare / Reconocimiento de Origen)
+        if rule.code == 'R-DIRECT-IP-ACCESS':
+            if is_direct and not is_cf:
+                matched_any_rule = True
+                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=10.0):
+                    host_header = str(incoming_headers.get('host') or incoming_headers.get('Host') or data.get('host') or '').strip()
+                    matched_msg = f"Acceso directo a IP Pública sin Cloudflare (Host: {host_header or 'IP'}, URI: {log.uri})"
+                    event = SecurityEvent.objects.create(
+                        node=node,
+                        rule=rule,
+                        client_ip=target_client_ip,
+                        severity='MEDIUM',
+                        matched_payload=matched_msg,
+                        details={**base_req_details, 'host': host_header, 'direct_bypass': True}
+                    )
+                    triggered_events.append(event)
+                    risk_to_add += rule.risk_points
+
         # A. Reglas de Fuerza Bruta de Autenticación (401/403)
-        if rule.code == 'R-AUTH-BRUTE-401':
+        elif rule.code == 'R-AUTH-BRUTE-401':
             if log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(normalized_uri)):
                 matched_any_rule = True
                 if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
@@ -882,6 +911,10 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
 
     meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
     connection_ip = log.raw_headers.get('connection_ip') or log.client_ip
+    is_direct_ip = meta.get('is_direct_public_ip')
+    if is_direct_ip is None:
+        is_direct_ip = (not meta['is_cloudflare']) and (not meta.get('is_local_ip', False)) and bool(meta['real_client_ip'] or connection_ip)
+
     payload = {
         'type': 'traffic_event',
         'event': {
@@ -902,6 +935,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': meta['real_client_ip'] or '',
             'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (connection_ip if not meta['is_cloudflare'] else '')),
+            'is_direct_public_ip': bool(is_direct_ip),
             'user_agent': log.user_agent or '',
             'risk_score': reputation.current_risk_score if reputation else 0,
             'violations_count': len(events) if events else 0,
