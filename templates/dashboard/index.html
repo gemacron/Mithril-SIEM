@@ -150,7 +150,7 @@
               <td>
                 {% if log.real_client_ip and not log.is_real_ip_local and log.is_cloudflare %}
                   <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</code>
-                {% elif log.is_direct_public_ip or (not log.is_cloudflare and not log.is_local_ip) %}
+                {% elif log.is_direct_public_ip %}
                   <code style="background: rgba(239, 68, 68, 0.16); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.55); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="Petición directa a la IP Pública del servidor (Bypass de Cloudflare / Origen)">🎯 DIRECTO A IP: {{ log.real_client_ip|default:log.client_ip }}</code>
                 {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent or 'UptimeRobot' in log.user_agent %}
                   <span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por monitor de salud Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>
