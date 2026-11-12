@@ -7,6 +7,7 @@ Mithril LAN Proxy - Forwarder & Ingestion Daemon para Windows
 """
 
 import socket
+import subprocess
 import threading
 import json
 import re
@@ -15,7 +16,22 @@ import urllib.error
 import queue
 import time
 
-LOCAL_HOST = "127.0.0.1"
+def detect_backend_host():
+    """Detecta automáticamente la IP de la máquina WSL de Podman para evitar bucles en 0.0.0.0:9900"""
+    try:
+        res = subprocess.run(
+            ["wsl", "-d", "podman-machine-default", "-u", "root", "sh", "-c", "ip -4 addr show eth0"],
+            capture_output=True, text=True, timeout=5, check=False
+        )
+        if res.returncode == 0 and res.stdout:
+            m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", res.stdout)
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return "127.0.0.1"
+
+LOCAL_HOST = detect_backend_host()
 BIND_HOST = "0.0.0.0"
 TCP_PORT = 9900
 UDP_PORT = 5140
