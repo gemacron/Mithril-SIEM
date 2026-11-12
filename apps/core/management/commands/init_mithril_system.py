@@ -1,8 +1,10 @@
 import os
 from django.core.management.base import BaseCommand
 from django.contrib.auth.models import User
+from django.db import connection
 from apps.core.models import UserProfile
 from apps.detection.models import SecurityRule
+from apps.mitigation.models import IpReputation, BanCandidate
 
 class Command(BaseCommand):
     help = 'Inicializa la cuenta de administrador con cambio obligatorio de contraseña y las reglas de seguridad'
@@ -151,3 +153,115 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(
             f"✅ Reglas de seguridad configuradas ({created_rules_count} nuevas)."
         ))
+
+        # 3. Proteger IPs propias de infraestructura (WAN Propia y Nodos Internos) y normalizar GeoIP
+        own_infra_ips = [
+            ('190.128.226.122', 'PY'),
+            ('192.168.150.181', 'LAN'),
+            ('192.168.200.226', 'LAN'),
+            ('192.168.150.66', 'LAN'),
+            ('127.0.0.1', 'LAN'),
+        ]
+        for ip_addr, cc in own_infra_ips:
+            IpReputation.objects.update_or_create(
+                ip_address=ip_addr,
+                defaults={
+                    'status': 'WHITELISTED',
+                    'current_risk_score': 0,
+                    'country_code': cc,
+                }
+            )
+            BanCandidate.objects.filter(client_ip=ip_addr, status='PENDING').update(status='DISMISSED')
+
+        try:
+            with connection.cursor() as cur:
+                # Etiquetar WAN Propia 190.128.226.122 con país real Paraguay (WAN Propia)
+                cur.execute("""
+                    UPDATE detection_trafficlog
+                    SET country_code = 'PY',
+                        country_name = 'Paraguay (WAN Propia)',
+                        city = 'Asunción (Infraestructura Propia)',
+                        latitude = -25.2637,
+                        longitude = -57.5759,
+                        raw_headers = jsonb_set(COALESCE(raw_headers, '{}'::jsonb), '{is_own_public_ip}', 'true'::jsonb, true)
+                    WHERE (client_ip = '190.128.226.122' OR raw_headers->>'real_client_ip' = '190.128.226.122')
+                      AND country_name != 'Paraguay (WAN Propia)';
+                """)
+                # Corregir registros con CF-IPCountry = PY o prefijos ISP de Paraguay que tenían países simulados
+                cur.execute("""
+                    UPDATE detection_trafficlog
+                    SET country_code = 'PY',
+                        country_name = 'Paraguay',
+                        city = 'Asunción',
+                        latitude = -25.2637,
+                        longitude = -57.5759
+                    WHERE client_ip != '190.128.226.122'
+                      AND country_code NOT IN ('PY', 'LAN')
+                      AND (
+                          raw_headers->>'cf_ipcountry' = 'PY'
+                          OR raw_headers->>'cf_country' = 'PY'
+                          OR client_ip LIKE '181.%'
+                          OR client_ip LIKE '190.128.%'
+                          OR client_ip LIKE '177.11.%'
+                          OR client_ip LIKE '200.85.%'
+                          OR client_ip LIKE '201.222.%'
+                          OR client_ip LIKE '2800:c70:%'
+                          OR client_ip LIKE '2803:2a00:%'
+                      );
+                """)
+                # Corregir registros con CF-IPCountry = US
+                cur.execute("""
+                    UPDATE detection_trafficlog
+                    SET country_code = 'US',
+                        country_name = 'Estados Unidos',
+                        city = 'Ashburn',
+                        latitude = 39.0438,
+                        longitude = -77.4874
+                    WHERE client_ip != '190.128.226.122'
+                      AND country_code NOT IN ('US', 'LAN')
+                      AND (raw_headers->>'cf_ipcountry' = 'US' OR raw_headers->>'cf_country' = 'US');
+                """)
+                # Actualizar country_code='PY' en IpReputation para IPs de Paraguay
+                cur.execute("""
+                    UPDATE mitigation_ipreputation
+                    SET country_code = 'PY'
+                    WHERE country_code != 'PY'
+                      AND (
+                          ip_address LIKE '181.%'
+                          OR ip_address LIKE '190.128.%'
+                          OR ip_address LIKE '177.11.%'
+                          OR ip_address LIKE '200.85.%'
+                          OR ip_address LIKE '201.222.%'
+                          OR ip_address LIKE '2800:c70:%'
+                          OR ip_address LIKE '2803:2a00:%'
+                      );
+                """)
+                # Descartar falsos positivos previos de sincronización Nextcloud en usuarios de Paraguay
+                cur.execute("""
+                    UPDATE mitigation_bancandidate
+                    SET status = 'DISMISSED'
+                    WHERE status = 'PENDING'
+                      AND (suggested_reason LIKE '%R-HTTP-FLOOD-DOS%' OR suggested_reason LIKE '%R-SCAN-404-BRUTE%')
+                      AND client_ip IN (
+                          '2800:c70:6:60df:18e7:23b8:d401:b8f4',
+                          '181.127.196.66',
+                          '181.126.193.193',
+                          '190.128.181.218',
+                          '177.11.255.178'
+                      );
+                """)
+                cur.execute("""
+                    UPDATE mitigation_ipreputation
+                    SET status = 'NORMAL', current_risk_score = 0
+                    WHERE status != 'BLOCKED'
+                      AND ip_address IN (
+                          '2800:c70:6:60df:18e7:23b8:d401:b8f4',
+                          '181.127.196.66',
+                          '181.126.193.193',
+                          '190.128.181.218',
+                          '177.11.255.178'
+                      );
+                """)
+            self.stdout.write(self.style.SUCCESS("✅ Protección de WAN Propia (190.128.226.122) y GeoIP real normalizados."))
+        except Exception as exc:
+            self.stdout.write(self.style.WARNING(f"⚠️ Aviso al normalizar registros históricos: {exc}"))

@@ -118,20 +118,35 @@ failregex = ^MITHRIL_MANUAL_BAN <HOST>$
 ignoreregex =
 """
 
-FAIL2BAN_ACTION_CONTENT = """# Mithril SIEM - Smart Hybrid Action (Universal: Kernel ipset + Cloudflare Edge API opcional)
+FAIL2BAN_ACTION_CONTENT = """# Mithril SIEM - Smart Hybrid Action (Universal: Kernel ipset L3/L4 + Kernel L7 Real-IP DPI + Cloudflare Edge API opcional)
 [Definition]
-actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
+actionstart = ipset create mithril_f2b hash:ip family inet timeout 0 -exist
+              ipset create mithril_f2b6 hash:ip family inet6 timeout 0 -exist 2>/dev/null || true
               iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+              ip6tables -C INPUT -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || ip6tables -I INPUT 1 -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || true
+              iptables -N MITHRIL_REALIP 2>/dev/null || true
+              iptables -C INPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || iptables -I INPUT 2 -p tcp -j MITHRIL_REALIP
+              iptables -C OUTPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || iptables -I OUTPUT 1 -p tcp -j MITHRIL_REALIP
 
-actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+actionstop  = iptables -D INPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || true
+              iptables -D OUTPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || true
+              iptables -F MITHRIL_REALIP 2>/dev/null || true
+              iptables -X MITHRIL_REALIP 2>/dev/null || true
+              iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+              ip6tables -D INPUT -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || true
               ipset destroy mithril_f2b 2>/dev/null || true
+              ipset destroy mithril_f2b6 2>/dev/null || true
 
 actioncheck = ipset list mithril_f2b >/dev/null 2>&1
 
-actionban   = ipset add mithril_f2b <ip> -exist
+actionban   = case "<ip>" in *:*) ipset add mithril_f2b6 <ip> -exist 2>/dev/null || true ;; *) ipset add mithril_f2b <ip> -exist 2>/dev/null || true ;; esac
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset
               if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\\"mode\\":\\"block\\",\\"configuration\\":{\\"target\\":\\"ip\\",\\"value\\":\\"<ip>\\"},\\"notes\\":\\"Mithril-SIEM-Fail2ban\\"}" >/dev/null 2>&1 || true; fi; fi
 
-actionunban = ipset del mithril_f2b <ip> -exist
+actionunban = case "<ip>" in *:*) ipset del mithril_f2b6 <ip> -exist 2>/dev/null || true ;; *) ipset del mithril_f2b <ip> -exist 2>/dev/null || true ;; esac
+              iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
+              iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
               if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
 
 [Init]
@@ -150,13 +165,9 @@ maxretry = 1
 """
 
 def init_fail2ban():
-    """Verifica que Fail2ban y el jail 'mithril-jail' esten activos; los provisiona si existen los binarios."""
+    """Verifica que Fail2ban y el jail 'mithril-jail' esten activos; los provisiona o actualiza si existen los binarios."""
     try:
-        chk = subprocess.run(["fail2ban-client", "status", FAIL2BAN_JAIL], capture_output=True, text=True, check=False)
-        if chk.returncode == 0:
-            return True
-
-        # Si fail2ban-client existe pero el jail aun no fue cargado, autoprovisionar archivos
+        need_reload = False
         os.makedirs("/etc/fail2ban/filter.d", exist_ok=True)
         os.makedirs("/etc/fail2ban/action.d", exist_ok=True)
         os.makedirs("/etc/fail2ban/jail.d", exist_ok=True)
@@ -166,12 +177,30 @@ def init_fail2ban():
         if not os.path.exists("/etc/fail2ban/filter.d/mithril-empty.conf"):
             with open("/etc/fail2ban/filter.d/mithril-empty.conf", "w") as f:
                 f.write(FAIL2BAN_FILTER_CONTENT)
-        if not os.path.exists("/etc/fail2ban/action.d/mithril-smart.conf"):
-            with open("/etc/fail2ban/action.d/mithril-smart.conf", "w") as f:
+            need_reload = True
+
+        action_path = "/etc/fail2ban/action.d/mithril-smart.conf"
+        write_action = not os.path.exists(action_path)
+        if not write_action:
+            try:
+                with open(action_path, "r") as f:
+                    if "MITHRIL_REALIP" not in f.read():
+                        write_action = True
+            except Exception:
+                write_action = True
+        if write_action:
+            with open(action_path, "w") as f:
                 f.write(FAIL2BAN_ACTION_CONTENT)
+            need_reload = True
+
         if not os.path.exists("/etc/fail2ban/jail.d/mithril.local"):
             with open("/etc/fail2ban/jail.d/mithril.local", "w") as f:
                 f.write(FAIL2BAN_JAIL_CONTENT)
+            need_reload = True
+
+        chk = subprocess.run(["fail2ban-client", "status", FAIL2BAN_JAIL], capture_output=True, text=True, check=False)
+        if chk.returncode == 0 and not need_reload:
+            return True
 
         subprocess.run(["systemctl", "enable", "--now", "fail2ban"], capture_output=True, check=False)
         subprocess.run(["fail2ban-client", "reload"], capture_output=True, text=True, check=False)
@@ -240,14 +269,14 @@ def apply_blocklist(banned_ips):
     - Con BLOCK_METHOD='ipset': aplica en kernel ipset sin tocar Nginx.
     - Con BLOCK_METHOD='nginx_conf': escribe archivo de Nginx y recarga suavemente.
     """
-    # Filtro de inmunidad absoluta para rangos de Cloudflare e IPs de red local/loopback
+    # Filtro de inmunidad absoluta para rangos de Cloudflare, IP WAN propia e IPs del balanceador/SIEM
     safe_ips = []
     for raw_ip in banned_ips:
         ip = str(raw_ip).strip()
         if not ip:
             continue
-        if is_cf_ip(ip) or is_local_balancer_ip(ip):
-            print(f"🛡️ [INMUNIDAD] Ignorando IP protegida (Cloudflare/Local): {ip}")
+        if is_cf_ip(ip) or is_protected_infra_ip(ip):
+            print(f"🛡️ [INMUNIDAD] Ignorando IP protegida (Cloudflare/Infraestructura Propia): {ip}")
             continue
         safe_ips.append(ip)
 
@@ -360,6 +389,8 @@ def get_own_interface_ips():
     return own
 
 _OWN_HOST_IPS = get_own_interface_ips()
+_MITHRIL_SIEM_HOST = urllib.parse.urlparse(MITHRIL_URL).hostname or "127.0.0.1"
+_OWN_PROTECTED_WAN_IPS = {"190.128.226.122", "192.168.150.181", "192.168.200.226", _MITHRIL_SIEM_HOST}
 
 def is_own_balancer_ip(ip_s):
     """True solo si la IP es loopback o pertenece a la interfaz de red propia de este servidor"""
@@ -367,6 +398,13 @@ def is_own_balancer_ip(ip_s):
         return True
     s = ip_s.strip()
     return s in _OWN_HOST_IPS or s.startswith("127.")
+
+def is_protected_infra_ip(ip_s):
+    """True si la IP pertenece al propio balanceador, al servidor Mithril SIEM o a la IP Pública WAN propia"""
+    if not ip_s:
+        return True
+    s = ip_s.strip()
+    return is_own_balancer_ip(s) or (s in _OWN_PROTECTED_WAN_IPS)
 
 def is_local_balancer_ip(ip_s):
     return ip_s.startswith(("127.", "10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31."))

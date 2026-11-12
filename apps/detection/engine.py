@@ -1,5 +1,6 @@
 import os
 import re
+import zlib
 import json
 import time
 import threading
@@ -347,14 +348,122 @@ def is_private_local_ip(ip_str):
     return False
 
 
+# IPs Públicas WAN propias de la infraestructura del cliente (ej. salida NAT corporativa / Zabbix / servidores propios)
+# Pueden ampliarse dinámicamente mediante la variable de entorno MITHRIL_OWN_PUBLIC_IPS="190.128.226.122,..."
+DEFAULT_OWN_PUBLIC_WAN_IPS = {
+    '190.128.226.122',
+}
+
+DEFAULT_OWN_INTERNAL_INFRA_IPS = {
+    '127.0.0.1',
+    '::1',
+    '192.168.150.181',  # Balanceador / Proxy servbalancer150
+    '192.168.200.226',  # Servidor Central Mithril SIEM
+    '192.168.150.66',   # Servidor Interno Prometheus / Monitoreo
+}
+
+
+def get_own_public_wan_ips():
+    env_extra = os.environ.get('MITHRIL_OWN_PUBLIC_IPS', '')
+    extra_set = {x.strip() for x in env_extra.split(',') if x.strip()}
+    return DEFAULT_OWN_PUBLIC_WAN_IPS | extra_set
+
+
+def is_own_public_wan_ip(ip_str):
+    """
+    Detecta si una IP pública corresponde a la propia IP pública WAN de la infraestructura
+    (por ejemplo 190.128.226.122 cuando Zabbix, microservicios GuzzleHttp o usuarios internos
+    salen a Internet y entran por Cloudflare Hairpin/WAN).
+    ESTA IP TIENE INMUNIDAD ABSOLUTA Y JAMÁS DEBE BLOQUEARSE.
+    """
+    if not ip_str:
+        return False
+    return str(ip_str).strip() in get_own_public_wan_ips()
+
+
+def is_own_infrastructure_ip(ip_str):
+    """
+    Verifica si una IP pertenece a la infraestructura crítica propia (WAN Pública propia,
+    Balanceador Nginx, Servidor Mithril SIEM o Loopback). Nunca debe ser bloqueada.
+    """
+    if not ip_str:
+        return False
+    s = str(ip_str).strip()
+    if s in DEFAULT_OWN_INTERNAL_INFRA_IPS or is_own_public_wan_ip(s):
+        return True
+    return False
+
+
+ISO_COUNTRY_GEO_MAP = {
+    'PY': ('PY', 'Paraguay', 'Asunción', -25.2637, -57.5759),
+    'AR': ('AR', 'Argentina', 'Buenos Aires', -34.6037, -58.3816),
+    'BR': ('BR', 'Brasil', 'São Paulo', -23.5505, -46.6333),
+    'UY': ('UY', 'Uruguay', 'Montevideo', -34.9011, -56.1645),
+    'CL': ('CL', 'Chile', 'Santiago', -33.4489, -70.6693),
+    'BO': ('BO', 'Bolivia', 'La Paz', -16.4897, -68.1193),
+    'PE': ('PE', 'Perú', 'Lima', -12.0464, -77.0428),
+    'CO': ('CO', 'Colombia', 'Bogotá', 4.7110, -74.0721),
+    'EC': ('EC', 'Ecuador', 'Quito', -0.1807, -78.4678),
+    'VE': ('VE', 'Venezuela', 'Caracas', 10.4806, -66.9036),
+    'MX': ('MX', 'México', 'Ciudad de México', 19.4326, -99.1332),
+    'US': ('US', 'Estados Unidos', 'Ashburn', 39.0438, -77.4874),
+    'CA': ('CA', 'Canadá', 'Toronto', 43.6532, -79.3832),
+    'ES': ('ES', 'España', 'Madrid', 40.4168, -3.7038),
+    'DE': ('DE', 'Alemania', 'Frankfurt', 50.1109, 8.6821),
+    'FR': ('FR', 'Francia', 'París', 48.8566, 2.3522),
+    'GB': ('GB', 'Reino Unido', 'Londres', 51.5074, -0.1278),
+    'NL': ('NL', 'Países Bajos', 'Ámsterdam', 52.3676, 4.9041),
+    'IT': ('IT', 'Italia', 'Milán', 45.4642, 9.1900),
+    'PT': ('PT', 'Portugal', 'Lisboa', 38.7223, -9.1393),
+    'CH': ('CH', 'Suiza', 'Zúrich', 47.3769, 8.5417),
+    'PL': ('PL', 'Polonia', 'Varsovia', 52.2297, 21.0122),
+    'UA': ('UA', 'Ucrania', 'Kiev', 50.4501, 30.5234),
+    'RU': ('RU', 'Rusia', 'Moscú', 55.7558, 37.6173),
+    'CN': ('CN', 'China', 'Beijing', 39.9042, 116.4074),
+    'JP': ('JP', 'Japón', 'Tokio', 35.6762, 139.6503),
+    'KR': ('KR', 'Corea del Sur', 'Seúl', 37.5665, 126.9780),
+    'SG': ('SG', 'Singapur', 'Singapur', 1.3521, 103.8198),
+    'IN': ('IN', 'India', 'Mumbai', 19.0760, 72.8777),
+    'AU': ('AU', 'Australia', 'Sídney', -33.8688, 151.2093),
+    'HK': ('HK', 'Hong Kong', 'Hong Kong', 22.3193, 114.1694),
+    'TW': ('TW', 'Taiwán', 'Taipéi', 25.0330, 121.5654),
+    'TR': ('TR', 'Turquía', 'Estambul', 41.0082, 28.9784),
+    'IL': ('IL', 'Israel', 'Tel Aviv', 32.0853, 34.7818),
+    'ZA': ('ZA', 'Sudáfrica', 'Johannesburgo', -26.2041, 28.0473),
+    'IE': ('IE', 'Irlanda', 'Dublín', 53.3498, -6.2603),
+    'SE': ('SE', 'Suecia', 'Estocolmo', 59.3293, 18.0686),
+    'FI': ('FI', 'Finlandia', 'Helsinki', 60.1699, 24.9384),
+    'RO': ('RO', 'Rumania', 'Bucarest', 44.4268, 26.1025),
+    'BG': ('BG', 'Bulgaria', 'Sofía', 42.6977, 23.3219),
+    'CZ': ('CZ', 'República Checa', 'Praga', 50.0755, 14.4378),
+    'AT': ('AT', 'Austria', 'Viena', 48.2082, 16.3738),
+    'BE': ('BE', 'Bélgica', 'Bruselas', 50.8503, 4.3517),
+}
+
+
+def _is_paraguay_isp_ip(ip_str):
+    if not ip_str:
+        return False
+    s = str(ip_str).strip().lower()
+    py_prefixes = (
+        '190.128.', '190.104.', '190.52.', '181.94.', '181.120.', '181.121.',
+        '181.122.', '181.123.', '181.124.', '181.125.', '181.126.', '181.127.',
+        '181.78.', '200.85.', '201.222.', '177.11.', '186.16.', '186.17.',
+        '2800:c70:', '2803:2a00:', '2803:c700:',
+    )
+    return s.startswith(py_prefixes)
+
+
 def resolve_cloudflare_and_real_ip(data):
     """
-    Separa e identifica simultáneamente con precisión absoluta:
+    Separa e identifica simultáneamente con precisión absoluta las 4 variables de red:
       1) `cloudflare_ip`: La IP del nodo Edge de Cloudflare (si la petición pasó por Cloudflare).
       2) `real_client_ip`: La IP real del cliente de origen (extraída estrictamente de cabeceras HTTP
-         reales de ESTA petición: CF-Connecting-IP, True-Client-IP, X-Forwarded-For).
+         reales de ESTA petición: CF-Connecting-IP, True-Client-IP, X-Forwarded-For, X-Real-IP).
       3) `is_cloudflare`: True si la conexión proviene de un nodo de Cloudflare o trae cabeceras CF.
-      4) `is_local_ip`: True si es tráfico originado directamente en la LAN o balanceador local.
+      4) `is_local_ip`: True si es tráfico originado directamente en la LAN privada (192.168.x.x / 10.x.x.x).
+      5) `is_own_public_ip`: True si `real_client_ip` es la propia IP Pública WAN de la infraestructura (ej. 190.128.226.122).
+      6) `is_direct_public_ip`: True si un cliente externo se conectó directo a la IP pública sin pasar por Cloudflare.
     """
     headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
     raw_ip = str(data.get('client_ip') or data.get('remote_addr') or '').strip()
@@ -371,6 +480,8 @@ def resolve_cloudflare_and_real_ip(data):
             'cloudflare_ip': raw_ip if is_cf else '',
             'real_client_ip': '',
             'is_local_ip': False if is_cf else is_private_local_ip(raw_ip),
+            'is_own_public_ip': is_own_public_wan_ip(raw_ip),
+            'is_direct_public_ip': False,
             'cf_ray': '',
             'cf_country': '',
         }
@@ -456,13 +567,15 @@ def resolve_cloudflare_and_real_ip(data):
             final_real_ip = ''
         is_local = is_private_local_ip(final_real_ip or raw_ip)
 
-    is_direct_pub = (not is_cf) and (not is_local) and bool(final_real_ip)
+    is_own_pub = is_own_public_wan_ip(final_real_ip or raw_ip)
+    is_direct_pub = (not is_cf) and (not is_local) and (not is_own_pub) and bool(final_real_ip)
 
     return {
         'is_cloudflare': is_cf,
         'cloudflare_ip': cf_node_ip,
         'real_client_ip': final_real_ip,
         'is_local_ip': is_local,
+        'is_own_public_ip': is_own_pub,
         'is_direct_public_ip': is_direct_pub,
         'cf_ray': cf_ray,
         'cf_country': cf_country,
@@ -471,7 +584,8 @@ def resolve_cloudflare_and_real_ip(data):
 
 def extract_log_ip_meta(ip_str, headers=None):
     """
-    Extrae metadatos de Cloudflare (`is_cloudflare`, `cloudflare_ip`, `real_client_ip`, `cf_ray`, `cf_country`)
+    Extrae metadatos de red (`is_cloudflare`, `cloudflare_ip`, `real_client_ip`, `is_local_ip`,
+    `is_own_public_ip`, `is_direct_public_ip`, `cf_ray`, `cf_country`)
     a partir de una IP y un diccionario `raw_headers` o `details` almacenado en BD.
     """
     hdrs = headers if isinstance(headers, dict) else {}
@@ -486,12 +600,14 @@ def extract_log_ip_meta(ip_str, headers=None):
 
     if _is_valid_ip(x_real) and not is_cloudflare_ip(x_real) and not cf_conn and not cf_ray_val and not cf_country_val:
         is_loc = is_private_local_ip(x_real)
+        is_own_pub = is_own_public_wan_ip(x_real)
         return {
             'is_cloudflare': False,
             'cloudflare_ip': '',
             'real_client_ip': x_real,
             'is_local_ip': is_loc,
-            'is_direct_public_ip': not is_loc,
+            'is_own_public_ip': is_own_pub,
+            'is_direct_public_ip': (not is_loc) and (not is_own_pub),
             'cf_ray': '',
             'cf_country': '',
         }
@@ -504,16 +620,19 @@ def extract_log_ip_meta(ip_str, headers=None):
     if is_cf_flag or stored_cf or (stored_real and stored_real != ip_str):
         is_cf = is_cf_flag or bool(stored_cf) or is_cloudflare_ip(ip_str) or is_cloudflare_ip(merged.get('connection_ip'))
         cf_node = stored_cf or (ip_str if is_cloudflare_ip(ip_str) else str(merged.get('connection_ip') or ''))
-        is_loc = is_private_local_ip(stored_real or ip_str)
+        eff_target = stored_real or ip_str
+        is_loc = is_private_local_ip(eff_target)
+        is_own_pub = is_own_public_wan_ip(eff_target)
         is_direct_val = merged.get('is_direct_public_ip')
         if is_direct_val is None:
-            is_direct_val = (not is_cf) and (not is_loc) and bool(stored_real or ip_str)
+            is_direct_val = (not is_cf) and (not is_loc) and (not is_own_pub) and bool(eff_target)
         return {
             'is_cloudflare': is_cf,
             'cloudflare_ip': cf_node if is_cf else '',
             'real_client_ip': stored_real,
             'is_local_ip': is_loc,
-            'is_direct_public_ip': bool(is_direct_val),
+            'is_own_public_ip': is_own_pub,
+            'is_direct_public_ip': bool(is_direct_val) and not is_own_pub,
             'cf_ray': cf_ray_val,
             'cf_country': cf_country_val,
         }
@@ -541,13 +660,29 @@ def normalize_inspection_payload(raw_text):
     except Exception:
         return str(raw_text)
 
-def resolve_geoip(ip_str):
+def resolve_geoip(ip_str, cf_country=''):
     """
-    Resuelve la ubicación geográfica aproximada de la IP y detecta si pertenece a Cloudflare.
-    Asigna coordenadas separadas del nodo base incluso para IPs privadas para que el arco/flecha
-    de ataque en el Mapa Táctico 2D siempre tenga trayectoria visible hacia el servidor proxy.
+    Resuelve la ubicación geográfica real de la IP priorizando:
+      1) Si es la IP Pública WAN propia de la infraestructura (ej. 190.128.226.122) -> Paraguay (Infraestructura Propia WAN)
+      2) Si es una IP Privada / Red Local (192.168.x.x, 10.x.x.x) -> Red Interna (LAN)
+      3) Si es un nodo Edge de Cloudflare sin cliente -> Cloudflare Edge PoP
+      4) El país real reportado por Cloudflare en la cabecera HTTP `CF-IPCountry` (`cf_country`)
+      5) Prefijos ISP de Paraguay / LATAM para conexiones directas sin Cloudflare
     """
-    is_cf = is_cloudflare_ip(ip_str)
+    ip_clean = str(ip_str or '').strip()
+    crc_val = zlib.crc32(ip_clean.encode('utf-8'))
+
+    if is_own_public_wan_ip(ip_clean):
+        return {
+            'country_code': 'PY',
+            'country_name': 'Paraguay (WAN Propia)',
+            'city': 'Asunción (Infraestructura Propia)',
+            'latitude': -25.2637,
+            'longitude': -57.5759,
+            'is_cloudflare': False
+        }
+
+    is_cf = is_cloudflare_ip(ip_clean)
     if is_cf:
         cf_pops = [
             ('CF-US', 'Cloudflare Edge (US-East)', 'Ashburn PoP', 39.0438, -77.4874),
@@ -558,7 +693,7 @@ def resolve_geoip(ip_str):
             ('CF-ES', 'Cloudflare Edge (EU-South)', 'Madrid PoP', 40.4168, -3.7038),
             ('CF-SG', 'Cloudflare Edge (APAC)', 'Singapore PoP', 1.3521, 103.8198),
         ]
-        pop = cf_pops[abs(hash(ip_str)) % len(cf_pops)]
+        pop = cf_pops[crc_val % len(cf_pops)]
         return {
             'country_code': pop[0],
             'country_name': pop[1],
@@ -569,17 +704,14 @@ def resolve_geoip(ip_str):
         }
 
     try:
-        ip_obj = ipaddress.ip_address(ip_str)
+        ip_obj = ipaddress.ip_address(ip_clean)
         if ip_obj.is_private or ip_obj.is_loopback:
-            # Coordenadas regionales diferenciadas de la base (-34.60, -58.38) para que el vector/flecha sea visible en el mapa
             lan_origins = [
-                ('LO', 'Red Local (LAN)', 'Segmento Corporativo Norte', -12.0464, -77.0428),
-                ('LO', 'Red Local (LAN)', 'Segmento Corporativo Oeste', -33.4489, -70.6693),
-                ('LO', 'Red Local (LAN)', 'Segmento Corporativo Este', -23.5505, -46.6333),
-                ('LO', 'Red Local (LAN)', 'Segmento DataCenter LAN', 4.7110, -74.0721),
-                ('LO', 'Red Local (LAN)', 'Segmento Interno DMZ', -25.2637, -57.5759),
+                ('LAN', 'Red Interna (LAN)', 'Segmento Corporativo LAN', -25.2637, -57.5759),
+                ('LAN', 'Red Interna (LAN)', 'Segmento DataCenter LAN', -25.2800, -57.6300),
+                ('LAN', 'Red Interna (LAN)', 'Segmento Interno DMZ', -25.3000, -57.5500),
             ]
-            loc = lan_origins[abs(hash(ip_str)) % len(lan_origins)]
+            loc = lan_origins[crc_val % len(lan_origins)]
             return {
                 'country_code': loc[0],
                 'country_name': loc[1],
@@ -591,20 +723,50 @@ def resolve_geoip(ip_str):
     except Exception:
         pass
 
+    # Priorizar el código ISO real enviado por Cloudflare en CF-IPCountry (ej. PY, US, BR, AR)
+    cc_clean = str(cf_country or '').strip().upper()
+    if cc_clean and cc_clean not in ('XX', 'T1', '-'):
+        if cc_clean in ISO_COUNTRY_GEO_MAP:
+            geo = ISO_COUNTRY_GEO_MAP[cc_clean]
+            return {
+                'country_code': geo[0],
+                'country_name': geo[1],
+                'city': geo[2],
+                'latitude': geo[3],
+                'longitude': geo[4],
+                'is_cloudflare': False
+            }
+        return {
+            'country_code': cc_clean[:8],
+            'country_name': f'País ISO ({cc_clean})',
+            'city': 'Remoto',
+            'latitude': 20.0,
+            'longitude': 0.0,
+            'is_cloudflare': False
+        }
+
+    # Si no vino CF-IPCountry, verificar si pertenece a rangos ISP conocidos de Paraguay
+    if _is_paraguay_isp_ip(ip_clean):
+        return {
+            'country_code': 'PY',
+            'country_name': 'Paraguay',
+            'city': 'Asunción',
+            'latitude': -25.2637,
+            'longitude': -57.5759,
+            'is_cloudflare': False
+        }
+
     known_nodes = [
         ('US', 'Estados Unidos', 'Ashburn', 39.0438, -77.4874),
-        ('DE', 'Alemania', 'Frankfurt', 50.1109, 8.6821),
-        ('CN', 'China', 'Beijing', 39.9042, 116.4074),
-        ('RU', 'Rusia', 'Moscú', 55.7558, 37.6173),
         ('BR', 'Brasil', 'São Paulo', -23.5505, -46.6333),
+        ('AR', 'Argentina', 'Buenos Aires', -34.6037, -58.3816),
+        ('DE', 'Alemania', 'Frankfurt', 50.1109, 8.6821),
         ('ES', 'España', 'Madrid', 40.4168, -3.7038),
         ('FR', 'Francia', 'París', 48.8566, 2.3522),
         ('NL', 'Países Bajos', 'Ámsterdam', 52.3676, 4.9041),
         ('GB', 'Reino Unido', 'Londres', 51.5074, -0.1278),
-        ('JP', 'Japón', 'Tokio', 35.6762, 139.6503),
     ]
-    hash_idx = abs(hash(ip_str)) % len(known_nodes)
-    geo = known_nodes[hash_idx]
+    geo = known_nodes[crc_val % len(known_nodes)]
 
     return {
         'country_code': geo[0],
@@ -616,11 +778,34 @@ def resolve_geoip(ip_str):
     }
 
 
+def _is_benign_app_sync(uri_str, status_code):
+    """
+    Identifica llamadas de sincronización en segundo plano legítimas de Nextcloud / WebDAV
+    para evitar falsos positivos de ráfaga o 404 de workspace vacíos contra usuarios legítimos.
+    """
+    u = str(uri_str or '').lower()
+    if status_code == 404 and '/ocs/v2.php/apps/text/public/workspace' in u:
+        return True
+    if status_code in (200, 204, 207, 304) and any(p in u for p in (
+        '/index.php/apps/text/session/',
+        '/ocs/v2.php/apps/user_status/',
+        '/ocs/v2.php/apps/notifications/',
+        '/ocs/v2.php/apps/dashboard/',
+        '/index.php/apps/files/api/v1/stats',
+        '/public.php/webdav/',
+        '/remote.php/dav/',
+        '/cron.php',
+    )):
+        return True
+    return False
+
+
 def process_incoming_log(data, node=None):
     """
     Procesa, normaliza, enriquece e inspecciona cada petición recibida de Nginx.
     Evalúa, puntúa y genera candidatos a bloqueo SIEMPRE sobre la IP del cliente real
-    (sin importar si se conecta a través de un nodo Cloudflare o de forma directa).
+    (sin importar si se conecta a través de un nodo Cloudflare, desde la LAN o de forma directa),
+    garantizando inmunidad absoluta a las IPs de Cloudflare y a la IP Pública WAN propia de la infraestructura.
     """
     raw_conn_ip = data.get('client_ip', '').strip()
     if not raw_conn_ip:
@@ -634,7 +819,8 @@ def process_incoming_log(data, node=None):
     # La IP real del cliente que realiza la petición (detrás de Cloudflare, por LAN local, o directo a IP pública):
     target_client_ip = real_client_ip if real_client_ip else raw_conn_ip
 
-    geo = resolve_geoip(target_client_ip)
+    cf_country_hdr = ip_meta.get('cf_country', '')
+    geo = resolve_geoip(target_client_ip, cf_country=cf_country_hdr)
 
     incoming_headers = dict(data.get('headers', {})) if isinstance(data.get('headers'), dict) else {}
     if is_cf:
@@ -650,12 +836,14 @@ def process_incoming_log(data, node=None):
         incoming_headers['real_client_ip'] = real_client_ip
     is_local = ip_meta.get('is_local_ip', False) or is_private_local_ip(target_client_ip)
     incoming_headers['is_local_ip'] = is_local
-    is_direct = ip_meta.get('is_direct_public_ip', False) or ((not is_cf) and (not is_local))
+    is_own_pub = ip_meta.get('is_own_public_ip', False) or is_own_public_wan_ip(target_client_ip)
+    incoming_headers['is_own_public_ip'] = is_own_pub
+    is_direct = ip_meta.get('is_direct_public_ip', False) or ((not is_cf) and (not is_local) and (not is_own_pub))
     incoming_headers['is_direct_public_ip'] = is_direct
     if ip_meta.get('cf_ray'):
         incoming_headers['cf_ray'] = ip_meta['cf_ray']
-    if ip_meta.get('cf_country'):
-        incoming_headers['cf_country'] = ip_meta['cf_country']
+    if cf_country_hdr:
+        incoming_headers['cf_country'] = cf_country_hdr
 
     # 1. Guardar log normalizado con la IP del cliente real para indexación y búsqueda
     log = TrafficLog.objects.create(
@@ -681,20 +869,27 @@ def process_incoming_log(data, node=None):
         ProxyNode.objects.filter(id=node.id).update(total_logs_processed=F('total_logs_processed') + 1)
 
     # 2. Consultar o crear reputación de la IP del CLIENTE
+    is_own_infra = is_own_infrastructure_ip(target_client_ip)
     reputation, _ = IpReputation.objects.get_or_create(
         client_ip=target_client_ip,
         defaults={
             'country_code': geo['country_code'],
-            'asn': 'CLOUDFLARE' if (is_cf and not real_client_ip) else '',
-            'status': 'MONITORED'
+            'asn': 'OWN_INFRASTRUCTURE' if is_own_infra else ('CLOUDFLARE' if (is_cf and not real_client_ip) else ''),
+            'status': 'WHITELISTED' if is_own_infra else 'MONITORED'
         }
     )
-    if is_cf and not real_client_ip and reputation.asn != 'CLOUDFLARE':
+    if is_own_infra and (reputation.status != 'WHITELISTED' or reputation.country_code != geo['country_code']):
+        reputation.status = 'WHITELISTED'
+        reputation.country_code = geo['country_code']
+        reputation.asn = 'OWN_INFRASTRUCTURE'
+        reputation.current_risk_score = 0
+        reputation.save(update_fields=['status', 'country_code', 'asn', 'current_risk_score'])
+    elif is_cf and not real_client_ip and reputation.asn != 'CLOUDFLARE':
         reputation.asn = 'CLOUDFLARE'
         reputation.save(update_fields=['asn'])
 
-    # Si la IP está en Lista Blanca, no generar alertas de bloqueo
-    if reputation.status == 'WHITELISTED':
+    # Si la IP está en Lista Blanca o es la propia IP de la infraestructura (WAN o Balanceador), no generar alertas de bloqueo
+    if reputation.status == 'WHITELISTED' or is_own_infra:
         broadcast_to_soc(log, is_threat=False, reputation=reputation)
         return log
 
@@ -704,6 +899,8 @@ def process_incoming_log(data, node=None):
     if is_cf and not real_client_ip:
         broadcast_to_soc(log, is_threat=False, reputation=reputation)
         return log
+
+    is_benign_sync = _is_benign_app_sync(log.uri, log.status_code)
 
     # 3. Motor Universal de Detección Heurística y Reglas (con caché en RAM y anti-saturación)
     now = timezone.now()
@@ -735,6 +932,7 @@ def process_incoming_log(data, node=None):
         'is_cloudflare': is_cf,
         'cloudflare_ip': cf_node_ip,
         'real_client_ip': real_client_ip,
+        'is_own_public_ip': is_own_pub,
         'is_direct_public_ip': is_direct,
         'cf_ray': ip_meta.get('cf_ray', ''),
         'cf_country': ip_meta.get('cf_country', ''),
@@ -747,7 +945,7 @@ def process_incoming_log(data, node=None):
 
         # E. Detección de Acceso Directo por IP Pública (Bypass Cloudflare / Reconocimiento de Origen)
         if rule.code == 'R-DIRECT-IP-ACCESS':
-            if is_direct and not is_cf:
+            if is_direct and not is_cf and not is_own_infra:
                 matched_any_rule = True
                 if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=10.0):
                     host_header = str(incoming_headers.get('host') or incoming_headers.get('Host') or data.get('host') or '').strip()
@@ -787,14 +985,18 @@ def process_incoming_log(data, node=None):
 
         # B. Detección Heurística de Frecuencia 404 (Enumeración de archivos / Scanners)
         elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
-            if log.status_code == 404:
+            if log.status_code == 404 and not is_benign_sync:
                 matched_any_rule = True
                 if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
-                    recent_404_count = TrafficLog.objects.filter(
-                        client_ip=target_client_ip,
-                        status_code=404,
-                        created_at__gte=window_start
-                    ).count()
+                    recent_404_count = (
+                        TrafficLog.objects.filter(
+                            client_ip=target_client_ip,
+                            status_code=404,
+                            created_at__gte=window_start
+                        )
+                        .exclude(uri__icontains='/ocs/v2.php/apps/text/public/workspace')
+                        .count()
+                    )
                     if recent_404_count >= rule.threshold_count:
                         event = SecurityEvent.objects.create(
                             node=node,
@@ -809,11 +1011,17 @@ def process_incoming_log(data, node=None):
 
         # C. Detección Heurística de Ráfaga / Flood DoS por IP (Rate Limit sin regex)
         elif not rule.pattern_regex and rule.category == 'RATE_LIMIT':
-            if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=4.0):
-                recent_req_count = TrafficLog.objects.filter(
-                    client_ip=target_client_ip,
-                    created_at__gte=window_start
-                ).count()
+            if not is_benign_sync and not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=4.0):
+                recent_req_count = (
+                    TrafficLog.objects.filter(
+                        client_ip=target_client_ip,
+                        created_at__gte=window_start
+                    )
+                    .exclude(uri__icontains='/index.php/apps/text/session/')
+                    .exclude(uri__icontains='/ocs/v2.php/apps/user_status/')
+                    .exclude(uri__icontains='/ocs/v2.php/apps/notifications/')
+                    .count()
+                )
                 if recent_req_count >= rule.threshold_count:
                     matched_any_rule = True
                     event = SecurityEvent.objects.create(
@@ -882,8 +1090,8 @@ def process_incoming_log(data, node=None):
 
         # 5. Generar Candidato a Bloqueo para la IP del CLIENTE
         if reputation.current_risk_score >= 80:
-            if is_cloudflare_ip(target_client_ip):
-                # Los nodos CDN de Cloudflare son compartidos y nunca deben bloquearse
+            if is_cloudflare_ip(target_client_ip) or is_own_infrastructure_ip(target_client_ip):
+                # Los nodos CDN de Cloudflare y la propia IP WAN/LAN de la infraestructura tienen inmunidad absoluta
                 pass
             else:
                 last_event = triggered_events[0] if triggered_events else None
@@ -929,7 +1137,7 @@ def process_incoming_log(data, node=None):
         len(triggered_events) > 0
         or matched_any_rule
         or reputation.status in ('PENDING_BAN', 'BANNED')
-        or log.status_code >= 400
+        or (log.status_code >= 400 and not is_benign_sync)
     )
     broadcast_to_soc(log, is_threat=is_threat, reputation=reputation, events=triggered_events)
 
@@ -952,10 +1160,12 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
         return
 
     meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
-    connection_ip = log.raw_headers.get('connection_ip') or log.client_ip
+    connection_ip = log.raw_headers.get('connection_ip') or (meta['cloudflare_ip'] if meta['is_cloudflare'] else log.client_ip)
+    eff_real_ip = meta['real_client_ip'] or log.client_ip
+    is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(eff_real_ip)
     is_direct_ip = meta.get('is_direct_public_ip')
     if is_direct_ip is None:
-        is_direct_ip = (not meta['is_cloudflare']) and (not meta.get('is_local_ip', False)) and bool(meta['real_client_ip'] or connection_ip)
+        is_direct_ip = (not meta['is_cloudflare']) and (not meta.get('is_local_ip', False)) and (not is_own_pub) and bool(eff_real_ip)
 
     payload = {
         'type': 'traffic_event',
@@ -977,7 +1187,8 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': meta['real_client_ip'] or '',
             'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (connection_ip if not meta['is_cloudflare'] else '')),
-            'is_direct_public_ip': bool(is_direct_ip),
+            'is_own_public_ip': bool(is_own_pub),
+            'is_direct_public_ip': bool(is_direct_ip) and not is_own_pub,
             'user_agent': log.user_agent or '',
             'risk_score': reputation.current_risk_score if reputation else 0,
             'violations_count': len(events) if events else 0,

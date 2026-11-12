@@ -5,7 +5,7 @@ from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse, JsonResponse
 from .models import AuditTrail
 from apps.detection.models import SecurityEvent, TrafficLog
-from apps.detection.engine import extract_log_ip_meta
+from apps.detection.engine import extract_log_ip_meta, resolve_geoip
 
 @login_required
 def reports_index_view(request):
@@ -52,12 +52,21 @@ def reports_index_view(request):
         log.is_cloudflare = meta['is_cloudflare']
         log.cloudflare_ip = meta['cloudflare_ip']
         log.real_client_ip = meta['real_client_ip']
+        log.is_own_public_ip = meta.get('is_own_public_ip', False)
+        log.connection_ip = log.cloudflare_ip if (log.is_cloudflare and log.cloudflare_ip) else log.client_ip
         log.is_real_ip_local = _is_private(log.real_client_ip)
         log.is_local_ip = log.is_real_ip_local or (not log.is_cloudflare and _is_private(log.client_ip))
         if log.is_local_ip:
             log.country_code = 'LAN'
             log.country_name = 'Red Interna (LAN)'
-        log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip))
+        elif log.is_own_public_ip:
+            log.country_code = 'PY'
+            log.country_name = 'Paraguay (WAN Propia)'
+        elif meta.get('cf_country'):
+            cc, cname, _, _, _ = resolve_geoip(log.real_client_ip or log.client_ip, cf_country=meta['cf_country'])
+            log.country_code = cc
+            log.country_name = cname
+        log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip and not log.is_own_public_ip))
     audit_records = AuditTrail.objects.select_related('user')[:50]
     recent_events = list(SecurityEvent.objects.select_related('rule', 'node')[:50])
     for ev in recent_events:

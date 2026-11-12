@@ -7,7 +7,14 @@ from datetime import timedelta
 from apps.nodes.models import ProxyNode
 from apps.mitigation.models import BanCandidate, ActiveBan
 from apps.detection.models import TrafficLog, SecurityEvent
-from apps.detection.engine import is_cloudflare_ip, resolve_geoip, extract_log_ip_meta, get_cloudflare_sync_status, is_private_local_ip
+from apps.detection.engine import (
+    is_cloudflare_ip,
+    resolve_geoip,
+    extract_log_ip_meta,
+    get_cloudflare_sync_status,
+    is_private_local_ip,
+    is_own_public_wan_ip,
+)
 
 def _enrich_candidate_cf(c):
     ev = c.trigger_event
@@ -76,13 +83,20 @@ def dashboard_view(request):
         log.is_threat = (log.client_ip in threat_ips) or (log.status_code >= 400)
         log.is_cloudflare = meta['is_cloudflare']
         log.cloudflare_ip = meta['cloudflare_ip']
-        log.real_client_ip = meta['real_client_ip']
+        log.connection_ip = meta['cloudflare_ip'] if (meta['is_cloudflare'] and meta['cloudflare_ip']) else log.client_ip
+        log.real_client_ip = meta['real_client_ip'] or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
+        eff_target_ip = log.real_client_ip or log.client_ip
+        log.is_own_public_ip = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(eff_target_ip)
         log.is_real_ip_local = _is_private(log.real_client_ip)
         log.is_local_ip = log.is_real_ip_local or (not log.is_cloudflare and _is_private(log.client_ip))
         if log.is_local_ip:
             log.country_code = 'LAN'
             log.country_name = 'Red Interna (LAN)'
-        log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip and bool(log.real_client_ip or log.client_ip)))
+        elif log.is_own_public_ip or meta.get('cf_country'):
+            re_geo = resolve_geoip(eff_target_ip, cf_country=meta.get('cf_country', ''))
+            log.country_code = re_geo['country_code']
+            log.country_name = re_geo['country_name']
+        log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip and not log.is_own_public_ip and bool(eff_target_ip)))
 
     total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
     threats_today = SecurityEvent.objects.filter(created_at__gte=today_start).count()
@@ -218,25 +232,35 @@ def api_live_stats(request):
             lat, lon = re_geo['latitude'], re_geo['longitude']
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
         eff_ip = meta['real_client_ip'] if (not meta['is_cloudflare'] and meta['real_client_ip']) else log.client_ip
-        is_loc = meta.get('is_local_ip', False) or is_private_local_ip(eff_ip if not meta['is_cloudflare'] else meta['real_client_ip'])
+        conn_ip = meta['cloudflare_ip'] if (meta['is_cloudflare'] and meta['cloudflare_ip']) else eff_ip
+        real_ip_val = meta['real_client_ip'] or (eff_ip if not is_cloudflare_ip(eff_ip) else '')
+        is_loc = meta.get('is_local_ip', False) or is_private_local_ip(eff_ip if not meta['is_cloudflare'] else real_ip_val)
+        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(real_ip_val or eff_ip)
+        c_code = 'LAN' if is_loc else log.country_code
+        c_name = 'Red Interna (LAN)' if is_loc else (log.country_name or log.country_code or 'Remoto')
+        if not is_loc and (is_own_pub or meta.get('cf_country')):
+            re_geo = resolve_geoip(real_ip_val or eff_ip, cf_country=meta.get('cf_country', ''))
+            c_code = re_geo['country_code']
+            c_name = re_geo['country_name']
         recent_logs_data.append({
             'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
-            'client_ip': eff_ip,
+            'client_ip': conn_ip,
             'method': log.http_method,
             'uri': log.uri,
             'status_code': log.status_code,
-            'country_code': 'LAN' if is_loc else log.country_code,
-            'country_name': 'Red Interna (LAN)' if is_loc else (log.country_name or log.country_code or 'Remoto'),
+            'country_code': c_code,
+            'country_name': c_name,
             'latitude': lat,
             'longitude': lon,
             'node': log.node.name if log.node else 'Direct',
             'is_threat': (eff_ip in threat_ips) or (log.status_code >= 400),
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
-            'real_client_ip': meta['real_client_ip'],
+            'real_client_ip': real_ip_val,
             'is_local_ip': is_loc,
-            'is_direct_public_ip': meta.get('is_direct_public_ip', (not meta['is_cloudflare'] and not is_loc)),
+            'is_own_public_ip': is_own_pub,
+            'is_direct_public_ip': meta.get('is_direct_public_ip', (not meta['is_cloudflare'] and not is_loc and not is_own_pub)),
             'user_agent': log.user_agent or '',
         })
 

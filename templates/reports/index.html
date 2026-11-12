@@ -75,21 +75,25 @@
             <td style="color: var(--text-dim);">{{ log.created_at|date:"Y-m-d H:i:s" }}</td>
             <td>
               <div style="display: flex; align-items: center; gap: 0.35rem; flex-wrap: wrap;">
-                <code>{{ log.client_ip }}</code>
+                <code>{{ log.connection_ip|default:log.client_ip }}</code>
                 {% if log.is_cloudflare %}
                   <span style="background: rgba(246, 130, 31, 0.22); color: #f6821f; border: 1px solid rgba(246, 130, 31, 0.6); font-size: 0.62rem; font-weight: 800; padding: 1px 4px; border-radius: 3px;" title="Nodo Cloudflare: {{ log.cloudflare_ip|default:log.client_ip }}">☁️ CF</span>
+                {% elif log.is_local_ip %}
+                  <span style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.45); font-size: 0.60rem; font-weight: 800; padding: 1px 4px; border-radius: 3px;">🏠 LAN</span>
                 {% endif %}
               </div>
             </td>
             <td>
-              {% if log.real_client_ip and not log.is_real_ip_local %}
+              {% if log.is_own_public_ip %}
+                <code style="background: rgba(168, 85, 247, 0.18); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.55); font-size: 0.74rem; font-weight: 800; padding: 1px 6px; border-radius: 4px;" title="IP Pública propia de nuestra infraestructura ({{ log.real_client_ip|default:log.client_ip }}) — Protegida contra bloqueo">🛡️ WAN PROPIA: {{ log.real_client_ip|default:log.client_ip }}{% if 'Zabbix' in log.user_agent %} (Zabbix){% endif %}</code>
+              {% elif log.real_client_ip and not log.is_real_ip_local %}
                 <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.74rem; font-weight: 800; padding: 1px 6px; border-radius: 4px;">🎯 {{ log.real_client_ip }}</code>
               {% elif log.real_client_ip and log.is_real_ip_local %}
-                <code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;" title="IP Local Privada / Balanceador">🏢 {{ log.real_client_ip }}</code>
+                <code style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.45); font-size: 0.74rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;" title="IP Local Privada (LAN)">🏠 {{ log.real_client_ip }}</code>
               {% elif not log.is_cloudflare and not log.is_local_ip %}
-                <code style="color: var(--neon-emerald); font-size: 0.74rem;">{{ log.client_ip }}</code>
+                <code style="color: var(--neon-emerald); font-size: 0.74rem;">🎯 {{ log.client_ip }}</code>
               {% elif log.is_local_ip %}
-                <code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;" title="IP Local Privada / Balanceador">🏢 {{ log.client_ip }}</code>
+                <code style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.45); font-size: 0.74rem; font-weight: 700; padding: 1px 6px; border-radius: 4px;" title="IP Local Privada (LAN)">🏠 {{ log.client_ip }}</code>
               {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent %}
                 <span style="color: #f6821f; font-size: 0.7rem;">☁️ Sonda Healthcheck</span>
               {% elif log.http_method == 'HTTPS' %}

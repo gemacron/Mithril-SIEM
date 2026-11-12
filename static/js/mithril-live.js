@@ -78,7 +78,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function isEventProbe(event) {
     if (!event) return false;
     const ua = String(event.user_agent || '');
-    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('TLS SNI')) return true;
+    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('Zabbix') || ua.includes('UptimeRobot') || ua.includes('TLS SNI')) return true;
     if (event.method === 'HTTPS' || event.http_method === 'HTTPS') return true;
     if (!event.real_client_ip && event.is_cloudflare) return true;
     return false;
@@ -98,15 +98,19 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function realClientIpCellHtml(event) {
+    const ua = String(event.user_agent || '');
+    const targetIp = event.real_client_ip || event.client_ip || '-';
+    if (event.is_own_public_ip || targetIp === '190.128.226.122') {
+      const suffix = ua.includes('Zabbix') ? ' (Zabbix)' : '';
+      return `<code style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.55); font-size: 0.73rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Pública WAN propia de tu infraestructura (Inmune a bloqueos)">🛡️ WAN PROPIA: ${targetIp}${suffix}</code>`;
+    }
     if (event.is_cloudflare && event.real_client_ip && !isPrivateLocalIp(event.real_client_ip)) {
-      return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 ${event.real_client_ip}</code>`;
+      return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare (Objetivo de evaluación)">🎯 ${event.real_client_ip}</code>`;
     }
     const isDirectPub = Boolean(event.is_direct_public_ip) || (!event.is_cloudflare && !isPrivateLocalIp(event.client_ip) && !isPrivateLocalIp(event.real_client_ip || ''));
     if (isDirectPub) {
-      const targetIp = event.real_client_ip || event.client_ip || '-';
       return `<code style="background: rgba(239, 68, 68, 0.16); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.55); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="Petición directa a la IP Pública del servidor (Bypass de Cloudflare / Origen)">🎯 DIRECTO A IP: ${targetIp}</code>`;
     }
-    const ua = String(event.user_agent || '');
     if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('Zabbix') || ua.includes('UptimeRobot')) {
       return `<span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por monitor de salud Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>`;
     }
@@ -117,10 +121,10 @@ document.addEventListener('DOMContentLoaded', () => {
       return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición recibida vía nodo Cloudflare">☁️ Conexión Edge</span>`;
     }
     if (event.real_client_ip && isPrivateLocalIp(event.real_client_ip)) {
-      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏢 ${event.real_client_ip}</code>`;
+      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏠 RED LOCAL: ${event.real_client_ip}</code>`;
     }
     if (isPrivateLocalIp(event.client_ip)) {
-      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏢 ${event.client_ip || '-'}</code>`;
+      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏠 RED LOCAL: ${event.client_ip || '-'}</code>`;
     }
     return `<code style="color: var(--neon-emerald); font-size: 0.75rem;">${event.client_ip || '-'}</code>`;
   }

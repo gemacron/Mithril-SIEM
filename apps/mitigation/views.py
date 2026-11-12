@@ -9,7 +9,14 @@ from django.views.decorators.csrf import csrf_exempt
 from .models import BanCandidate, ActiveBan, IpReputation, NodeBanSync
 from apps.nodes.models import ProxyNode
 from apps.detection.models import SecurityEvent, TrafficLog
-from apps.detection.engine import is_cloudflare_ip, extract_log_ip_meta, is_private_local_ip
+from apps.detection.engine import (
+    is_cloudflare_ip,
+    extract_log_ip_meta,
+    is_private_local_ip,
+    is_own_infrastructure_ip,
+    is_own_public_wan_ip,
+    resolve_geoip,
+)
 from apps.reports.models import AuditTrail
 from apps.notifications.services import send_telegram_alert
 
@@ -94,6 +101,14 @@ def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_
         raw_lines.append(f"# --- PAYLOAD DECODIFICADO (ANTI-EVASIÓN) ---")
         raw_lines.append(decoded_path)
 
+    cf_country_hdr = ip_meta.get('cf_country', '')
+    if cf_country_hdr or not country_code or country_code in ('FR', 'JP', 'RU', 'CN', 'DE', 'GB', 'ES', 'NL', 'US'):
+        re_geo = resolve_geoip(ip_meta['real_client_ip'] or ip_str, cf_country=cf_country_hdr)
+        if cf_country_hdr or is_own_public_wan_ip(ip_meta['real_client_ip'] or ip_str) or is_private_local_ip(ip_meta['real_client_ip'] or ip_str):
+            country_code = re_geo['country_code']
+            country_name = re_geo['country_name']
+            city = re_geo['city']
+
     return {
         'id': req_id,
         'timestamp': ts_str,
@@ -101,8 +116,11 @@ def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_
         'is_cloudflare': ip_meta['is_cloudflare'],
         'cloudflare_ip': ip_meta['cloudflare_ip'],
         'real_client_ip': ip_meta['real_client_ip'],
+        'is_local_ip': ip_meta.get('is_local_ip', False),
+        'is_own_public_ip': ip_meta.get('is_own_public_ip', False),
+        'is_direct_public_ip': ip_meta.get('is_direct_public_ip', False),
         'cf_ray': ip_meta.get('cf_ray', ''),
-        'cf_country': ip_meta.get('cf_country', ''),
+        'cf_country': cf_country_hdr,
         'node': node_str,
         'http_method': method,
         'host': host_header or node_str,
@@ -138,8 +156,10 @@ def _resolve_candidate_cf_info(c):
     c.is_cloudflare = meta['is_cloudflare']
     c.cloudflare_ip = meta['cloudflare_ip']
     c.real_client_ip = meta['real_client_ip']
-    c.is_local_ip = meta.get('is_local_ip', False) or is_private_local_ip(c.real_client_ip or c.client_ip)
-    c.is_direct_public_ip = meta.get('is_direct_public_ip', (not c.is_cloudflare and not c.is_local_ip))
+    eff_ip = c.real_client_ip or c.client_ip
+    c.is_local_ip = meta.get('is_local_ip', False) or is_private_local_ip(eff_ip)
+    c.is_own_public_ip = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(eff_ip)
+    c.is_direct_public_ip = meta.get('is_direct_public_ip', (not c.is_cloudflare and not c.is_local_ip and not c.is_own_public_ip))
     c.cf_ray = meta.get('cf_ray', '')
     return meta
 
@@ -258,7 +278,7 @@ def approve_candidate_view(request, candidate_id):
     custom_target_ip = request.POST.get('target_ip', '').strip()
     ip_str = custom_target_ip if custom_target_ip else candidate.client_ip
 
-    # REGLA CRÍTICA DE SEGURIDAD: Inmunidad total para IPs de Cloudflare
+    # REGLA CRÍTICA DE SEGURIDAD 1: Inmunidad total para IPs de Cloudflare
     if is_cloudflare_ip(ip_str):
         cand_meta = _resolve_candidate_cf_info(candidate)
         real_ip = cand_meta.get('real_client_ip')
@@ -270,6 +290,14 @@ def approve_candidate_view(request, candidate_id):
                 return JsonResponse({'status': 'error', 'message': msg}, status=400)
             messages.error(request, msg)
             return redirect('mitigation:candidates')
+
+    # REGLA CRÍTICA DE SEGURIDAD 2: Inmunidad total para la IP Pública WAN y Servidores de la propia infraestructura
+    if is_own_infrastructure_ip(ip_str):
+        msg = f"La IP {ip_str} pertenece a su propia infraestructura (WAN / Balanceador / SIEM) y tiene inmunidad total contra bloqueos."
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return JsonResponse({'status': 'error', 'message': msg}, status=400)
+        messages.error(request, msg)
+        return redirect('mitigation:candidates')
 
     duration_hours = int(request.POST.get('duration_hours', 24))
 
@@ -423,8 +451,8 @@ def api_node_sync_bans(request):
     # Expirar automáticamente bloqueos vencidos antes de enviar la lista al bouncer
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=timezone.now()).update(is_active=False)
     active_bans = ActiveBan.objects.filter(is_active=True)
-    # Filtro de seguridad absoluto: bajo ninguna circunstancia sincronizar una IP de Cloudflare
-    ban_ips = [b.client_ip for b in active_bans if not is_cloudflare_ip(b.client_ip)]
+    # Filtro de seguridad absoluto: bajo ninguna circunstancia sincronizar una IP de Cloudflare ni de la propia infraestructura
+    ban_ips = [b.client_ip for b in active_bans if not is_cloudflare_ip(b.client_ip) and not is_own_infrastructure_ip(b.client_ip)]
 
     # Confirmar sincronización
     NodeBanSync.objects.filter(node=node, ban__in=active_bans).update(

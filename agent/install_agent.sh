@@ -143,20 +143,33 @@ ignoreregex =
 EOF
 
 cat <<'EOF' > /etc/fail2ban/action.d/mithril-smart.conf
-# Mithril SIEM - Smart Hybrid Action (Universal: Kernel ipset + Cloudflare Edge API opcional)
+# Mithril SIEM - Smart Hybrid Action (Universal: Kernel ipset L3 + Kernel L7 Real-IP Header Match + Cloudflare API opcional)
 [Definition]
 actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
+              ipset create mithril_f2b6 hash:ip family inet6 timeout 0 -exist 2>/dev/null || true
               iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+              ip6tables -C INPUT -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || ip6tables -I INPUT 1 -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || true
+              iptables -N MITHRIL_REALIP 2>/dev/null || true
+              iptables -C INPUT -p tcp -m multiport --dports 80,443,8080,8443 -j MITHRIL_REALIP 2>/dev/null || iptables -I INPUT 2 -p tcp -m multiport --dports 80,443,8080,8443 -j MITHRIL_REALIP 2>/dev/null || true
 
 actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+              ip6tables -D INPUT -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || true
+              iptables -D INPUT -p tcp -m multiport --dports 80,443,8080,8443 -j MITHRIL_REALIP 2>/dev/null || true
+              iptables -F MITHRIL_REALIP 2>/dev/null || true
+              iptables -X MITHRIL_REALIP 2>/dev/null || true
               ipset destroy mithril_f2b 2>/dev/null || true
+              ipset destroy mithril_f2b6 2>/dev/null || true
 
 actioncheck = ipset list mithril_f2b >/dev/null 2>&1
 
-actionban   = ipset add mithril_f2b <ip> -exist
+actionban   = if echo "<ip>" | grep -q ":"; then ipset add mithril_f2b6 <ip> -exist 2>/dev/null || true; else ipset add mithril_f2b <ip> -exist 2>/dev/null || true; fi
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
               if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\"mode\":\"block\",\"configuration\":{\"target\":\"ip\",\"value\":\"<ip>\"},\"notes\":\"Mithril-SIEM-Fail2ban\"}" >/dev/null 2>&1 || true; fi; fi
 
-actionunban = ipset del mithril_f2b <ip> -exist
+actionunban = if echo "<ip>" | grep -q ":"; then ipset del mithril_f2b6 <ip> -exist 2>/dev/null || true; else ipset del mithril_f2b <ip> -exist 2>/dev/null || true; fi
+              iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
+              iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
               if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
 
 [Init]

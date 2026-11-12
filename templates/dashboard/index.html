@@ -132,7 +132,7 @@
           </thead>
           <tbody id="liveFeedTableBody">
             {% for log in recent_logs %}
-            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-is-direct="{% if log.is_direct_public_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.client_ip }}" data-is-probe="{% if 'Cloudflare-Traffic-Manager' in log.user_agent or 'TLS SNI' in log.user_agent or log.http_method == 'HTTPS' or not log.real_client_ip and log.is_cloudflare %}true{% else %}false{% endif %}" onclick="openLogInspectModal({{ log.id }})" style="cursor: pointer;" title="Haz clic para verificar los detalles técnicos de esta petición">
+            <tr data-log-id="{{ log.id }}" data-is-local="{% if log.is_local_ip %}true{% else %}false{% endif %}" data-is-own-wan="{% if log.is_own_public_ip %}true{% else %}false{% endif %}" data-is-direct="{% if log.is_direct_public_ip %}true{% else %}false{% endif %}" data-real-ip="{{ log.real_client_ip }}" data-client-ip="{{ log.connection_ip|default:log.client_ip }}" data-is-probe="{% if 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent or 'UptimeRobot' in log.user_agent or 'TLS SNI' in log.user_agent or log.http_method == 'HTTPS' or not log.real_client_ip and log.is_cloudflare %}true{% else %}false{% endif %}" onclick="openLogInspectModal({{ log.id }})" style="cursor: pointer;" title="Haz clic para verificar los detalles técnicos de esta petición">
               <td>
                 {% if log.is_threat %}
                 <span class="badge critical">AMENAZA</span>
@@ -142,14 +142,16 @@
               </td>
               <td><strong>{{ log.created_at|date:"H:i:s" }}</strong></td>
               <td>
-                <code>{{ log.client_ip }}</code>
+                <code>{{ log.connection_ip|default:log.client_ip }}</code>
                 {% if log.is_cloudflare %}
-                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="Nodo Cloudflare: {{ log.cloudflare_ip|default:log.client_ip }}">☁️ CF</span>
+                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.62rem; font-weight: 700; padding: 0.08rem 0.35rem; border-radius: 4px; margin-left: 0.25rem; font-family: var(--font-mono);" title="Nodo Cloudflare: {{ log.cloudflare_ip|default:log.connection_ip }}">☁️ CF</span>
                 {% endif %}
               </td>
               <td>
-                {% if log.real_client_ip and not log.is_real_ip_local and log.is_cloudflare %}
-                  <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare">🎯 {{ log.real_client_ip }}</code>
+                {% if log.is_own_public_ip %}
+                  <code style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.55); font-size: 0.73rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Pública WAN propia de tu infraestructura (Inmune a bloqueos)">🛡️ WAN PROPIA: {{ log.real_client_ip|default:log.client_ip }}{% if 'Zabbix' in log.user_agent %} (Zabbix){% endif %}</code>
+                {% elif log.real_client_ip and not log.is_real_ip_local and log.is_cloudflare %}
+                  <code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare (Objetivo de evaluación)">🎯 {{ log.real_client_ip }}</code>
                 {% elif log.is_direct_public_ip %}
                   <code style="background: rgba(239, 68, 68, 0.16); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.55); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="Petición directa a la IP Pública del servidor (Bypass de Cloudflare / Origen)">🎯 DIRECTO A IP: {{ log.real_client_ip|default:log.client_ip }}</code>
                 {% elif 'Cloudflare-Traffic-Manager' in log.user_agent or 'Zabbix' in log.user_agent or 'UptimeRobot' in log.user_agent %}
@@ -159,9 +161,9 @@
                 {% elif log.is_cloudflare %}
                   <span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición recibida vía nodo Cloudflare">☁️ Conexión Edge</span>
                 {% elif log.real_client_ip and log.is_real_ip_local %}
-                  <code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏢 {{ log.real_client_ip }}</code>
+                  <code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏠 RED LOCAL: {{ log.real_client_ip }}</code>
                 {% elif log.is_local_ip %}
-                  <code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏢 {{ log.client_ip }}</code>
+                  <code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏠 RED LOCAL: {{ log.client_ip }}</code>
                 {% else %}
                   <code style="color: var(--neon-emerald); font-size: 0.75rem;">{{ log.client_ip }}</code>
                 {% endif %}
@@ -302,6 +304,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{% static 'js/mithril-map.js' %}?v=20261109d"></script>
-<script src="{% static 'js/mithril-live.js' %}?v=20261109d"></script>
+<script src="{% static 'js/mithril-map.js' %}?v=20261112e"></script>
+<script src="{% static 'js/mithril-live.js' %}?v=20261112e"></script>
 {% endblock %}
