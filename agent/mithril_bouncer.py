@@ -317,7 +317,10 @@ def apply_blocklist(banned_ips):
         except Exception as e:
             print(f"⚠️ [NGINX] Error escribiendo lista de bloqueo en Nginx: {e}")
 
-HTTP_METHODS_BYTES = (b"GET ", b"POST ", b"PUT ", b"DELETE ", b"HEAD ", b"OPTIONS ", b"PATCH ")
+HTTP_METHODS_BYTES = (
+    b"GET ", b"POST ", b"PUT ", b"DELETE ", b"HEAD ", b"OPTIONS ", b"PATCH ",
+    b"PROPFIND ", b"PROPPATCH ", b"MKCOL ", b"COPY ", b"MOVE ", b"LOCK ", b"UNLOCK ", b"REPORT "
+)
 
 _CF_NETS = [
     ipaddress.ip_network(c) for c in (
@@ -343,6 +346,27 @@ def is_cf_ip(ip_s):
         _CF_CACHE.clear()
     _CF_CACHE[ip_s] = res
     return res
+
+def get_own_interface_ips():
+    """Obtiene únicamente las IPs asignadas a las interfaces de este mismo servidor proxy"""
+    own = {"127.0.0.1", "::1"}
+    try:
+        res = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, check=False)
+        if res.returncode == 0 and res.stdout:
+            for m in re.finditer(r"inet\s+(\d+\.\d+\.\d+\.\d+)", res.stdout):
+                own.add(m.group(1))
+    except Exception:
+        pass
+    return own
+
+_OWN_HOST_IPS = get_own_interface_ips()
+
+def is_own_balancer_ip(ip_s):
+    """True solo si la IP es loopback o pertenece a la interfaz de red propia de este servidor"""
+    if not ip_s:
+        return True
+    s = ip_s.strip()
+    return s in _OWN_HOST_IPS or s.startswith("127.")
 
 def is_local_balancer_ip(ip_s):
     return ip_s.startswith(("127.", "10.", "192.168.", "172.16.", "172.17.", "172.18.", "172.19.", "172.2", "172.30.", "172.31."))
@@ -408,7 +432,6 @@ def kernel_network_mirror_worker():
 
     pending_http = {}  # (src_ip, src_port, dst_ip, dst_port) -> dict
     recent_client_activity = {}  # client_ip -> timestamp
-    last_external_edge = {"ip": "", "ts": 0.0}
     last_flush = time.time()
 
     def flush_expired_pending(now_ts):
@@ -524,41 +547,35 @@ def kernel_network_mirror_worker():
                 cf_ray = headers_map.get("cf-ray", "").strip()
                 cf_country = headers_map.get("cf-ipcountry", "").strip()
 
-                # Separar con precisión matemática cuál IP es el nodo Cloudflare y cuál es la IP Real del Cliente
+                # Separar con precisión determinista por petición (CERO cruce de IPs entre conexiones):
+                # 1. Identificar si ESTA petición específica pasó por un nodo de Cloudflare
                 cf_node_ip = ""
+                for cand in [x_real_ip, *xff_parts, src_ip]:
+                    if cand and is_cf_ip(cand):
+                        cf_node_ip = cand
+                        break
+
+                is_via_cloudflare = bool(cf_node_ip or cf_connecting_ip or cf_ray or cf_country)
+
+                # 2. Extraer la IP Real del Cliente (externa detrás de Cloudflare, directa a IP pública, o LAN local)
                 real_origin_ip = ""
-                for cand in [cf_connecting_ip, *xff_parts, x_real_ip, src_ip]:
-                    if not cand:
-                        continue
-                    if is_cf_ip(cand):
-                        if not cf_node_ip:
-                            cf_node_ip = cand
-                    elif not is_local_balancer_ip(cand):
-                        if not real_origin_ip:
+                if is_via_cloudflare:
+                    for cand in [cf_connecting_ip, *xff_parts]:
+                        if cand and not is_cf_ip(cand) and not is_own_balancer_ip(cand):
                             real_origin_ip = cand
-
-                if not cf_node_ip and (now - last_external_edge["ts"]) <= 2.5 and is_cf_ip(last_external_edge["ip"]):
-                    cf_node_ip = last_external_edge["ip"]
-
-                is_via_cloudflare = bool(cf_node_ip or is_cf_ip(src_ip) or cf_ray or cf_country)
-
-                # Si NO vino de Cloudflare y tampoco hubo IP pública externa (tráfico directo por LAN),
-                # registrar la IP local del equipo emisor de la red interna
-                if not is_via_cloudflare and not real_origin_ip:
-                    for cand in [cf_connecting_ip, *xff_parts, x_real_ip, src_ip]:
-                        if cand and cand not in ("127.0.0.1", "::1") and not is_cf_ip(cand):
+                            break
+                else:
+                    # Tráfico directo (LAN local ej. 192.168.200.226 o acceso directo a IP pública sin Cloudflare)
+                    for cand in [x_real_ip, *xff_parts, src_ip]:
+                        if cand and not is_cf_ip(cand) and not is_own_balancer_ip(cand):
                             real_origin_ip = cand
                             break
 
-                edge_ip = cf_node_ip or (src_ip if is_cf_ip(src_ip) else (xff_parts[-1] if xff_parts else src_ip))
-                real_ip = real_origin_ip or (cf_connecting_ip if not is_local_balancer_ip(cf_connecting_ip) else "")
+                edge_ip = cf_node_ip if is_via_cloudflare else (real_origin_ip or src_ip)
+                real_ip = real_origin_ip
 
-                if not is_local_balancer_ip(src_ip):
-                    last_external_edge["ip"] = src_ip
-                    last_external_edge["ts"] = now
-
-                # Ignorar peticiones desde este mismo servidor cuando Nginx ya recibió el paquete directo
-                if (real_ip or edge_ip) in ("127.0.0.1", "::1") and any(p in full_uri for p in ("/stub_status", "/nginx_status", "/metrics")):
+                # Ignorar peticiones internas de chequeo de estado de este mismo servidor
+                if (real_ip or edge_ip) in _OWN_HOST_IPS and any(p in full_uri for p in ("/stub_status", "/nginx_status", "/metrics")):
                     continue
 
                 host_hdr = headers_map.get("host", "")
@@ -568,7 +585,7 @@ def kernel_network_mirror_worker():
                     uri, query_params = full_uri, ""
 
                 display_uri = f"[{host_hdr}] {uri}" if host_hdr and not uri.startswith("[") else uri
-                primary_ip = cf_node_ip or edge_ip or real_ip or src_ip
+                primary_ip = (real_ip or cf_node_ip or src_ip) if not is_via_cloudflare else (cf_node_ip or real_ip or src_ip)
                 recent_client_activity[primary_ip] = now
                 if real_ip:
                     recent_client_activity[real_ip] = now
@@ -580,17 +597,17 @@ def kernel_network_mirror_worker():
                     "x_real_ip": x_real_ip,
                     "cf_ray": cf_ray,
                     "cf_ipcountry": cf_country,
-                    "cloudflare_ip": cf_node_ip,
-                    "real_client_ip": real_ip if real_ip != primary_ip else "",
+                    "cloudflare_ip": cf_node_ip if is_via_cloudflare else "",
+                    "real_client_ip": real_ip,
                     "edge_ip": edge_ip,
                     "raw_src_ip": src_ip,
                 }
 
                 pending_http[(src_ip, src_port, dst_ip, dst_port)] = {
                     "ts": now,
-                    "client_ip": primary_ip,
-                    "real_client_ip": real_ip if real_ip != primary_ip else "",
-                    "cloudflare_ip": cf_node_ip,
+                    "client_ip": real_ip or primary_ip,
+                    "real_client_ip": real_ip,
+                    "cloudflare_ip": cf_node_ip if is_via_cloudflare else "",
                     "http_method": method,
                     "uri": display_uri,
                     "query_params": query_params,
@@ -627,9 +644,6 @@ def kernel_network_mirror_worker():
 
             # 3. Handshake TLS ClientHello en puerto 443 (para sitios HTTPS estáticos o sin proxy_pass HTTP)
             elif dst_port == 443 and payload[0] == 0x16:
-                if not is_local_balancer_ip(src_ip):
-                    last_external_edge["ip"] = src_ip
-                    last_external_edge["ts"] = now
                 sni = extract_tls_sni(payload)
                 if sni and (now - recent_client_activity.get(src_ip, 0)) > 2.5:
                     recent_client_activity[src_ip] = now

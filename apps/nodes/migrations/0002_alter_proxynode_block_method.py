@@ -30,3 +30,4 @@ class Migration(migrations.Migration):
         ),
         migrations.RunPython(set_default_fail2ban, migrations.RunPython.noop),
     ]
+

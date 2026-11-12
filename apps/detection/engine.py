@@ -399,33 +399,51 @@ def resolve_cloudflare_and_real_ip(data):
 
     x_real_ip = str(headers.get('x_real_ip') or headers.get('x-real-ip') or data.get('x_real_ip') or '').strip()
 
+    # Verificar si las cabeceras HTTP reales del proxy (X-Real-IP / X-Forwarded-For) demuestran
+    # que el cliente conectó directamente (por LAN local ej. 192.168.200.226 o directo a IP pública)
+    # sin pasar por Cloudflare (sin CF-Ray, sin CF-Connecting-IP y sin IPs de Cloudflare en X-Real-IP/XFF).
+    header_peer_ips = [ip for ip in ([x_real_ip] + xff_ips) if _is_valid_ip(ip)]
+    has_direct_non_cf_peer = (
+        bool(header_peer_ips)
+        and not cf_header_ip
+        and not cf_ray
+        and not cf_country
+        and all(not is_cloudflare_ip(ip) for ip in header_peer_ips)
+    )
+
     # Detección de si la conexión interviene Cloudflare Edge
-    is_cf_node = is_cloudflare_ip(raw_ip)
-    is_cf = bool(is_cf_node or cf_ray or cf_country or (cf_header_ip and _is_valid_ip(cf_header_ip)))
-    cf_node_ip = raw_ip if is_cf_node else (str(headers.get('cloudflare_ip') or data.get('cloudflare_ip') or '') if is_cf else '')
+    if has_direct_non_cf_peer:
+        is_cf_node = False
+        is_cf = False
+        cf_node_ip = ''
+    else:
+        is_cf_node = is_cloudflare_ip(raw_ip) or any(is_cloudflare_ip(ip) for ip in header_peer_ips)
+        is_cf = bool(is_cf_node or cf_ray or cf_country or (cf_header_ip and _is_valid_ip(cf_header_ip)))
+        cf_node_ip = (
+            raw_ip if is_cloudflare_ip(raw_ip)
+            else next((ip for ip in header_peer_ips if is_cloudflare_ip(ip)), str(headers.get('cloudflare_ip') or data.get('cloudflare_ip') or '') if is_cf else '')
+        )
 
     real_client_ip = ''
 
     if is_cf:
         # Petición a través de Cloudflare:
         # El cliente real DEBE venir de CF-Connecting-IP, True-Client-IP o del cliente original en X-Forwarded-For.
-        if _is_valid_ip(cf_header_ip) and not is_cloudflare_ip(cf_header_ip) and not is_private_local_ip(cf_header_ip):
+        if _is_valid_ip(cf_header_ip) and not is_cloudflare_ip(cf_header_ip):
             real_client_ip = cf_header_ip
         else:
-            # Buscar en X-Forwarded-For la IP pública que no sea de Cloudflare ni local
+            # Buscar en X-Forwarded-For la IP del cliente que no sea de Cloudflare
             for cand in xff_ips:
-                if not is_cloudflare_ip(cand) and not is_private_local_ip(cand):
+                if not is_cloudflare_ip(cand):
                     real_client_ip = cand
                     break
 
         # Si NO vino ninguna cabecera de cliente externa:
         # ES UNA SONDA DE SALUD (HEALTHCHECK) INTERNA DE CLOUDFLARE O UN RECURSO INTERNO DE EDGE.
-        # NUNCA asignar IPs de otros clientes ni la IP local del balanceador.
         final_real_ip = real_client_ip
-        is_local = False
+        is_local = is_private_local_ip(final_real_ip) if final_real_ip else False
     else:
-        # Petición directa que no pasó por Cloudflare (ej. LAN interna o acceso IP directo):
-        # 1. Comprobar X-Forwarded-For / X-Real-IP
+        # Petición directa que no pasó por Cloudflare (ej. LAN interna 192.168.200.226 o acceso directo a IP pública):
         direct_cand = ''
         for cand in [x_real_ip, *xff_ips]:
             if _is_valid_ip(cand) and not is_cloudflare_ip(cand):
@@ -460,6 +478,24 @@ def extract_log_ip_meta(ip_str, headers=None):
     nested_hdrs = hdrs.get('headers', {}) if isinstance(hdrs.get('headers'), dict) else {}
     merged = {**nested_hdrs, **hdrs}
 
+    # Verificar si una fila histórica tenía X-Real-IP directo (ej. 192.168.200.226) sin cabeceras reales de Cloudflare
+    x_real = str(merged.get('x_real_ip') or merged.get('x-real-ip') or '').strip()
+    cf_conn = str(merged.get('cf_connecting_ip') or merged.get('cf-connecting-ip') or '').strip()
+    cf_ray_val = str(merged.get('cf_ray') or merged.get('cf-ray') or '').strip()
+    cf_country_val = str(merged.get('cf_country') or merged.get('cf_ipcountry') or '').strip()
+
+    if _is_valid_ip(x_real) and not is_cloudflare_ip(x_real) and not cf_conn and not cf_ray_val and not cf_country_val:
+        is_loc = is_private_local_ip(x_real)
+        return {
+            'is_cloudflare': False,
+            'cloudflare_ip': '',
+            'real_client_ip': x_real,
+            'is_local_ip': is_loc,
+            'is_direct_public_ip': not is_loc,
+            'cf_ray': '',
+            'cf_country': '',
+        }
+
     # Si ya se procesó y almacenó previamente en raw_headers, retornar directamente
     stored_real = merged.get('real_client_ip') or ''
     stored_cf = merged.get('cloudflare_ip') or ''
@@ -478,8 +514,8 @@ def extract_log_ip_meta(ip_str, headers=None):
             'real_client_ip': stored_real,
             'is_local_ip': is_loc,
             'is_direct_public_ip': bool(is_direct_val),
-            'cf_ray': str(merged.get('cf_ray') or ''),
-            'cf_country': str(merged.get('cf_country') or merged.get('cf_ipcountry') or ''),
+            'cf_ray': cf_ray_val,
+            'cf_country': cf_country_val,
         }
 
     merged['client_ip'] = ip_str
@@ -595,20 +631,26 @@ def process_incoming_log(data, node=None):
     cf_node_ip = ip_meta['cloudflare_ip'] or (raw_conn_ip if is_cf else '')
     real_client_ip = ip_meta['real_client_ip']
 
-    # La IP real del cliente que realiza la petición (detrás de Cloudflare o directo):
-    target_client_ip = real_client_ip if (is_cf and real_client_ip) else raw_conn_ip
+    # La IP real del cliente que realiza la petición (detrás de Cloudflare, por LAN local, o directo a IP pública):
+    target_client_ip = real_client_ip if real_client_ip else raw_conn_ip
 
     geo = resolve_geoip(target_client_ip)
 
-    incoming_headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
+    incoming_headers = dict(data.get('headers', {})) if isinstance(data.get('headers'), dict) else {}
     if is_cf:
         incoming_headers['is_cloudflare'] = True
-    if cf_node_ip:
         incoming_headers['cloudflare_ip'] = cf_node_ip
+        incoming_headers['connection_ip'] = cf_node_ip or raw_conn_ip
+    else:
+        incoming_headers['is_cloudflare'] = False
+        incoming_headers['cloudflare_ip'] = ''
+        incoming_headers['edge_ip'] = target_client_ip
+        incoming_headers['connection_ip'] = target_client_ip
     if real_client_ip:
         incoming_headers['real_client_ip'] = real_client_ip
-    incoming_headers['connection_ip'] = raw_conn_ip
-    is_direct = ip_meta.get('is_direct_public_ip', False) or ((not is_cf) and not is_private_local_ip(target_client_ip))
+    is_local = ip_meta.get('is_local_ip', False) or is_private_local_ip(target_client_ip)
+    incoming_headers['is_local_ip'] = is_local
+    is_direct = ip_meta.get('is_direct_public_ip', False) or ((not is_cf) and (not is_local))
     incoming_headers['is_direct_public_ip'] = is_direct
     if ip_meta.get('cf_ray'):
         incoming_headers['cf_ray'] = ip_meta['cf_ray']

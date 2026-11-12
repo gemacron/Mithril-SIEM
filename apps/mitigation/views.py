@@ -9,7 +9,7 @@ from django.views.decorators.csrf import csrf_exempt
 from .models import BanCandidate, ActiveBan, IpReputation, NodeBanSync
 from apps.nodes.models import ProxyNode
 from apps.detection.models import SecurityEvent, TrafficLog
-from apps.detection.engine import is_cloudflare_ip, extract_log_ip_meta
+from apps.detection.engine import is_cloudflare_ip, extract_log_ip_meta, is_private_local_ip
 from apps.reports.models import AuditTrail
 from apps.notifications.services import send_telegram_alert
 
@@ -138,6 +138,8 @@ def _resolve_candidate_cf_info(c):
     c.is_cloudflare = meta['is_cloudflare']
     c.cloudflare_ip = meta['cloudflare_ip']
     c.real_client_ip = meta['real_client_ip']
+    c.is_local_ip = meta.get('is_local_ip', False) or is_private_local_ip(c.real_client_ip or c.client_ip)
+    c.is_direct_public_ip = meta.get('is_direct_public_ip', (not c.is_cloudflare and not c.is_local_ip))
     c.cf_ray = meta.get('cf_ray', '')
     return meta
 

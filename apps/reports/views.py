@@ -12,7 +12,7 @@ def reports_index_view(request):
     search_ip = request.GET.get('ip', '').strip()
     search_uri = request.GET.get('uri', '').strip()
     search_status = request.GET.get('status', '').strip()
-    hide_local = request.GET.get('hide_local', '1') == '1'
+    hide_local = request.GET.get('hide_local', '0') == '1'
 
     traffic_qs = TrafficLog.objects.select_related('node').all()
     if search_ip:
@@ -47,11 +47,17 @@ def reports_index_view(request):
     recent_traffic = list(traffic_qs[:100])
     for log in recent_traffic:
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
+        if not meta['is_cloudflare'] and meta['real_client_ip'] and log.client_ip != meta['real_client_ip']:
+            log.client_ip = meta['real_client_ip']
         log.is_cloudflare = meta['is_cloudflare']
         log.cloudflare_ip = meta['cloudflare_ip']
         log.real_client_ip = meta['real_client_ip']
         log.is_real_ip_local = _is_private(log.real_client_ip)
         log.is_local_ip = log.is_real_ip_local or (not log.is_cloudflare and _is_private(log.client_ip))
+        if log.is_local_ip:
+            log.country_code = 'LAN'
+            log.country_name = 'Red Interna (LAN)'
+        log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip))
     audit_records = AuditTrail.objects.select_related('user')[:50]
     recent_events = list(SecurityEvent.objects.select_related('rule', 'node')[:50])
     for ev in recent_events:

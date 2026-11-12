@@ -34,8 +34,12 @@
           <td>
             <div style="display: flex; align-items: center; gap: 0.45rem; flex-wrap: wrap;">
               <strong style="color: var(--text-main); font-size: 0.95rem; font-family: var(--font-mono);">{{ c.client_ip }}</strong>
-              {% if c.is_cloudflare %}
-                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono);" title="Nodo Edge de Cloudflare detectado dinámicamente ({{ c.cloudflare_ip|default:c.client_ip }})">☁️ NODO CLOUDFLARE</span>
+              {% if c.is_local_ip %}
+                <span style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.45); font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono);" title="Equipo de la Red Interna (LAN). Verifica antes de bloquear.">🏠 RED LOCAL (LAN)</span>
+              {% elif c.is_cloudflare %}
+                <span style="background: rgba(243, 128, 32, 0.18); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.55); font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono);" title="Tráfico externo proxificado por Cloudflare Edge ({{ c.cloudflare_ip|default:c.client_ip }})">☁️ VÍA CLOUDFLARE</span>
+              {% else %}
+                <span style="background: rgba(244, 63, 94, 0.18); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.55); font-size: 0.65rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono);" title="Tráfico externo directo a la IP pública del servidor (sin pasar por Cloudflare)">🎯 DIRECTO A IP PÚBLICA</span>
               {% endif %}
             </div>
             {% if c.real_client_ip %}

@@ -70,13 +70,18 @@ def dashboard_view(request):
         return False
 
     for log in recent_logs:
-        log.is_threat = (log.client_ip in threat_ips) or (log.status_code >= 400)
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
+        if not meta['is_cloudflare'] and meta['real_client_ip'] and log.client_ip != meta['real_client_ip']:
+            log.client_ip = meta['real_client_ip']
+        log.is_threat = (log.client_ip in threat_ips) or (log.status_code >= 400)
         log.is_cloudflare = meta['is_cloudflare']
         log.cloudflare_ip = meta['cloudflare_ip']
         log.real_client_ip = meta['real_client_ip']
         log.is_real_ip_local = _is_private(log.real_client_ip)
         log.is_local_ip = log.is_real_ip_local or (not log.is_cloudflare and _is_private(log.client_ip))
+        if log.is_local_ip:
+            log.country_code = 'LAN'
+            log.country_name = 'Red Interna (LAN)'
         log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip and bool(log.real_client_ip or log.client_ip)))
 
     total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
@@ -212,22 +217,26 @@ def api_live_stats(request):
             re_geo = resolve_geoip(log.client_ip)
             lat, lon = re_geo['latitude'], re_geo['longitude']
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
+        eff_ip = meta['real_client_ip'] if (not meta['is_cloudflare'] and meta['real_client_ip']) else log.client_ip
+        is_loc = meta.get('is_local_ip', False) or is_private_local_ip(eff_ip if not meta['is_cloudflare'] else meta['real_client_ip'])
         recent_logs_data.append({
             'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
-            'client_ip': log.client_ip,
+            'client_ip': eff_ip,
             'method': log.http_method,
             'uri': log.uri,
             'status_code': log.status_code,
-            'country_code': log.country_code,
-            'country_name': log.country_name or log.country_code or 'Remoto',
+            'country_code': 'LAN' if is_loc else log.country_code,
+            'country_name': 'Red Interna (LAN)' if is_loc else (log.country_name or log.country_code or 'Remoto'),
             'latitude': lat,
             'longitude': lon,
             'node': log.node.name if log.node else 'Direct',
-            'is_threat': (log.client_ip in threat_ips) or (log.status_code >= 400),
+            'is_threat': (eff_ip in threat_ips) or (log.status_code >= 400),
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': meta['real_client_ip'],
+            'is_local_ip': is_loc,
+            'is_direct_public_ip': meta.get('is_direct_public_ip', (not meta['is_cloudflare'] and not is_loc)),
             'user_agent': log.user_agent or '',
         })
 
