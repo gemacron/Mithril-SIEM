@@ -1,10 +1,12 @@
-# 🛡️ Mithril SIEM
+# 🛡️ Mithril SIEM `v2.1.0`
 
 <div align="center">
   <img src="static/img/mithril-logo.jpg" alt="Mithril SIEM" width="160" style="border-radius: 16px; border: 2px solid #00e5ff; box-shadow: 0 0 20px rgba(0,229,255,0.4);" />
-  <h3>Plataforma Táctica SIEM de Detección Heurística, Telemetría en Memoria y Mitigación de Amenazas para Nginx</h3>
-  <p>Entorno Web SOC en Modo Oscuro • Espejo de Red 100% en RAM (Cero I/O en Disco) • Mapa 2D Interactivo • Autoban & Modo Monitor • Integración Podman</p>
+  <h3>Plataforma Táctica SIEM de Detección Heurística, Telemetría en Memoria y Mitigación Universal con Fail2ban</h3>
+  <p>Entorno Web SOC en Modo Oscuro • Espejo de Red 100% en RAM (Cero I/O en Disco) • Fail2ban Smart Hybrid Action (Sin tocar Nginx) • Mapa 2D Interactivo • Integración Podman</p>
 
+  [![Version](https://img.shields.io/badge/Version-2.1.0-00e5ff)](#)
+  [![Fail2ban](https://img.shields.io/badge/Fail2ban-Smart_Hybrid_Action-10b981)](#instalación-y-configuración-de-fail2ban-en-el-agente)
   [![Podman](https://img.shields.io/badge/Podman-Ready-892CA0?logo=podman&logoColor=white)](#despliegue-con-podman)
   [![Linux](https://img.shields.io/badge/Linux-Rocky_%7C_RHEL_%7C_Debian_%7C_Ubuntu-FCC624?logo=linux&logoColor=black)](#conexión-de-servidores-proxy-nginx)
   [![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)](#)
@@ -40,10 +42,11 @@ A diferencia de los analizadores tradicionales basados en lectura de archivos de
   - Visualización mundial interactiva en Canvas 2D con geolocalización de tráfico y vectores de ataque.
 - **🔍 Explorador Forense de Tráfico HTTP (`/reports/`):**
   - Búsqueda histórica sobre el 100% de las peticiones HTTP/HTTPS registradas (`TrafficLog`) filtrando por IP de origen, URI/Host o código de respuesta HTTP, más auditoría de incidentes y exportación directa a **CSV** (`?type=traffic` y `?type=events`).
-- **🛡️ Mitigación Resiliente en Kernel (`ipset`) o Modo Monitor Pasivo (`monitor`):**
-  - **Modo Activo (`ipset` + `iptables`/`iptables-nft`):** Bloqueo en complejidad O(1) en el kernel de Linux con auto-reparación de la regla `INPUT` ante recargas de `firewalld`.
+- **🛡️ Mitigación Universal con Fail2ban Smart Hybrid Action (`fail2ban`), Kernel (`ipset`) o Modo Monitor (`monitor`):**
+  - **Fail2ban Smart Hybrid Action (`--mode fail2ban`, por defecto):** Cuando el operador aprueba un bloqueo en Mithril, el agente delega el bloqueo a Fail2ban (`fail2ban-client set mithril-jail banip <IP>`). La acción híbrida `mithril-smart` bloquea automáticamente en el Kernel de Linux (`ipset`/`iptables`) para servidores sin Cloudflare o ataques directos a la IP pública, y si detecta credenciales en `/etc/mithril/cloudflare.env`, bloquea simultáneamente la IP real del atacante en el borde de Cloudflare. **Nunca modifica ni recarga archivos de Nginx.**
+  - **Inmunidad Absoluta de Nodos Cloudflare y Detección de Evasión Directa (`🎯 DIRECTO A IP`):** Distingue el tráfico proxificado (`☁️ CF Edge`) del tráfico que golpea directamente la IP pública del servidor saltándose Cloudflare (`R-DIRECT-IP-ACCESS`), y garantiza que ningún rango de Cloudflare pueda ser bloqueado jamás.
   - **Modo Monitor Pasivo (`--mode monitor`):** Monitoreo 100% pasivo que registra todo el tráfico y alertas sin ejecutar ningún comando sobre el firewall del servidor.
-  - **Autoban en Modo Simulación (Human-in-the-Loop):** Cola de decisión para que el operador apruebe o descarte bloqueos sugeridos en un clic.
+  - **Autoban Human-in-the-Loop:** Cola de decisión para que el operador apruebe o descarte bloqueos sugeridos en un clic.
 - **🔐 Seguridad Blindada y Alertas en Tiempo Real:**
   - Cambio obligatorio de contraseña en el primer inicio de sesión y **2FA TOTP** compatible con Google Authenticator / Authy.
   - Alertas instantáneas enriquecidas vía **Telegram**.
@@ -57,7 +60,7 @@ A diferencia de los analizadores tradicionales basados en lectura de archivos de
 │              SERVIDORES PROXY / BALANCEADORES NGINX                    │
 │  - Espejo de Red en RAM (Kernel AF_PACKET: HTTP + proxy_pass + TLS SNI)│
 │  - Emisión nativa por red (syslog:server=IP:5140)                      │
-│  * Cero lectura de archivos en /var/log/nginx/ o /etc/nginx/           │
+│  * Cero lectura ni modificación de /var/log/nginx/ o /etc/nginx/       │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │ (Streaming UDP 5140 / HTTP API 9900)
                                     ▼
@@ -65,7 +68,8 @@ A diferencia de los analizadores tradicionales basados en lectura de archivos de
 │           RECEPTOR UNIVERSAL & MOTOR DE DETECCIÓN MITHRIL              │
 │  - Parser Multi-Formato + Deduplicación en ventana móvil (1.5s)        │
 │  - Normalización Anti-Evasión (Doble URL-Decode + Strip /**/)          │
-│  - Evaluación de 10 Reglas Universales + Heurísticas por Umbral        │
+│  - Evaluación de 11 Reglas Universales + Detección Directo a IP        │
+│  - Inmunidad garantizada para todos los rangos CIDR de Cloudflare      │
 └──────────────────┬──────────────────────────────────┬──────────────────┘
                    │                                  │
     (Persistencia TrafficLog & Event)       (Streaming WebSocket / UI)
@@ -76,12 +80,14 @@ A diferencia de los analizadores tradicionales basados en lectura de archivos de
 │  - Cálculo de RPS en Tiempo Real │ │  - Editor Visual de Reglas        │
 └──────────────────────────────────┘ │  - Explorador Forense & Cola SOAR │
                                      └─────────────────┬─────────────────┘
-                                                       │ Orden de Bloqueo
+                                                       │ Orden de Bloqueo (Clic Operador)
                                                        ▼
                                      ┌───────────────────────────────────┐
-                                     │          MITHRIL BOUNCER          │
-                                     │  - Modo Activo: ipset / iptables  │
-                                     │  - Modo Pasivo: Monitor (Zero-FW) │
+                                     │   MITHRIL BOUNCER + FAIL2BAN      │
+                                     │  fail2ban-client set mithril-jail │
+                                     │  ├─ Capa 1: Kernel ipset/iptables │
+                                     │  └─ Capa 2: Cloudflare API (Opt.) │
+                                     │  * Cero recargas en Nginx         │
                                      └───────────────────────────────────┘
 ```
 
@@ -89,7 +95,7 @@ A diferencia de los analizadores tradicionales basados en lectura de archivos de
 
 ## 🧠 Reglas de Detección y Heurística Preconfiguradas
 
-Al iniciar el contenedor `mithril-web`, el comando `python manage.py init_mithril_system` configura automáticamente 10 reglas universales que pueden personalizarse o ampliarse desde **`http://localhost:9900/detection/rules/`**:
+Al iniciar el contenedor `mithril-web`, el sistema configura automáticamente 11 reglas universales que pueden personalizarse o ampliarse desde **`http://localhost:9900/detection/rules/`**:
 
 | Código | Nombre de la Regla / Heurística | Severidad | Umbral por Defecto | Acción |
 | :--- | :--- | :---: | :---: | :---: |
@@ -103,6 +109,7 @@ Al iniciar el contenedor `mithril-web`, el comando `python manage.py init_mithri
 | `R-SCAN-404-BRUTE` | Heurística de Descubrimiento de Rutas (`404 Not Found` masivos) | `MEDIUM` | 15 hits / 60s | Bloqueo IP |
 | `R-AUTH-BRUTE-401` | Heurística de Fuerza Bruta de Autenticación (`401`/`403` masivos en logins/APIs) | `HIGH` | 10 hits / 60s | Bloqueo IP |
 | `R-HTTP-FLOOD-DOS` | Heurística de Inundación HTTP / Denegación de Servicio (DoS Capa 7) | `CRITICAL` | 120 hits / 10s | Bloqueo IP |
+| `R-DIRECT-IP-ACCESS` | Acceso Directo a IP Pública (Evasión de Proxy Cloudflare `🎯 DIRECTO A IP`) | `MEDIUM` | 1 hit / 60s | Alerta (+35 pts) |
 
 ---
 
@@ -164,20 +171,98 @@ python mithril_lan_proxy.py
 2. Asigna un nombre (ej: `servbalancer150`) y su dirección IP.
 3. Copia el **Token de Conexión (`API_KEY`)** generado para ese nodo.
 
-### Paso 2: Instalación Automática en 1 Comando
-Ejecuta en tu servidor Nginx el instalador automático provisto por Mithril:
+### Paso 2: Instalación Automática en 1 Comando (Incluye Fail2ban Smart Action)
+Ejecuta en tu servidor Linux el instalador automático provisto por Mithril:
 
-#### Opción A — Modo Activo Estándar (Captura en RAM + Bloqueo en Firewall `ipset`)
+#### Opción A — Modo Activo Universal con Fail2ban (Recomendado - Sin tocar Nginx)
 ```bash
-curl -sSL http://IP_DE_MITHRIL:9900/nodes/install.sh | bash -s -- --server http://IP_DE_MITHRIL:9900 --key "TU_API_KEY"
+curl -sSL http://IP_DE_MITHRIL:9900/nodes/install.sh | sudo bash -s -- --server http://IP_DE_MITHRIL:9900 --key "TU_API_KEY" --mode fail2ban
 ```
 
-#### Opción B — Modo Monitor Pasivo (Cero cambios en Firewall, ideal para Producción Crítica)
+#### Opción B — Modo Monitor Pasivo (Cero cambios en Firewall)
 ```bash
-curl -sSL http://IP_DE_MITHRIL:9900/nodes/install.sh | bash -s -- --server http://IP_DE_MITHRIL:9900 --key "TU_API_KEY" --mode monitor
+curl -sSL http://IP_DE_MITHRIL:9900/nodes/install.sh | sudo bash -s -- --server http://IP_DE_MITHRIL:9900 --key "TU_API_KEY" --mode monitor
 ```
 
-> **Soporte Nativo para Rocky Linux / RHEL y SELinux:** El instalador detecta automáticamente gestores `dnf`/`yum` o `apt`, instala `ipset`, `iptables-nft` y `policycoreutils-python-utils`, configura los booleanos de SELinux (`httpd_can_network_connect=1`, `nis_enabled=1`), autoriza el puerto UDP `5140` (`syslogd_port_t`) e instala el servicio `systemd` (`mithril-bouncer.service`) sin modificar ningún archivo de VirtualHost existente y validando siempre con `nginx -t` antes de recargar.
+---
+
+## 🛡️ Instalación y Configuración de Fail2ban en el Agente (Paso a Paso)
+
+Si deseas instalar o auditar manualmente la integración de **Fail2ban** en cualquier servidor proxy (con o sin Cloudflare), sigue estos pasos:
+
+### 1. Instalar Fail2ban e `ipset`
+```bash
+# En Ubuntu / Debian:
+sudo apt-get update && sudo apt-get install -y fail2ban ipset iptables curl
+
+# En Rocky Linux / AlmaLinux / RHEL:
+sudo dnf install -y epel-release && sudo dnf install -y fail2ban ipset iptables iptables-nft curl
+```
+
+### 2. Crear el Filtro Base y el Archivo de Control
+```bash
+sudo mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/action.d /etc/fail2ban/jail.d /etc/mithril
+sudo touch /var/log/mithril-fail2ban.log
+
+sudo tee /etc/fail2ban/filter.d/mithril-empty.conf > /dev/null <<'EOF'
+[Definition]
+failregex = ^MITHRIL_MANUAL_BAN <HOST>$
+ignoreregex =
+EOF
+```
+
+### 3. Crear la Acción Híbrida Universal (`/etc/fail2ban/action.d/mithril-smart.conf`)
+Esta acción bloquea siempre en el Kernel de Linux (`ipset`/`iptables`) para proteger cualquier plataforma sin Cloudflare y frenar ataques directos a la IP pública, y si existe `/etc/mithril/cloudflare.env`, bloquea también en el borde de Cloudflare vía API:
+
+```bash
+sudo tee /etc/fail2ban/action.d/mithril-smart.conf > /dev/null <<'EOF'
+[Definition]
+actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
+              iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+
+actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+              ipset destroy mithril_f2b 2>/dev/null || true
+
+actioncheck = ipset list mithril_f2b >/dev/null 2>&1
+
+actionban   = ipset add mithril_f2b <ip> -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\"mode\":\"block\",\"configuration\":{\"target\":\"ip\",\"value\":\"<ip>\"},\"notes\":\"Mithril-SIEM-Fail2ban\"}" >/dev/null 2>&1 || true; fi; fi
+
+actionunban = ipset del mithril_f2b <ip> -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
+
+[Init]
+name = mithril
+EOF
+```
+
+### 4. Crear el Jail Dedicado (`/etc/fail2ban/jail.d/mithril.local`) y Reiniciar Fail2ban
+```bash
+sudo tee /etc/fail2ban/jail.d/mithril.local > /dev/null <<'EOF'
+[mithril-jail]
+enabled  = true
+filter   = mithril-empty
+action   = mithril-smart
+logpath  = /var/log/mithril-fail2ban.log
+bantime  = -1
+findtime = 600
+maxretry = 1
+EOF
+
+sudo systemctl enable --now fail2ban
+sudo fail2ban-client reload
+sudo fail2ban-client status mithril-jail
+```
+
+### 5. (Opcional) Activar Bloqueo en el Borde de Cloudflare
+Si tu dominio pasa por Cloudflare, crea el archivo `/etc/mithril/cloudflare.env` para que Fail2ban bloquee también en el Edge de Cloudflare sin tocar Nginx:
+```bash
+sudo tee /etc/mithril/cloudflare.env > /dev/null <<'EOF'
+CF_API_TOKEN="TU_CLOUDFLARE_API_TOKEN"
+CF_ZONE_ID="TU_CLOUDFLARE_ZONE_ID"
+EOF
+sudo chmod 600 /etc/mithril/cloudflare.env
+```
 
 ---
 

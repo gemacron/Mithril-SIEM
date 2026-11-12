@@ -111,8 +111,10 @@
         <div class="form-group">
           <label class="form-label" for="block_method">Método de Bloqueo en el Proxy</label>
           <select id="block_method" name="block_method" class="form-input">
-            <option value="ipset" {% if node.block_method == 'ipset' %}selected{% endif %}>Kernel ipset (Recomendado - Nanosegundos, sin recargar Nginx)</option>
+            <option value="fail2ban" {% if node.block_method == 'fail2ban' %}selected{% endif %}>Fail2ban + Smart Action (Recomendado - Universal con/sin Cloudflare sin tocar Nginx)</option>
+            <option value="ipset" {% if node.block_method == 'ipset' %}selected{% endif %}>Kernel ipset (Directo - Nanosegundos, sin recargar Nginx)</option>
             <option value="nginx_conf" {% if node.block_method == 'nginx_conf' %}selected{% endif %}>Archivo include de Nginx (deny IP; con reload)</option>
+            <option value="monitor" {% if node.block_method == 'monitor' %}selected{% endif %}>Modo Monitor Pasivo (Solo Observación - Cero Bloqueos)</option>
           </select>
         </div>
 
@@ -183,16 +185,34 @@
       </div>
     </div>
 
-    <!-- Generador de Configuración Nginx -->
+    <!-- Configuración Fail2ban Smart Action -->
     <div class="panel">
       <div class="panel-header">
         <div class="panel-title">
-          <span>📄</span> SNIPPET DE CONFIGURACIÓN NGINX
+          <span>🛡️</span> CONFIGURACIÓN DE FAIL2BAN (MITHRIL SMART ACTION)
         </div>
       </div>
       <div class="panel-body">
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
-          Inserta dentro de tu bloque <code>server { ... }</code> en Nginx:
+          Cuando el operador aprueba un bloqueo en Mithril, el agente ejecuta <code>fail2ban-client set mithril-jail banip &lt;IP&gt;</code>. Funciona en cualquier plataforma (con o sin Cloudflare) y <strong>sin tocar ni recargar Nginx</strong>:
+        </p>
+        <div style="font-size: 0.72rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.25rem;">1. Acción Híbrida (<code>/etc/fail2ban/action.d/mithril-smart.conf</code>):</div>
+        <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-emerald); font-family: var(--font-mono); font-size: 0.72rem; overflow-x: auto; white-space: pre-wrap; margin-bottom: 0.75rem;">{{ fail2ban_action }}</pre>
+        <div style="font-size: 0.72rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.25rem;">2. Jail Dedicado (<code>/etc/fail2ban/jail.d/mithril.local</code>):</div>
+        <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-cyan); font-family: var(--font-mono); font-size: 0.72rem; overflow-x: auto; white-space: pre-wrap;">{{ fail2ban_jail }}</pre>
+      </div>
+    </div>
+
+    <!-- Generador de Configuración Nginx -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title">
+          <span>📄</span> SNIPPET OPCIONAL NGINX (SOLO TELEMETRÍA SYSLOG)
+        </div>
+      </div>
+      <div class="panel-body">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+          Con Fail2ban + Espejo en RAM <strong>no necesitas modificar Nginx</strong>. Opcionalmente puedes enviar access_log vía Syslog UDP:
         </p>
         <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-cyan); font-family: var(--font-mono); font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap;">{{ nginx_snippet }}</pre>
       </div>

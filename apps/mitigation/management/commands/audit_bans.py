@@ -23,3 +23,4 @@ class Command(BaseCommand):
             tag = " [ALERTA: ES CLOUDFLARE]" if is_cf else (" [LAN LOCAL]" if is_loc else " [IP CLIENTE VALIDA]")
             status_str = "ACTIVO" if b.is_active else "REVOCADO"
             self.stdout.write(f"ID {b.id:3d} | IP: {b.client_ip:15s} | Estado: {status_str:8s} | Expira: {str(b.expires_at)[:19]}{tag}")
+

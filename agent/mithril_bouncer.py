@@ -7,9 +7,11 @@ Funcionalidades:
 1. Envia Heartbeat y telemetria (CPU, RAM, version de Nginx, estado) a Mithril SIEM (Puerto 9900).
 2. Sincroniza periodicamente la lista de IPs bloqueadas (Blacklist aprobada por el operador).
 3. Aplica los bloqueos de forma automatica mediante:
-   - ipset / iptables (bloqueo a nivel de kernel/red, ultrarrapido).
+   - fail2ban (Recomendado): Delega el bloqueo a Fail2ban (`fail2ban-client set mithril-jail banip <IP>`) con Smart Hybrid Action (Kernel ipset + Cloudflare Edge API opcional, sin tocar ni recargar Nginx).
+   - ipset / iptables (bloqueo directo a nivel de kernel/red, ultrarrapido, sin tocar Nginx).
    - nginx_conf (archivo dinamico /etc/nginx/conf.d/mithril_blocklist.conf + reload suave).
-4. No requiere librerias externas pesadas (soporta urllib nativo con fallback si requests no esta instalado).
+   - monitor (modo pasivo 100% observacion, cero bloqueos).
+4. No requiere librerias externas pesadas (soporta urllib nativo).
 """
 
 import os
@@ -30,7 +32,8 @@ import urllib.error
 MITHRIL_URL = os.getenv("MITHRIL_URL", "http://127.0.0.1:9900").rstrip("/")
 NODE_API_KEY = os.getenv("NODE_API_KEY", "")
 SYNC_INTERVAL = int(os.getenv("SYNC_INTERVAL", "15"))  # Segundos
-BLOCK_METHOD = os.getenv("BLOCK_METHOD", "ipset")  # 'ipset', 'nginx_conf' o 'monitor'
+BLOCK_METHOD = os.getenv("BLOCK_METHOD", "fail2ban")  # 'fail2ban', 'ipset', 'nginx_conf' o 'monitor'
+FAIL2BAN_JAIL = os.getenv("FAIL2BAN_JAIL", "mithril-jail")
 NGINX_BLOCK_FILE = os.getenv("NGINX_BLOCK_FILE", "/etc/nginx/conf.d/mithril_blocklist.conf")
 SYSLOG_PORT = int(os.getenv("SYSLOG_PORT", "5140"))
 
@@ -107,13 +110,116 @@ def get_active_connections():
         pass
     return 0
 
+_F2B_MEM_BANS = set()
+
+FAIL2BAN_FILTER_CONTENT = """# Mithril SIEM - Filtro base para mithril-jail
+[Definition]
+failregex = ^MITHRIL_MANUAL_BAN <HOST>$
+ignoreregex =
+"""
+
+FAIL2BAN_ACTION_CONTENT = """# Mithril SIEM - Smart Hybrid Action (Universal: Kernel ipset + Cloudflare Edge API opcional)
+[Definition]
+actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
+              iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+
+actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+              ipset destroy mithril_f2b 2>/dev/null || true
+
+actioncheck = ipset list mithril_f2b >/dev/null 2>&1
+
+actionban   = ipset add mithril_f2b <ip> -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\\"mode\\":\\"block\\",\\"configuration\\":{\\"target\\":\\"ip\\",\\"value\\":\\"<ip>\\"},\\"notes\\":\\"Mithril-SIEM-Fail2ban\\"}" >/dev/null 2>&1 || true; fi; fi
+
+actionunban = ipset del mithril_f2b <ip> -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
+
+[Init]
+name = mithril
+"""
+
+FAIL2BAN_JAIL_CONTENT = f"""# Mithril SIEM - Jail dedicado controlado por Mithril Bouncer
+[{FAIL2BAN_JAIL}]
+enabled  = true
+filter   = mithril-empty
+action   = mithril-smart
+logpath  = /var/log/mithril-fail2ban.log
+bantime  = -1
+findtime = 600
+maxretry = 1
+"""
+
+def init_fail2ban():
+    """Verifica que Fail2ban y el jail 'mithril-jail' esten activos; los provisiona si existen los binarios."""
+    try:
+        chk = subprocess.run(["fail2ban-client", "status", FAIL2BAN_JAIL], capture_output=True, text=True, check=False)
+        if chk.returncode == 0:
+            return True
+
+        # Si fail2ban-client existe pero el jail aun no fue cargado, autoprovisionar archivos
+        os.makedirs("/etc/fail2ban/filter.d", exist_ok=True)
+        os.makedirs("/etc/fail2ban/action.d", exist_ok=True)
+        os.makedirs("/etc/fail2ban/jail.d", exist_ok=True)
+        if not os.path.exists("/var/log/mithril-fail2ban.log"):
+            with open("/var/log/mithril-fail2ban.log", "a") as f:
+                f.write("")
+        if not os.path.exists("/etc/fail2ban/filter.d/mithril-empty.conf"):
+            with open("/etc/fail2ban/filter.d/mithril-empty.conf", "w") as f:
+                f.write(FAIL2BAN_FILTER_CONTENT)
+        if not os.path.exists("/etc/fail2ban/action.d/mithril-smart.conf"):
+            with open("/etc/fail2ban/action.d/mithril-smart.conf", "w") as f:
+                f.write(FAIL2BAN_ACTION_CONTENT)
+        if not os.path.exists("/etc/fail2ban/jail.d/mithril.local"):
+            with open("/etc/fail2ban/jail.d/mithril.local", "w") as f:
+                f.write(FAIL2BAN_JAIL_CONTENT)
+
+        subprocess.run(["systemctl", "enable", "--now", "fail2ban"], capture_output=True, check=False)
+        subprocess.run(["fail2ban-client", "reload"], capture_output=True, text=True, check=False)
+        chk2 = subprocess.run(["fail2ban-client", "status", FAIL2BAN_JAIL], capture_output=True, text=True, check=False)
+        if chk2.returncode == 0:
+            print(f"🛡️ [FAIL2BAN] Jail '{FAIL2BAN_JAIL}' (Smart Hybrid Action) activo y listo.")
+            return True
+        return False
+    except FileNotFoundError:
+        return False
+    except Exception as e:
+        print(f"⚠️ [FAIL2BAN] Aviso verificando Fail2ban: {e}")
+        return False
+
+def get_fail2ban_banned_ips():
+    """Obtiene el conjunto de IPs actualmente bloqueadas en el jail de Fail2ban."""
+    try:
+        res = subprocess.run(["fail2ban-client", "get", FAIL2BAN_JAIL, "banip"], capture_output=True, text=True, check=False)
+        if res.returncode == 0:
+            out = res.stdout.strip()
+            if not out:
+                return set()
+            return {tok.strip() for tok in out.split() if tok.strip()}
+
+        # Fallback para versiones anteriores de fail2ban-client
+        st = subprocess.run(["fail2ban-client", "status", FAIL2BAN_JAIL], capture_output=True, text=True, check=False)
+        if st.returncode == 0 and "Banned IP list:" in st.stdout:
+            after = st.stdout.split("Banned IP list:", 1)[1].splitlines()[0]
+            return {tok.strip() for tok in after.split() if tok.strip()}
+    except Exception:
+        pass
+    return set(_F2B_MEM_BANS)
+
 def init_firewall():
-    """Asegura que el set de ipset y la regla de iptables existan"""
-    if BLOCK_METHOD == "ipset":
+    """Inicializa el motor de bloqueo configurado (fail2ban o ipset)"""
+    if BLOCK_METHOD == "monitor":
+        print("👁️ [MODO MONITOR] Mitigación pasiva activa (cero cambios en firewall).")
+        return
+
+    if BLOCK_METHOD == "fail2ban":
+        if init_fail2ban():
+            print(f"🛡️ [FAIL2BAN] Motor de bloqueo '{FAIL2BAN_JAIL}' vinculado a Mithril SIEM (sin tocar Nginx).")
+            return
+        print("⚠️ [AVISO] 'fail2ban-client' no detectado o inactivo; activando respaldo directo en Kernel (ipset).")
+
+    if BLOCK_METHOD in ("ipset", "fail2ban"):
         try:
-            # 1. Crear el ipset si no existe
             subprocess.run(["ipset", "create", "mithril_blacklist", "hash:ip", "-exist"], check=True)
-            # 2. Verificar o insertar regla en iptables INPUT
             check = subprocess.run(["iptables", "-C", "INPUT", "-m", "set", "--match-set", "mithril_blacklist", "src", "-j", "DROP"],
                                    capture_output=True, check=False)
             if check.returncode != 0:
@@ -122,51 +228,94 @@ def init_firewall():
             else:
                 print("🛡️ [FIREWALL] ipset 'mithril_blacklist' listo y vinculado a iptables.")
         except FileNotFoundError:
-            print("⚠️ [AVISO] 'ipset' o 'iptables' no encontrados. Se recomienda instalarlos o usar BLOCK_METHOD=nginx_conf")
+            print("⚠️ [AVISO] 'ipset' o 'iptables' no encontrados. Instala fail2ban e ipset.")
         except Exception as e:
             print(f"⚠️ [FIREWALL] Error iniciando ipset: {e}")
 
 def apply_blocklist(banned_ips):
     """
-    Aplica la lista de IPs denegadas en el firewall (ipset/iptables) para bloquear accesos directos
-    Y en el archivo de Nginx (deny <ip>;) para bloquear clientes que llegan a través de Cloudflare.
+    Sincroniza la lista de IPs denegadas aprobadas por el operador en Mithril SIEM.
+    - Protege siempre contra bloqueo accidental de nodos de Cloudflare o IPs internas.
+    - Con BLOCK_METHOD='fail2ban' (por defecto): delega a Fail2ban ('mithril-jail') sin tocar Nginx.
+    - Con BLOCK_METHOD='ipset': aplica en kernel ipset sin tocar Nginx.
+    - Con BLOCK_METHOD='nginx_conf': escribe archivo de Nginx y recarga suavemente.
     """
+    # Filtro de inmunidad absoluta para rangos de Cloudflare e IPs de red local/loopback
+    safe_ips = []
+    for raw_ip in banned_ips:
+        ip = str(raw_ip).strip()
+        if not ip:
+            continue
+        if is_cf_ip(ip) or is_local_balancer_ip(ip):
+            print(f"🛡️ [INMUNIDAD] Ignorando IP protegida (Cloudflare/Local): {ip}")
+            continue
+        safe_ips.append(ip)
+
     if BLOCK_METHOD == "monitor":
-        print(f"👁️ [MONITOR-PASIVO] {len(banned_ips)} IPs en lista negra (modo solo lectura, sin tocar firewall ni Nginx).")
+        print(f"👁️ [MONITOR-PASIVO] {len(safe_ips)} IPs en lista negra (modo solo lectura, sin tocar firewall ni Nginx).")
         return
 
-    # 1. Bloqueo en Kernel / Firewall con ipset (para conexiones TCP directas)
-    if BLOCK_METHOD == "ipset":
+    # 1. MODO RECOMENDADO: Fail2ban Smart Hybrid Action (Universal con o sin Cloudflare, sin tocar Nginx)
+    if BLOCK_METHOD == "fail2ban":
+        if init_fail2ban():
+            current_f2b = get_fail2ban_banned_ips()
+            target_set = set(safe_ips)
+            to_ban = sorted(target_set - current_f2b)
+            to_unban = sorted(current_f2b - target_set)
+
+            for ip in to_ban:
+                res = subprocess.run(["fail2ban-client", "set", FAIL2BAN_JAIL, "banip", ip], capture_output=True, text=True, check=False)
+                if res.returncode == 0:
+                    _F2B_MEM_BANS.add(ip)
+                    print(f"🔒 [FAIL2BAN] IP {ip} bloqueada en jail '{FAIL2BAN_JAIL}'.")
+                else:
+                    print(f"⚠️ [FAIL2BAN] Error bloqueando {ip}: {res.stderr.strip() or res.stdout.strip()}")
+
+            for ip in to_unban:
+                res = subprocess.run(["fail2ban-client", "set", FAIL2BAN_JAIL, "unbanip", ip], capture_output=True, text=True, check=False)
+                if res.returncode == 0:
+                    _F2B_MEM_BANS.discard(ip)
+                    print(f"🔓 [FAIL2BAN] IP {ip} desbloqueada de jail '{FAIL2BAN_JAIL}'.")
+
+            print(f"✅ [FAIL2BAN] Sincronización activa: {len(target_set)} IPs bloqueadas en '{FAIL2BAN_JAIL}' (Cero cambios en Nginx).")
+            return
+        else:
+            print("⚠️ [FAIL2BAN] Servicio Fail2ban no disponible localmente; aplicando respaldo en Kernel ipset.")
+
+    # 2. Bloqueo directo en Kernel / Firewall con ipset (sin tocar Nginx)
+    if BLOCK_METHOD in ("ipset", "fail2ban"):
         try:
             init_firewall()
             subprocess.run(["ipset", "create", "mithril_temp", "hash:ip", "-exist"], check=True)
             subprocess.run(["ipset", "flush", "mithril_temp"], check=True)
-            for ip in banned_ips:
+            for ip in safe_ips:
                 subprocess.run(["ipset", "add", "mithril_temp", ip, "-exist"], check=True)
             subprocess.run(["ipset", "swap", "mithril_temp", "mithril_blacklist"], check=True)
             subprocess.run(["ipset", "destroy", "mithril_temp"], check=True)
-            print(f"✅ [IPSET] {len(banned_ips)} IPs bloqueadas en kernel/firewall.")
+            print(f"✅ [IPSET] {len(safe_ips)} IPs bloqueadas en kernel/firewall (Cero cambios en Nginx).")
         except Exception as e:
             print(f"⚠️ [IPSET] Error aplicando bloqueo por ipset: {e}")
+        return
 
-    # 2. Bloqueo en Nginx (para tráfico de clientes reales detrás de Cloudflare)
-    try:
-        os.makedirs(os.path.dirname(NGINX_BLOCK_FILE), exist_ok=True)
-        content = "# Mithril SIEM - Lista de Bloqueo Dinamica\n"
-        for ip in banned_ips:
-            content += f"deny {ip};\n"
-        
-        with open(NGINX_BLOCK_FILE, "w") as f:
-            f.write(content)
-        
-        test = subprocess.run(["nginx", "-t"], capture_output=True, text=True, check=False)
-        if test.returncode == 0:
-            subprocess.run(["nginx", "-s", "reload"], check=False)
-            print(f"✅ [NGINX] {len(banned_ips)} IPs sincronizadas en {NGINX_BLOCK_FILE} y Nginx recargado.")
-        else:
-            print(f"❌ [NGINX] Error en sintaxis de Nginx: {test.stderr}")
-    except Exception as e:
-        print(f"⚠️ [NGINX] Error escribiendo lista de bloqueo en Nginx: {e}")
+    # 3. Modo legacy: Bloqueo en archivo de Nginx (solo si se selecciona explícitamente BLOCK_METHOD=nginx_conf)
+    if BLOCK_METHOD == "nginx_conf":
+        try:
+            os.makedirs(os.path.dirname(NGINX_BLOCK_FILE), exist_ok=True)
+            content = "# Mithril SIEM - Lista de Bloqueo Dinamica\n"
+            for ip in safe_ips:
+                content += f"deny {ip};\n"
+
+            with open(NGINX_BLOCK_FILE, "w") as f:
+                f.write(content)
+
+            test = subprocess.run(["nginx", "-t"], capture_output=True, text=True, check=False)
+            if test.returncode == 0:
+                subprocess.run(["nginx", "-s", "reload"], check=False)
+                print(f"✅ [NGINX] {len(safe_ips)} IPs sincronizadas en {NGINX_BLOCK_FILE} y Nginx recargado.")
+            else:
+                print(f"❌ [NGINX] Error en sintaxis de Nginx: {test.stderr}")
+        except Exception as e:
+            print(f"⚠️ [NGINX] Error escribiendo lista de bloqueo en Nginx: {e}")
 
 HTTP_METHODS_BYTES = (b"GET ", b"POST ", b"PUT ", b"DELETE ", b"HEAD ", b"OPTIONS ", b"PATCH ")
 
@@ -509,17 +658,18 @@ def kernel_network_mirror_worker():
             pass
 
 def main():
+    global BLOCK_METHOD, SYNC_INTERVAL
     print("=" * 60)
-    print("🛡️  MITHRIL BOUNCER AGENT - INICIADO")
+    print("🛡️  MITHRIL BOUNCER AGENT v2.1 - INICIADO")
     print(f"   SIEM Destino   : {MITHRIL_URL}")
-    print(f"   Metodo Bloqueo : {BLOCK_METHOD}")
+    print(f"   Metodo Bloqueo : {BLOCK_METHOD} (Jail: {FAIL2BAN_JAIL})")
     print(f"   Intervalo Sync : {SYNC_INTERVAL} segundos")
     print("=" * 60)
 
     init_firewall()
     t_mirror = threading.Thread(target=kernel_network_mirror_worker, daemon=True)
     t_mirror.start()
-    last_banned_count = -1
+    last_banned_set = None
 
     while True:
         cpu = get_cpu_usage()
@@ -537,17 +687,24 @@ def main():
             "rps": 0
         }
         status_code, resp = http_request(f"{MITHRIL_URL}/nodes/api/heartbeat/", method="POST", data=hb_data)
-        if status_code != 200:
+        if status_code == 200:
+            remote_method = resp.get("block_method")
+            if remote_method and remote_method != BLOCK_METHOD and BLOCK_METHOD != "monitor":
+                print(f"🔄 [CONFIG] Método de bloqueo actualizado desde Mithril SIEM: {BLOCK_METHOD} -> {remote_method}")
+                BLOCK_METHOD = remote_method
+                last_banned_set = None
+        else:
             print(f"⚠️ [HEARTBEAT] Respuesta inesperada del SIEM ({status_code}): {resp.get('error', '')}")
 
         # 2. Sincronizar Bans Aprobados por el Operador
         status_code, sync_resp = http_request(f"{MITHRIL_URL}/mitigation/api/sync-bans/", method="GET")
         if status_code == 200:
             banned_ips = sync_resp.get("banned_ips", [])
-            # Solo reaplicar si hubo cambios en la lista para no saturar I/O
-            if len(banned_ips) != last_banned_count or last_banned_count == -1:
+            current_set = set(banned_ips)
+            # Reaplicar si cambio el conjunto de IPs o es la primera sincronizacion
+            if last_banned_set is None or current_set != last_banned_set:
                 apply_blocklist(banned_ips)
-                last_banned_count = len(banned_ips)
+                last_banned_set = current_set
         else:
             print(f"⚠️ [SYNC-BANS] Error sincronizando lista de bans ({status_code})")
 

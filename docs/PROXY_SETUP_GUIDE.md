@@ -79,16 +79,78 @@ git clone https://github.com/gemacron/Mithril-SIEM.git /tmp/Mithril-SIEM
 sudo bash /tmp/Mithril-SIEM/agent/install_agent.sh \
   "http://<IP_MITHRIL>:9900" \
   "<TU_NODE_API_KEY>" \
-  "ipset" \
+  "fail2ban" \
   "15"
 ```
 
 > **¿Qué realiza `install_agent.sh` internamente?**
 > 1. Detecta el gestor de paquetes del sistema (`apt-get` o `dnf`).
-> 2. Instala dependencias del sistema: `python3`, `ipset`, `iptables`, `curl`.
-> 3. Instala el agente optimizado en `/opt/mithril-agent/mithril_bouncer.py` (sin librerías de terceros obligatorias).
-> 4. Genera la unidad persistente `/etc/systemd/system/mithril-bouncer.service`.
-> 5. Habilita e inicia el servicio automáticamente con `systemctl enable --now mithril-bouncer.service`.
+> 2. Instala dependencias del sistema: `python3`, `fail2ban`, `ipset`, `iptables`, `curl`.
+> 3. Configura el jail `mithril-jail` en `/etc/fail2ban/jail.d/mithril.local` y la acción inteligente `/etc/fail2ban/action.d/mithril-smart.conf` (bloqueo en Kernel `ipset` + API de Cloudflare opcional sin tocar Nginx).
+> 4. Instala el agente optimizado en `/opt/mithril-agent/mithril_bouncer.py` (con espejo de red 100% en RAM).
+> 5. Genera la unidad persistente `/etc/systemd/system/mithril-bouncer.service`.
+> 6. Habilita e inicia los servicios automáticamente con `systemctl enable --now fail2ban mithril-bouncer.service`.
+
+---
+
+## Paso 2.5: Instalación y Configuración Manual de Fail2ban (Paso a Paso)
+
+Si deseas instalar y configurar **Fail2ban** manualmente para que bloquee las IPs enviadas por Mithril (sin tocar ni recargar Nginx):
+
+```bash
+# 1. Instalar Fail2ban e ipset
+# Ubuntu / Debian:
+sudo apt-get update && sudo apt-get install -y fail2ban ipset iptables curl
+# Rocky Linux / RHEL:
+sudo dnf install -y epel-release && sudo dnf install -y fail2ban ipset iptables iptables-nft curl
+
+# 2. Crear filtro base y log de control
+sudo mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/action.d /etc/fail2ban/jail.d /etc/mithril
+sudo touch /var/log/mithril-fail2ban.log
+
+sudo tee /etc/fail2ban/filter.d/mithril-empty.conf > /dev/null <<'EOF'
+[Definition]
+failregex = ^MITHRIL_MANUAL_BAN <HOST>$
+ignoreregex =
+EOF
+
+# 3. Crear la Acción Híbrida Universal (/etc/fail2ban/action.d/mithril-smart.conf)
+sudo tee /etc/fail2ban/action.d/mithril-smart.conf > /dev/null <<'EOF'
+[Definition]
+actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
+              iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+
+actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+              ipset destroy mithril_f2b 2>/dev/null || true
+
+actioncheck = ipset list mithril_f2b >/dev/null 2>&1
+
+actionban   = ipset add mithril_f2b <ip> -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\"mode\":\"block\",\"configuration\":{\"target\":\"ip\",\"value\":\"<ip>\"},\"notes\":\"Mithril-SIEM-Fail2ban\"}" >/dev/null 2>&1 || true; fi; fi
+
+actionunban = ipset del mithril_f2b <ip> -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
+
+[Init]
+name = mithril
+EOF
+
+# 4. Crear el Jail Dedicado (/etc/fail2ban/jail.d/mithril.local) y recargar Fail2ban
+sudo tee /etc/fail2ban/jail.d/mithril.local > /dev/null <<'EOF'
+[mithril-jail]
+enabled  = true
+filter   = mithril-empty
+action   = mithril-smart
+logpath  = /var/log/mithril-fail2ban.log
+bantime  = -1
+findtime = 600
+maxretry = 1
+EOF
+
+sudo systemctl enable --now fail2ban
+sudo fail2ban-client reload
+sudo fail2ban-client status mithril-jail
+```
 
 ---
 

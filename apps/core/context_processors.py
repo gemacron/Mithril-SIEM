@@ -16,7 +16,7 @@ def mithril_branding(request):
 
     return {
         'MITHRIL_APP_NAME': 'Mithril SIEM',
-        'MITHRIL_VERSION': '1.0.0',
+        'MITHRIL_VERSION': '2.1.0',
         'pending_candidates_count': pending_count,
         'active_bans_count': active_bans_count,
         'online_nodes_count': online_nodes_count,

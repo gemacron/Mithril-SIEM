@@ -90,14 +90,14 @@
         <span>🛡️</span> CÓMO CONECTAR UN PROXY NGINX A MITHRIL (PUERTO 9900)
       </div>
       <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.25rem;">
-        Agente persistente con <strong>systemd</strong>, compatible con <strong>Ubuntu/Debian</strong> y <strong>Rocky Linux/AlmaLinux/RHEL</strong>. Mitigación en Kernel con <code>ipset</code> o recarga suave de Nginx.
+        Agente persistente con <strong>systemd</strong> y mitigación universal mediante <strong>Fail2ban Smart Action</strong> (compatible con o sin Cloudflare, sin tocar Nginx).
       </p>
     </div>
     <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+      <span class="badge safe" style="font-size: 0.65rem;">Fail2ban Smart Action</span>
       <span class="badge safe" style="font-size: 0.65rem;">Ubuntu 20/22/24</span>
       <span class="badge safe" style="font-size: 0.65rem;">Rocky Linux 8/9</span>
-      <span class="badge medium" style="font-size: 0.65rem;">Systemd Persistente</span>
-      <span class="badge safe" style="font-size: 0.65rem;">Zero-Pip Deps</span>
+      <span class="badge medium" style="font-size: 0.65rem;">Cero Cambios en Nginx</span>
     </div>
   </div>
 
@@ -107,24 +107,27 @@
       <button type="button" class="tab-btn active" onclick="switchGuideTab('tab-quick', this)">
         ⚡ 1. Instalación Rápida con Git
       </button>
+      <button type="button" class="tab-btn" onclick="switchGuideTab('tab-fail2ban', this)">
+        🛡️ 2. Instalar y Configurar Fail2ban
+      </button>
       <button type="button" class="tab-btn" onclick="switchGuideTab('tab-ubuntu', this)">
-        🐧 2. Ubuntu / Debian
+        🐧 3. Ubuntu / Debian
       </button>
       <button type="button" class="tab-btn" onclick="switchGuideTab('tab-rocky', this)">
-        🎩 3. Rocky Linux / RHEL
+        🎩 4. Rocky Linux / RHEL
       </button>
       <button type="button" class="tab-btn" onclick="switchGuideTab('tab-nginx', this)">
-        🌐 4. Configuración Nginx
+        🌐 5. Configuración Nginx (Opcional)
       </button>
       <button type="button" class="tab-btn" onclick="switchGuideTab('tab-verify', this)">
-        🔍 5. Verificación & Systemd
+        🔍 6. Verificación & Systemd
       </button>
     </div>
 
     <!-- TAB 1: Instalación Rápida con Git -->
     <div id="tab-quick" class="guide-tab-content active">
       <div style="background: rgba(0, 229, 255, 0.04); border-left: 3px solid var(--neon-cyan); padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--text-main);">
-        💡 <strong>Recomendado:</strong> El script <code>install_agent.sh</code> detecta automáticamente si estás en <strong>Ubuntu</strong> o <strong>Rocky Linux</strong>, instala los paquetes requeridos, crea el servicio <code>mithril-bouncer.service</code> en systemd y lo deja activo y persistente tras reinicios.
+        💡 <strong>Recomendado:</strong> El script <code>install_agent.sh</code> detecta automáticamente si estás en <strong>Ubuntu/Debian</strong> o <strong>Rocky Linux/RHEL</strong>, instala y configura <strong>Fail2ban</strong> (con el jail <code>mithril-jail</code> y la acción universal <code>mithril-smart</code>), despliega el agente en memoria RAM y activa <code>mithril-bouncer.service</code> sin modificar ningún archivo de Nginx.
       </div>
 
       <div style="margin-bottom: 1rem;">
@@ -148,14 +151,107 @@
 
       <div>
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Alternativa: Instalación en una sola línea (Automatizada / Ansible)</span>
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Alternativa: Instalación en una sola línea con Fail2ban (Automatizada / Ansible)</span>
           <button type="button" class="copy-btn" onclick="copyCode('code-installer-one-liner', this)">📋 Copiar</button>
         </div>
-        <pre id="code-installer-one-liner" class="terminal-box">sudo bash /tmp/Mithril-SIEM/agent/install_agent.sh "http://{{ host_ip }}:9900" "TU_NODE_API_KEY" "ipset" "15"</pre>
+        <pre id="code-installer-one-liner" class="terminal-box">sudo bash /tmp/Mithril-SIEM/agent/install_agent.sh "http://{{ host_ip }}:9900" "TU_NODE_API_KEY" "fail2ban" "15"</pre>
       </div>
     </div>
 
-    <!-- TAB 2: Ubuntu / Debian -->
+    <!-- TAB 2: Procedimiento Paso a Paso para Instalar y Configurar Fail2ban -->
+    <div id="tab-fail2ban" class="guide-tab-content" style="display: none;">
+      <div style="background: rgba(16, 185, 129, 0.06); border-left: 3px solid var(--neon-emerald); padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--text-main);">
+        🛡️ <strong>Arquitectura Universal con Fail2ban (Sin tocar Nginx):</strong> Cuando haces clic en <em>Aprobar Bloqueo</em> en Mithril, el agente ejecuta <code>fail2ban-client set mithril-jail banip &lt;IP&gt;</code>. La acción inteligente <code>mithril-smart</code> bloquea la IP en el Kernel de Linux (<code>ipset</code>/<code>iptables</code>) para cualquier servidor sin Cloudflare o ataques directos a IP, y si detecta credenciales en <code>/etc/mithril/cloudflare.env</code>, bloquea simultáneamente la IP real en el borde de Cloudflare.
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 1: Instalar paquetes de Fail2ban e ipset (Ubuntu/Debian o Rocky/RHEL)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-f2b-install', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-f2b-install" class="terminal-box"># En Ubuntu / Debian:
+sudo apt-get update && sudo apt-get install -y fail2ban ipset iptables curl
+
+# En Rocky Linux / AlmaLinux / RHEL:
+sudo dnf install -y epel-release && sudo dnf install -y fail2ban ipset iptables iptables-nft curl</pre>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 2: Crear el filtro base y archivo de log de control</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-f2b-filter', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-f2b-filter" class="terminal-box">sudo mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/action.d /etc/fail2ban/jail.d /etc/mithril
+sudo touch /var/log/mithril-fail2ban.log
+
+sudo cat &lt;&lt;'EOF' &gt; /etc/fail2ban/filter.d/mithril-empty.conf
+[Definition]
+failregex = ^MITHRIL_MANUAL_BAN &lt;HOST&gt;$
+ignoreregex =
+EOF</pre>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 3: Crear la Acción Híbrida Universal (/etc/fail2ban/action.d/mithril-smart.conf)</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-f2b-action', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-f2b-action" class="terminal-box">sudo cat &lt;&lt;'EOF' &gt; /etc/fail2ban/action.d/mithril-smart.conf
+[Definition]
+actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
+              iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2&gt;/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+
+actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2&gt;/dev/null || true
+              ipset destroy mithril_f2b 2&gt;/dev/null || true
+
+actioncheck = ipset list mithril_f2b &gt;/dev/null 2&gt;&amp;1
+
+actionban   = ipset add mithril_f2b &lt;ip&gt; -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] &amp;&amp; [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\"mode\":\"block\",\"configuration\":{\"target\":\"ip\",\"value\":\"&lt;ip&gt;\"},\"notes\":\"Mithril-SIEM-Fail2ban\"}" &gt;/dev/null 2&gt;&amp;1 || true; fi; fi
+
+actionunban = ipset del mithril_f2b &lt;ip&gt; -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] &amp;&amp; [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&amp;configuration.value=&lt;ip&gt;" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2&gt;/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" &gt;/dev/null 2&gt;&amp;1 || true; fi; fi; fi
+
+[Init]
+name = mithril
+EOF</pre>
+      </div>
+
+      <div style="margin-bottom: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 4: Crear el Jail de Mithril (/etc/fail2ban/jail.d/mithril.local) y Activar Fail2ban</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-f2b-jail', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-f2b-jail" class="terminal-box">sudo cat &lt;&lt;'EOF' &gt; /etc/fail2ban/jail.d/mithril.local
+[mithril-jail]
+enabled  = true
+filter   = mithril-empty
+action   = mithril-smart
+logpath  = /var/log/mithril-fail2ban.log
+bantime  = -1
+findtime = 600
+maxretry = 1
+EOF
+
+sudo systemctl enable --now fail2ban
+sudo fail2ban-client reload
+sudo fail2ban-client status mithril-jail</pre>
+      </div>
+
+      <div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
+          <span style="font-size: 0.75rem; color: var(--neon-amber); font-weight: 600;">Paso 5 (Opcional - Solo si usas Cloudflare): Configurar Token para bloqueo en el Borde de Cloudflare</span>
+          <button type="button" class="copy-btn" onclick="copyCode('code-f2b-cf', this)">📋 Copiar</button>
+        </div>
+        <pre id="code-f2b-cf" class="terminal-box">sudo cat &lt;&lt;'EOF' &gt; /etc/mithril/cloudflare.env
+CF_API_TOKEN="TU_CLOUDFLARE_API_TOKEN"
+CF_ZONE_ID="TU_CLOUDFLARE_ZONE_ID"
+EOF
+sudo chmod 600 /etc/mithril/cloudflare.env</pre>
+      </div>
+    </div>
+
+    <!-- TAB 3: Ubuntu / Debian -->
     <div id="tab-ubuntu" class="guide-tab-content" style="display: none;">
       <p style="font-size: 0.8rem; color: var(--text-main); margin-bottom: 0.75rem;">
         Comandos específicos para <strong>Ubuntu 20.04 / 22.04 / 24.04 LTS</strong> y <strong>Debian 11 / 12</strong>:
@@ -167,7 +263,7 @@
           <button type="button" class="copy-btn" onclick="copyCode('code-ubuntu-deps', this)">📋 Copiar</button>
         </div>
         <pre id="code-ubuntu-deps" class="terminal-box">sudo apt-get update
-sudo apt-get install -y python3 ipset iptables curl git</pre>
+sudo apt-get install -y python3 fail2ban ipset iptables curl git</pre>
       </div>
 
       <div style="margin-bottom: 1rem;">
@@ -178,16 +274,16 @@ sudo apt-get install -y python3 ipset iptables curl git</pre>
         <pre id="code-ubuntu-systemd" class="terminal-box">sudo cat &lt;&lt;'EOF' &gt; /etc/systemd/system/mithril-bouncer.service
 [Unit]
 Description=Mithril SIEM Bouncer Agent
-After=network.target nginx.service
+After=network-online.target fail2ban.service nginx.service
 
 [Service]
 Type=simple
 User=root
 Environment="MITHRIL_URL=http://{{ host_ip }}:9900"
 Environment="NODE_API_KEY=TU_NODE_API_KEY"
-Environment="BLOCK_METHOD=ipset"
+Environment="BLOCK_METHOD=fail2ban"
+Environment="FAIL2BAN_JAIL=mithril-jail"
 Environment="SYNC_INTERVAL=15"
-Environment="NGINX_BLOCK_FILE=/etc/nginx/conf.d/mithril_blocklist.conf"
 ExecStart=/usr/bin/python3 /opt/mithril-agent/mithril_bouncer.py
 Restart=always
 RestartSec=5
@@ -207,7 +303,7 @@ sudo systemctl enable --now mithril-bouncer.service</pre>
       </div>
     </div>
 
-    <!-- TAB 3: Rocky Linux / AlmaLinux / RHEL -->
+    <!-- TAB 4: Rocky Linux / AlmaLinux / RHEL -->
     <div id="tab-rocky" class="guide-tab-content" style="display: none;">
       <p style="font-size: 0.8rem; color: var(--text-main); margin-bottom: 0.75rem;">
         Comandos específicos para <strong>Rocky Linux 8 / 9</strong>, <strong>AlmaLinux</strong>, <strong>RHEL</strong> y <strong>CentOS Stream</strong>:
@@ -215,10 +311,11 @@ sudo systemctl enable --now mithril-bouncer.service</pre>
 
       <div style="margin-bottom: 1rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">1. Dependencias del sistema (dnf)</span>
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">1. Dependencias del sistema (dnf + EPEL para Fail2ban)</span>
           <button type="button" class="copy-btn" onclick="copyCode('code-rocky-deps', this)">📋 Copiar</button>
         </div>
-        <pre id="code-rocky-deps" class="terminal-box">sudo dnf install -y python3 ipset iptables curl git</pre>
+        <pre id="code-rocky-deps" class="terminal-box">sudo dnf install -y epel-release
+sudo dnf install -y python3 fail2ban ipset iptables iptables-nft curl git</pre>
       </div>
 
       <div style="margin-bottom: 1rem;">
@@ -235,14 +332,14 @@ sudo systemctl enable --now mithril-bouncer.service</pre>
           <button type="button" class="copy-btn" onclick="copyCode('code-rocky-start', this)">📋 Copiar</button>
         </div>
         <pre id="code-rocky-start" class="terminal-box">sudo systemctl daemon-reload
-sudo systemctl enable --now mithril-bouncer.service</pre>
+sudo systemctl enable --now fail2ban mithril-bouncer.service</pre>
       </div>
     </div>
 
-    <!-- TAB 4: Configuración Nginx -->
+    <!-- TAB 5: Configuración Nginx -->
     <div id="tab-nginx" class="guide-tab-content" style="display: none;">
       <p style="font-size: 0.8rem; color: var(--text-main); margin-bottom: 0.75rem;">
-        Configuración de Nginx para enviar logs en tiempo real vía <strong>Syslog UDP (puerto 5140)</strong> e incluir la lista de bloqueo:
+        Con el Espejo de Red en RAM y <strong>Fail2ban</strong>, <strong>no necesitas modificar ni recargar Nginx</strong> para capturar tráfico ni para bloquear atacantes. Opcionalmente, puedes enviar logs JSON adicionales vía <strong>Syslog UDP (puerto 5140)</strong>:
       </p>
 
       <div style="margin-bottom: 1rem;">
@@ -270,29 +367,18 @@ sudo systemctl enable --now mithril-bouncer.service</pre>
 
       <div style="margin-bottom: 1rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">2. Directivas en el VirtualHost (dentro de server { ... })</span>
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">2. Directiva opcional en el VirtualHost (dentro de server { ... })</span>
           <button type="button" class="copy-btn" onclick="copyCode('code-nginx-vhost', this)">📋 Copiar</button>
         </div>
-        <pre id="code-nginx-vhost" class="terminal-box"># 1. Inclusión de lista negra administrada dinámicamente por Mithril
-include /etc/nginx/conf.d/mithril_blocklist.conf;
-
-# 2. Envío directo al SIEM por Syslog UDP en tiempo real
+        <pre id="code-nginx-vhost" class="terminal-box"># Envío directo al SIEM por Syslog UDP en tiempo real (sin tocar listas de bloqueo en Nginx)
 access_log syslog:server={{ host_ip }}:5140,facility=local7,tag=nginx mithril_json;</pre>
-      </div>
-
-      <div>
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">3. Validar sintaxis y recargar Nginx sin caídas</span>
-          <button type="button" class="copy-btn" onclick="copyCode('code-nginx-reload', this)">📋 Copiar</button>
-        </div>
-        <pre id="code-nginx-reload" class="terminal-box">sudo nginx -t && sudo systemctl reload nginx</pre>
       </div>
     </div>
 
-    <!-- TAB 5: Verificación & Systemd -->
+    <!-- TAB 6: Verificación & Systemd -->
     <div id="tab-verify" class="guide-tab-content" style="display: none;">
       <p style="font-size: 0.8rem; color: var(--text-main); margin-bottom: 0.75rem;">
-        Comandos de diagnóstico para monitorear el agente y las reglas de bloqueo en tu proxy:
+        Comandos de diagnóstico para monitorear el agente y los bloqueos aplicados por Fail2ban:
       </p>
 
       <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem;">
@@ -307,13 +393,13 @@ access_log syslog:server={{ host_ip }}:5140,facility=local7,tag=nginx mithril_js
         </div>
 
         <div style="background: rgba(6, 9, 16, 0.7); border: 1px solid var(--border-dim); padding: 0.75rem; border-radius: 6px;">
-          <div style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.3rem;">Ver IPs Bloqueadas en Kernel (ipset)</div>
-          <pre class="terminal-box" style="margin: 0;">sudo ipset list mithril_blacklist</pre>
+          <div style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.3rem;">Estado del Jail en Fail2ban</div>
+          <pre class="terminal-box" style="margin: 0;">sudo fail2ban-client status mithril-jail</pre>
         </div>
 
         <div style="background: rgba(6, 9, 16, 0.7); border: 1px solid var(--border-dim); padding: 0.75rem; border-radius: 6px;">
-          <div style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Ver Archivo de Bloqueo Nginx</div>
-          <pre class="terminal-box" style="margin: 0;">cat /etc/nginx/conf.d/mithril_blocklist.conf</pre>
+          <div style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.3rem;">Ver IPs en Kernel (ipset de Fail2ban)</div>
+          <pre class="terminal-box" style="margin: 0;">sudo ipset list mithril_f2b</pre>
         </div>
       </div>
     </div>

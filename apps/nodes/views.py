@@ -104,7 +104,7 @@ def node_configure_view(request, node_id):
             node.max_rps_alert_threshold = int(request.POST.get('max_rps_alert_threshold', 1000))
             node.syslog_port = int(request.POST.get('syslog_port', 5140))
             node.sync_interval_seconds = int(request.POST.get('sync_interval_seconds', 15))
-            node.block_method = request.POST.get('block_method', 'ipset')
+            node.block_method = request.POST.get('block_method', 'fail2ban')
             node.notify_on_degraded = 'notify_on_degraded' in request.POST
             node.save()
 
@@ -127,7 +127,7 @@ def node_configure_view(request, node_id):
     host_ip = request.get_host().split(':')[0]
     generated_systemd_service = f"""[Unit]
 Description=Mithril SIEM Bouncer Agent ({node.name})
-After=network-online.target firewalld.service nginx.service
+After=network-online.target firewalld.service fail2ban.service nginx.service
 Wants=network-online.target
 
 [Service]
@@ -137,6 +137,7 @@ Environment="MITHRIL_URL=http://{host_ip}:9900"
 Environment="NODE_API_KEY={node.api_key}"
 Environment="SYNC_INTERVAL={node.sync_interval_seconds}"
 Environment="BLOCK_METHOD={node.block_method}"
+Environment="FAIL2BAN_JAIL=mithril-jail"
 Environment="NGINX_BLOCK_FILE=/etc/nginx/conf.d/mithril_blocklist.conf"
 ExecStart=/usr/bin/python3 /opt/mithril-agent/mithril_bouncer.py
 Restart=always
@@ -147,14 +148,44 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target"""
 
-    generated_nginx_snippet = f"""# Snippet Nginx para nodo: {node.name}
-# Incluir en el bloque server {{ ... }}
-include /etc/nginx/conf.d/mithril_blocklist.conf;
+    generated_fail2ban_action = """# /etc/fail2ban/action.d/mithril-smart.conf
+[Definition]
+actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
+              iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+
+actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+              ipset destroy mithril_f2b 2>/dev/null || true
+
+actioncheck = ipset list mithril_f2b >/dev/null 2>&1
+
+actionban   = ipset add mithril_f2b <ip> -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\\"mode\\":\\"block\\",\\"configuration\\":{\\"target\\":\\"ip\\",\\"value\\":\\"<ip>\\"},\\"notes\\":\\"Mithril-SIEM-Fail2ban\\"}" >/dev/null 2>&1 || true; fi; fi
+
+actionunban = ipset del mithril_f2b <ip> -exist
+              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
+
+[Init]
+name = mithril"""
+
+    generated_fail2ban_jail = """# /etc/fail2ban/jail.d/mithril.local
+[mithril-jail]
+enabled  = true
+filter   = mithril-empty
+action   = mithril-smart
+logpath  = /var/log/mithril-fail2ban.log
+bantime  = -1
+findtime = 600
+maxretry = 1"""
+
+    generated_nginx_snippet = f"""# Snippet Nginx opcional para nodo: {node.name}
+# Solo necesario si deseas emitir access_log via Syslog UDP (Con Fail2ban NO necesitas tocar Nginx para bloquear)
 access_log syslog:server={host_ip}:{node.syslog_port},facility=local7,tag=nginx mithril_json;"""
 
     context = {
         'node': node,
         'systemd_service': generated_systemd_service,
+        'fail2ban_action': generated_fail2ban_action,
+        'fail2ban_jail': generated_fail2ban_jail,
         'nginx_snippet': generated_nginx_snippet,
         'host_ip': host_ip,
     }

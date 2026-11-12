@@ -12,8 +12,10 @@ class ProxyNode(models.Model):
     ]
 
     BLOCK_METHOD_CHOICES = [
-        ('ipset', 'Kernel ipset (Recomendado - Ultra Rápido)'),
+        ('fail2ban', 'Fail2ban + Smart Action (Recomendado - Universal sin tocar Nginx)'),
+        ('ipset', 'Kernel ipset (Directo - Firewall de Red)'),
         ('nginx_conf', 'Archivo include dinámico de Nginx (deny IP;)'),
+        ('monitor', 'Modo Monitor Pasivo (Solo Observación - Cero Bloqueos)'),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -30,7 +32,7 @@ class ProxyNode(models.Model):
     max_rps_alert_threshold = models.IntegerField(default=1000, help_text="Umbral de peticiones/segundo para considerar el nodo saturado")
     syslog_port = models.IntegerField(default=5140, help_text="Puerto UDP/TCP para recibir streaming de logs de este proxy")
     sync_interval_seconds = models.IntegerField(default=15, help_text="Frecuencia en segundos para sincronizar la lista de IPs bloqueadas")
-    block_method = models.CharField(max_length=16, choices=BLOCK_METHOD_CHOICES, default='ipset', help_text="Mecanismo de bloqueo local")
+    block_method = models.CharField(max_length=16, choices=BLOCK_METHOD_CHOICES, default='fail2ban', help_text="Mecanismo de bloqueo local")
     notify_on_degraded = models.BooleanField(default=True, help_text="Enviar alerta por Telegram si el nodo se satura o se desconecta")
 
     # Métricas y Telemetría del Servidor
