@@ -66,7 +66,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function isEventLocal(event) {
     if (!event) return false;
-    if (event.is_cloudflare) return false; // Tráfico proveniente de Cloudflare Edge nunca es puramente local
+    // Peticiones que nacen en la propia red local / infraestructura (ej. Zabbix interno o LAN propia)
+    // y salen por la IP Pública WAN propia hasta un nodo de Cloudflare para volver a entrar (Hairpinning)
+    if (event.is_own_public_ip === true) return true;
     if (event.is_local_ip === true) return true;
     const realIp = event.real_client_ip;
     const clientIp = event.client_ip;
@@ -77,8 +79,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function isEventProbe(event) {
     if (!event) return false;
+    if (event.is_own_public_ip === true) return false;
     const ua = String(event.user_agent || '');
-    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('Zabbix') || ua.includes('UptimeRobot') || ua.includes('TLS SNI')) return true;
+    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('UptimeRobot') || ua.includes('TLS SNI')) return true;
     if (event.method === 'HTTPS' || event.http_method === 'HTTPS') return true;
     if (!event.real_client_ip && event.is_cloudflare) return true;
     return false;

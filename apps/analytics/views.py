@@ -173,11 +173,13 @@ def api_map_data(request):
         p['is_cloudflare'] = meta['is_cloudflare']
         p['cloudflare_ip'] = meta['cloudflare_ip']
         p['real_client_ip'] = meta['real_client_ip']
-        p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (p['client_ip'] if not meta['is_cloudflare'] else ''))
+        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(meta['real_client_ip'] or p['client_ip'])
+        p['is_local'] = is_own_pub or meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (p['client_ip'] if not meta['is_cloudflare'] else ''))
         p['is_direct_public_ip'] = meta.get('is_direct_public_ip', (not p['is_cloudflare'] and not p['is_local'] and bool(p['real_client_ip'] or p['client_ip'])))
-        p['is_probe'] = bool(
+        p['is_probe'] = (not is_own_pub) and bool(
             (meta['is_cloudflare'] and not meta['real_client_ip'])
             or 'Cloudflare-Traffic-Manager' in ua
+            or 'UptimeRobot' in ua
             or 'TLS SNI' in ua
             or method == 'HTTPS'
         )
@@ -351,7 +353,7 @@ def api_live_feed_logs(request):
 
     qs = base_qs
 
-    # 1. Filtro independiente de IPs Locales / Balanceador
+    # 1. Filtro independiente de IPs Locales / Balanceador / Infraestructura Propia (WAN Propia vía Cloudflare)
     if hide_local:
         qs = (
             qs.exclude(client_ip__startswith='127.')
@@ -360,14 +362,14 @@ def api_live_feed_logs(request):
             .exclude(client_ip__startswith='169.254.')
             .exclude(country_code='LAN')
             .exclude(raw_headers__is_local_ip=True)
+            .exclude(raw_headers__is_own_public_ip=True)
         )
 
-    # 2. Filtro independiente de Sondas / Handshakes
+    # 2. Filtro independiente de Sondas / Handshakes de Cloudflare
     if hide_probes:
         qs = (
             qs.exclude(http_method='HTTPS')
             .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
-            .exclude(user_agent__icontains='Zabbix')
             .exclude(user_agent__icontains='UptimeRobot')
             .exclude(user_agent__icontains='TLS SNI')
             .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
