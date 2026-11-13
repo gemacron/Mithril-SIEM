@@ -164,7 +164,7 @@ class Command(BaseCommand):
         ]
         for ip_addr, cc in own_infra_ips:
             IpReputation.objects.update_or_create(
-                ip_address=ip_addr,
+                client_ip=ip_addr,
                 defaults={
                     'status': 'WHITELISTED',
                     'current_risk_score': 0,
@@ -227,13 +227,13 @@ class Command(BaseCommand):
                     SET country_code = 'PY'
                     WHERE country_code != 'PY'
                       AND (
-                          ip_address LIKE '181.%'
-                          OR ip_address LIKE '190.128.%'
-                          OR ip_address LIKE '177.11.%'
-                          OR ip_address LIKE '200.85.%'
-                          OR ip_address LIKE '201.222.%'
-                          OR ip_address LIKE '2800:c70:%'
-                          OR ip_address LIKE '2803:2a00:%'
+                          client_ip LIKE '181.%'
+                          OR client_ip LIKE '190.128.%'
+                          OR client_ip LIKE '177.11.%'
+                          OR client_ip LIKE '200.85.%'
+                          OR client_ip LIKE '201.222.%'
+                          OR client_ip LIKE '2800:c70:%'
+                          OR client_ip LIKE '2803:2a00:%'
                       );
                 """)
                 # Descartar falsos positivos previos de sincronización Nextcloud en usuarios de Paraguay
@@ -252,9 +252,9 @@ class Command(BaseCommand):
                 """)
                 cur.execute("""
                     UPDATE mitigation_ipreputation
-                    SET status = 'NORMAL', current_risk_score = 0
-                    WHERE status != 'BLOCKED'
-                      AND ip_address IN (
+                    SET status = 'MONITORED', current_risk_score = 0
+                    WHERE status != 'BANNED'
+                      AND client_ip IN (
                           '2800:c70:6:60df:18e7:23b8:d401:b8f4',
                           '181.127.196.66',
                           '181.126.193.193',

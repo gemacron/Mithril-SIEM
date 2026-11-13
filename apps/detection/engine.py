@@ -870,20 +870,24 @@ def process_incoming_log(data, node=None):
 
     # 2. Consultar o crear reputación de la IP del CLIENTE
     is_own_infra = is_own_infrastructure_ip(target_client_ip)
+    rep_cc = str(geo.get('country_code') or '')[:4]
     reputation, _ = IpReputation.objects.get_or_create(
         client_ip=target_client_ip,
         defaults={
-            'country_code': geo['country_code'],
+            'country_code': rep_cc,
             'asn': 'OWN_INFRASTRUCTURE' if is_own_infra else ('CLOUDFLARE' if (is_cf and not real_client_ip) else ''),
             'status': 'WHITELISTED' if is_own_infra else 'MONITORED'
         }
     )
-    if is_own_infra and (reputation.status != 'WHITELISTED' or reputation.country_code != geo['country_code']):
+    if is_own_infra and (reputation.status != 'WHITELISTED' or reputation.country_code != rep_cc):
         reputation.status = 'WHITELISTED'
-        reputation.country_code = geo['country_code']
+        reputation.country_code = rep_cc
         reputation.asn = 'OWN_INFRASTRUCTURE'
         reputation.current_risk_score = 0
         reputation.save(update_fields=['status', 'country_code', 'asn', 'current_risk_score'])
+    elif not is_own_infra and cf_country_hdr and len(rep_cc) == 2 and reputation.country_code != rep_cc:
+        reputation.country_code = rep_cc
+        reputation.save(update_fields=['country_code'])
     elif is_cf and not real_client_ip and reputation.asn != 'CLOUDFLARE':
         reputation.asn = 'CLOUDFLARE'
         reputation.save(update_fields=['asn'])

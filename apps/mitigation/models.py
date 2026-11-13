@@ -14,7 +14,7 @@ class IpReputation(models.Model):
     client_ip = models.GenericIPAddressField(primary_key=True)
     current_risk_score = models.SmallIntegerField(default=0)
     total_violations = models.IntegerField(default=0)
-    country_code = models.CharField(max_length=4, blank=True, default='')
+    country_code = models.CharField(max_length=8, blank=True, default='')
     asn = models.CharField(max_length=64, blank=True, default='')
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='MONITORED')
     first_seen_at = models.DateTimeField(auto_now_add=True)
