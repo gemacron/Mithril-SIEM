@@ -59,13 +59,10 @@ def reports_index_view(request):
         if log.is_local_ip:
             log.country_code = 'LAN'
             log.country_name = 'Red Interna (LAN)'
-        elif log.is_own_public_ip:
-            log.country_code = 'PY'
-            log.country_name = 'Paraguay (WAN Propia)'
-        elif meta.get('cf_country'):
-            cc, cname, _, _, _ = resolve_geoip(log.real_client_ip or log.client_ip, cf_country=meta['cf_country'])
-            log.country_code = cc
-            log.country_name = cname
+        elif log.is_own_public_ip or meta.get('cf_country'):
+            geo = resolve_geoip(log.real_client_ip or log.client_ip, cf_country=meta.get('cf_country', ''))
+            log.country_code = geo['country_code']
+            log.country_name = geo['country_name']
         log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip and not log.is_own_public_ip))
     audit_records = AuditTrail.objects.select_related('user')[:50]
     recent_events = list(SecurityEvent.objects.select_related('rule', 'node')[:50])

@@ -377,7 +377,7 @@ def is_cf_ip(ip_s):
     return res
 
 def get_own_interface_ips():
-    """Obtiene únicamente las IPs asignadas a las interfaces de este mismo servidor proxy"""
+    """Obtiene dinámicamente las IPs asignadas a las interfaces de red de este servidor proxy."""
     own = {"127.0.0.1", "::1"}
     try:
         res = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True, check=False)
@@ -386,11 +386,58 @@ def get_own_interface_ips():
                 own.add(m.group(1))
     except Exception:
         pass
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None):
+            addr = info[4][0]
+            if addr:
+                own.add(addr)
+    except Exception:
+        pass
     return own
+
+
+def discover_own_public_wan_ip():
+    """
+    Descubre dinámicamente la IP Pública WAN de salida de este servidor (sin hardcodear ninguna IP)
+    consultando reflectores públicos estándar (Cloudflare Trace / ipify).
+    """
+    trace_urls = (
+        "https://1.1.1.1/cdn-cgi/trace",
+        "https://api.ipify.org",
+        "https://icanhazip.com",
+    )
+    for url in trace_urls:
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mithril-Bouncer/2.1"}, method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                body = resp.read().decode("utf-8", errors="ignore").strip()
+            if "ip=" in body:
+                for line in body.splitlines():
+                    if line.startswith("ip="):
+                        cand = line.split("=", 1)[1].strip()
+                        ipaddress.ip_address(cand)
+                        return cand
+            else:
+                ipaddress.ip_address(body)
+                return body
+        except Exception:
+            continue
+    return ""
+
 
 _OWN_HOST_IPS = get_own_interface_ips()
 _MITHRIL_SIEM_HOST = urllib.parse.urlparse(MITHRIL_URL).hostname or "127.0.0.1"
-_OWN_PROTECTED_WAN_IPS = {"190.128.226.122", "192.168.150.181", "192.168.200.226", _MITHRIL_SIEM_HOST}
+_OWN_PUBLIC_WAN_IP = discover_own_public_wan_ip()
+_EXTRA_PROTECTED_IPS = {
+    x.strip() for x in os.getenv("PROTECTED_IPS", "").split(",") if x.strip()
+}
+_OWN_PROTECTED_WAN_IPS = (
+    set(_OWN_HOST_IPS)
+    | {_MITHRIL_SIEM_HOST}
+    | ({_OWN_PUBLIC_WAN_IP} if _OWN_PUBLIC_WAN_IP else set())
+    | _EXTRA_PROTECTED_IPS
+)
 
 def is_own_balancer_ip(ip_s):
     """True solo si la IP es loopback o pertenece a la interfaz de red propia de este servidor"""
@@ -400,7 +447,7 @@ def is_own_balancer_ip(ip_s):
     return s in _OWN_HOST_IPS or s.startswith("127.")
 
 def is_protected_infra_ip(ip_s):
-    """True si la IP pertenece al propio balanceador, al servidor Mithril SIEM o a la IP Pública WAN propia"""
+    """True si la IP pertenece al propio balanceador, al servidor Mithril SIEM o a la IP Pública WAN propia autodescubierta"""
     if not ip_s:
         return True
     s = ip_s.strip()
@@ -603,7 +650,7 @@ def kernel_network_mirror_worker():
                             real_origin_ip = cand
                             break
                 else:
-                    # Tráfico directo (LAN local ej. 192.168.200.226 o acceso directo a IP pública sin Cloudflare)
+                    # Tráfico directo (red local LAN o acceso directo a IP pública sin pasar por Cloudflare)
                     for cand in [x_real_ip, *xff_parts, src_ip]:
                         if cand and not is_cf_ip(cand) and not is_own_balancer_ip(cand):
                             real_origin_ip = cand
@@ -639,6 +686,7 @@ def kernel_network_mirror_worker():
                     "real_client_ip": real_ip,
                     "edge_ip": edge_ip,
                     "raw_src_ip": src_ip,
+                    "node_public_ip": _OWN_PUBLIC_WAN_IP,
                 }
 
                 pending_http[(src_ip, src_port, dst_ip, dst_port)] = {

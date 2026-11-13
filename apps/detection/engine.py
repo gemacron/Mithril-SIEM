@@ -348,32 +348,146 @@ def is_private_local_ip(ip_str):
     return False
 
 
-# IPs Públicas WAN propias de la infraestructura del cliente (ej. salida NAT corporativa / Zabbix / servidores propios)
-# Pueden ampliarse dinámicamente mediante la variable de entorno MITHRIL_OWN_PUBLIC_IPS="190.128.226.122,..."
-DEFAULT_OWN_PUBLIC_WAN_IPS = {
-    '190.128.226.122',
+# ==============================================================================
+# AUTODESCUBRIMIENTO DINÁMICO DE INFRAESTRUCTURA PROPIA (CERO IPs HARDCODEADAS)
+# ==============================================================================
+OWN_WAN_CACHE_KEY = 'mithril:own_public_wan_info:v1'
+_OWN_INFRA_LOCK = threading.Lock()
+_OWN_INFRA_STATE = {
+    'public_wan_ips': set(),
+    'public_wan_country': '',
+    'internal_node_ips': {'127.0.0.1', '::1'},
+    'last_wan_probe_epoch': 0.0,
+    'last_db_refresh_epoch': 0.0,
+    'probing_wan': False,
 }
+_GEOIP_MEM_CACHE = {}
 
-DEFAULT_OWN_INTERNAL_INFRA_IPS = {
-    '127.0.0.1',
-    '::1',
-    '192.168.150.181',  # Balanceador / Proxy servbalancer150
-    '192.168.200.226',  # Servidor Central Mithril SIEM
-    '192.168.150.66',   # Servidor Interno Prometheus / Monitoreo
-}
+
+def _probe_own_public_wan_worker():
+    """
+    Descubre automáticamente la IP Pública WAN de salida del propio entorno y su país ISO
+    consultando reflectores públicos estándar (Cloudflare Trace / ipify), sin hardcodear ninguna IP.
+    """
+    try:
+        for url in ('https://1.1.1.1/cdn-cgi/trace', 'https://api.ipify.org', 'https://icanhazip.com'):
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mithril-SIEM/2.1'}, method='GET')
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    body = resp.read().decode('utf-8', errors='ignore').strip()
+                discovered_ip = ''
+                discovered_cc = ''
+                if 'ip=' in body:
+                    for line in body.splitlines():
+                        if line.startswith('ip='):
+                            discovered_ip = line.split('=', 1)[1].strip()
+                        elif line.startswith('loc='):
+                            discovered_cc = line.split('=', 1)[1].strip().upper()
+                else:
+                    discovered_ip = body
+                if _is_valid_ip(discovered_ip) and not is_private_local_ip(discovered_ip):
+                    register_own_public_wan_ip(discovered_ip, discovered_cc)
+                    break
+            except Exception:
+                continue
+    finally:
+        _OWN_INFRA_STATE['probing_wan'] = False
+        _OWN_INFRA_STATE['last_wan_probe_epoch'] = time.time()
+
+
+def register_own_public_wan_ip(ip_str, country_code=''):
+    """Registra dinámicamente en RAM y Redis una IP Pública WAN perteneciente a la propia infraestructura."""
+    if not _is_valid_ip(ip_str) or is_private_local_ip(ip_str) or is_cloudflare_ip(ip_str):
+        return
+    s = str(ip_str).strip()
+    cc = str(country_code or '').strip().upper()
+    with _OWN_INFRA_LOCK:
+        _OWN_INFRA_STATE['public_wan_ips'].add(s)
+        if cc and cc not in ('XX', 'T1', '-'):
+            _OWN_INFRA_STATE['public_wan_country'] = cc
+        payload = {
+            'ips': list(_OWN_INFRA_STATE['public_wan_ips']),
+            'country': _OWN_INFRA_STATE['public_wan_country'],
+        }
+    try:
+        cache.set(OWN_WAN_CACHE_KEY, payload, timeout=86400)
+    except Exception:
+        pass
+
+
+def _refresh_own_infra_ips_if_needed():
+    now_ep = time.time()
+    # 1. Sondear la IP Pública WAN del servidor en segundo plano cada 30 minutos
+    if (now_ep - _OWN_INFRA_STATE['last_wan_probe_epoch']) > 1800 and not _OWN_INFRA_STATE['probing_wan']:
+        _OWN_INFRA_STATE['probing_wan'] = True
+        try:
+            cached = cache.get(OWN_WAN_CACHE_KEY)
+            if isinstance(cached, dict):
+                with _OWN_INFRA_LOCK:
+                    for ip_c in cached.get('ips', []):
+                        if _is_valid_ip(ip_c):
+                            _OWN_INFRA_STATE['public_wan_ips'].add(ip_c)
+                    if cached.get('country') and not _OWN_INFRA_STATE['public_wan_country']:
+                        _OWN_INFRA_STATE['public_wan_country'] = cached['country']
+        except Exception:
+            pass
+        threading.Thread(target=_probe_own_public_wan_worker, daemon=True).start()
+
+    # 2. Sincronizar nodos registrados e IPs en lista blanca desde PostgreSQL cada 45 segundos
+    if (now_ep - _OWN_INFRA_STATE['last_db_refresh_epoch']) > 45:
+        _OWN_INFRA_STATE['last_db_refresh_epoch'] = now_ep
+        try:
+            node_ips = set(ProxyNode.objects.values_list('ip_address', flat=True))
+            own_wan_db = set(
+                IpReputation.objects.filter(asn='OWN_INFRASTRUCTURE').values_list('client_ip', flat=True)
+            )
+            whitelisted_db = set(
+                IpReputation.objects.filter(status='WHITELISTED').values_list('client_ip', flat=True)
+            )
+            with _OWN_INFRA_LOCK:
+                for nip in (node_ips | whitelisted_db):
+                    if _is_valid_ip(nip):
+                        if is_private_local_ip(nip):
+                            _OWN_INFRA_STATE['internal_node_ips'].add(nip)
+                        elif nip in own_wan_db:
+                            _OWN_INFRA_STATE['public_wan_ips'].add(nip)
+                for wip in own_wan_db:
+                    if _is_valid_ip(wip) and not is_private_local_ip(wip):
+                        _OWN_INFRA_STATE['public_wan_ips'].add(wip)
+        except Exception:
+            pass
 
 
 def get_own_public_wan_ips():
+    """
+    Devuelve el conjunto de IPs Públicas WAN propias de la infraestructura:
+      - Autodescubiertas en tiempo de ejecución (reflector WAN / agentes mithril-bouncer / monitores internos)
+      - Registradas en BD con ASN 'OWN_INFRASTRUCTURE'
+      - Opcionalmente declaradas en la variable de entorno MITHRIL_OWN_PUBLIC_IPS
+    """
+    _refresh_own_infra_ips_if_needed()
     env_extra = os.environ.get('MITHRIL_OWN_PUBLIC_IPS', '')
-    extra_set = {x.strip() for x in env_extra.split(',') if x.strip()}
-    return DEFAULT_OWN_PUBLIC_WAN_IPS | extra_set
+    extra_set = {x.strip() for x in env_extra.split(',') if _is_valid_ip(x.strip())}
+    with _OWN_INFRA_LOCK:
+        return set(_OWN_INFRA_STATE['public_wan_ips']) | extra_set
+
+
+def get_own_internal_infra_ips():
+    """
+    Devuelve el conjunto de IPs internas de la infraestructura (nodos Proxy registrados,
+    loopback, IPs en lista blanca y variable opcional MITHRIL_PROTECTED_IPS).
+    """
+    _refresh_own_infra_ips_if_needed()
+    env_extra = os.environ.get('MITHRIL_PROTECTED_IPS', '')
+    extra_set = {x.strip() for x in env_extra.split(',') if _is_valid_ip(x.strip())}
+    with _OWN_INFRA_LOCK:
+        return set(_OWN_INFRA_STATE['internal_node_ips']) | extra_set
 
 
 def is_own_public_wan_ip(ip_str):
     """
-    Detecta si una IP pública corresponde a la propia IP pública WAN de la infraestructura
-    (por ejemplo 190.128.226.122 cuando Zabbix, microservicios GuzzleHttp o usuarios internos
-    salen a Internet y entran por Cloudflare Hairpin/WAN).
+    Detecta dinámicamente si una IP pública corresponde a la propia IP pública WAN de la infraestructura
+    (por ejemplo cuando un monitor interno como Zabbix o un servicio propio sale a Internet y entra por Cloudflare).
     ESTA IP TIENE INMUNIDAD ABSOLUTA Y JAMÁS DEBE BLOQUEARSE.
     """
     if not ip_str:
@@ -383,13 +497,13 @@ def is_own_public_wan_ip(ip_str):
 
 def is_own_infrastructure_ip(ip_str):
     """
-    Verifica si una IP pertenece a la infraestructura crítica propia (WAN Pública propia,
-    Balanceador Nginx, Servidor Mithril SIEM o Loopback). Nunca debe ser bloqueada.
+    Verifica dinámicamente si una IP pertenece a la infraestructura crítica propia (WAN Pública propia,
+    Nodos Proxy registrados, Servidores en Lista Blanca o Loopback). Nunca debe ser bloqueada.
     """
     if not ip_str:
         return False
     s = str(ip_str).strip()
-    if s in DEFAULT_OWN_INTERNAL_INFRA_IPS or is_own_public_wan_ip(s):
+    if s in get_own_internal_infra_ips() or is_own_public_wan_ip(s):
         return True
     return False
 
@@ -441,19 +555,6 @@ ISO_COUNTRY_GEO_MAP = {
 }
 
 
-def _is_paraguay_isp_ip(ip_str):
-    if not ip_str:
-        return False
-    s = str(ip_str).strip().lower()
-    py_prefixes = (
-        '190.128.', '190.104.', '190.52.', '181.94.', '181.120.', '181.121.',
-        '181.122.', '181.123.', '181.124.', '181.125.', '181.126.', '181.127.',
-        '181.78.', '200.85.', '201.222.', '177.11.', '186.16.', '186.17.',
-        '2800:c70:', '2803:2a00:', '2803:c700:',
-    )
-    return s.startswith(py_prefixes)
-
-
 def resolve_cloudflare_and_real_ip(data):
     """
     Separa e identifica simultáneamente con precisión absoluta las 4 variables de red:
@@ -461,14 +562,19 @@ def resolve_cloudflare_and_real_ip(data):
       2) `real_client_ip`: La IP real del cliente de origen (extraída estrictamente de cabeceras HTTP
          reales de ESTA petición: CF-Connecting-IP, True-Client-IP, X-Forwarded-For, X-Real-IP).
       3) `is_cloudflare`: True si la conexión proviene de un nodo de Cloudflare o trae cabeceras CF.
-      4) `is_local_ip`: True si es tráfico originado directamente en la LAN privada (192.168.x.x / 10.x.x.x).
-      5) `is_own_public_ip`: True si `real_client_ip` es la propia IP Pública WAN de la infraestructura (ej. 190.128.226.122).
+      4) `is_local_ip`: True si es tráfico originado directamente en la LAN privada (RFC1918).
+      5) `is_own_public_ip`: True si `real_client_ip` es la propia IP Pública WAN de la infraestructura.
       6) `is_direct_public_ip`: True si un cliente externo se conectó directo a la IP pública sin pasar por Cloudflare.
     """
     headers = data.get('headers', {}) if isinstance(data.get('headers'), dict) else {}
     raw_ip = str(data.get('client_ip') or data.get('remote_addr') or '').strip()
     http_method = str(data.get('http_method') or data.get('method') or '').upper()
     user_agent = str(data.get('user_agent') or '')
+
+    # Si el agente mithril-bouncer reportó su propia IP pública WAN de salida, registrarla dinámicamente
+    node_pub_ip = str(headers.get('node_public_ip') or data.get('node_public_ip') or '').strip()
+    if node_pub_ip:
+        register_own_public_wan_ip(node_pub_ip)
 
     # 1. Detección de Handshakes TLS ClientHello
     # Un paquete de Handshake TLS en puerto 443 es previo a la desencriptación HTTP,
@@ -511,7 +617,7 @@ def resolve_cloudflare_and_real_ip(data):
     x_real_ip = str(headers.get('x_real_ip') or headers.get('x-real-ip') or data.get('x_real_ip') or '').strip()
 
     # Verificar si las cabeceras HTTP reales del proxy (X-Real-IP / X-Forwarded-For) demuestran
-    # que el cliente conectó directamente (por LAN local ej. 192.168.200.226 o directo a IP pública)
+    # que el cliente conectó directamente (por red local LAN o directo a IP pública)
     # sin pasar por Cloudflare (sin CF-Ray, sin CF-Connecting-IP y sin IPs de Cloudflare en X-Real-IP/XFF).
     header_peer_ips = [ip for ip in ([x_real_ip] + xff_ips) if _is_valid_ip(ip)]
     has_direct_non_cf_peer = (
@@ -553,8 +659,12 @@ def resolve_cloudflare_and_real_ip(data):
         # ES UNA SONDA DE SALUD (HEALTHCHECK) INTERNA DE CLOUDFLARE O UN RECURSO INTERNO DE EDGE.
         final_real_ip = real_client_ip
         is_local = is_private_local_ip(final_real_ip) if final_real_ip else False
+        # Autodescubrimiento de Hairpinning WAN: si un monitor interno (Zabbix, Prometheus, Uptime-Kuma, Nagios)
+        # sale por la WAN de la infraestructura y entra por Cloudflare, registrar automáticamente esa IP como WAN Propia.
+        if final_real_ip and not is_local and any(m in user_agent for m in ('Zabbix', 'Prometheus', 'Uptime-Kuma', 'Nagios', 'Blackbox-Exporter')):
+            register_own_public_wan_ip(final_real_ip, cf_country)
     else:
-        # Petición directa que no pasó por Cloudflare (ej. LAN interna 192.168.200.226 o acceso directo a IP pública):
+        # Petición directa que no pasó por Cloudflare (red local LAN o acceso directo a IP pública):
         direct_cand = ''
         for cand in [x_real_ip, *xff_ips]:
             if _is_valid_ip(cand) and not is_cloudflare_ip(cand):
@@ -592,7 +702,7 @@ def extract_log_ip_meta(ip_str, headers=None):
     nested_hdrs = hdrs.get('headers', {}) if isinstance(hdrs.get('headers'), dict) else {}
     merged = {**nested_hdrs, **hdrs}
 
-    # Verificar si una fila histórica tenía X-Real-IP directo (ej. 192.168.200.226) sin cabeceras reales de Cloudflare
+    # Verificar si una fila tenía X-Real-IP directo (sin cabeceras reales de Cloudflare)
     x_real = str(merged.get('x_real_ip') or merged.get('x-real-ip') or '').strip()
     cf_conn = str(merged.get('cf_connecting_ip') or merged.get('cf-connecting-ip') or '').strip()
     cf_ray_val = str(merged.get('cf_ray') or merged.get('cf-ray') or '').strip()
@@ -622,7 +732,7 @@ def extract_log_ip_meta(ip_str, headers=None):
         cf_node = stored_cf or (ip_str if is_cloudflare_ip(ip_str) else str(merged.get('connection_ip') or ''))
         eff_target = stored_real or ip_str
         is_loc = is_private_local_ip(eff_target)
-        is_own_pub = is_own_public_wan_ip(eff_target)
+        is_own_pub = bool(merged.get('is_own_public_ip')) or is_own_public_wan_ip(eff_target)
         is_direct_val = merged.get('is_direct_public_ip')
         if is_direct_val is None:
             is_direct_val = (not is_cf) and (not is_loc) and (not is_own_pub) and bool(eff_target)
@@ -660,30 +770,72 @@ def normalize_inspection_payload(raw_text):
     except Exception:
         return str(raw_text)
 
+
+def _lookup_public_geoip_api(ip_clean):
+    """
+    Consulta universal GeoIP en línea con caché en RAM y Redis para IPs públicas directas
+    (cuando no viene cabecera CF-IPCountry), válido para cualquier país o proveedor del mundo.
+    """
+    if not ip_clean or is_private_local_ip(ip_clean) or is_cloudflare_ip(ip_clean):
+        return None
+    if ip_clean in _GEOIP_MEM_CACHE:
+        return _GEOIP_MEM_CACHE[ip_clean]
+    cache_key = f"mithril:geoip:v1:{ip_clean}"
+    try:
+        cached = cache.get(cache_key)
+        if isinstance(cached, dict) and cached.get('country_code'):
+            _GEOIP_MEM_CACHE[ip_clean] = cached
+            return cached
+    except Exception:
+        pass
+
+    try:
+        url = f"http://ip-api.com/json/{ip_clean}?fields=status,countryCode,country,city,lat,lon&lang=es"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mithril-SIEM/2.1'}, method='GET')
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            payload = json.loads(resp.read().decode('utf-8', errors='ignore'))
+        if payload.get('status') == 'success' and payload.get('countryCode'):
+            cc = str(payload['countryCode']).strip().upper()[:8]
+            cname = str(payload.get('country') or ISO_COUNTRY_GEO_MAP.get(cc, (cc, cc, 'Remoto', 0.0, 0.0))[1])
+            city = str(payload.get('city') or 'Remoto')
+            lat = float(payload.get('lat') or 0.0)
+            lon = float(payload.get('lon') or 0.0)
+            res = {
+                'country_code': cc,
+                'country_name': cname,
+                'city': city,
+                'latitude': lat,
+                'longitude': lon,
+                'is_cloudflare': False,
+            }
+            if len(_GEOIP_MEM_CACHE) > 4000:
+                _GEOIP_MEM_CACHE.clear()
+            _GEOIP_MEM_CACHE[ip_clean] = res
+            try:
+                cache.set(cache_key, res, timeout=86400)
+            except Exception:
+                pass
+            return res
+    except Exception:
+        pass
+    return None
+
+
 def resolve_geoip(ip_str, cf_country=''):
     """
-    Resuelve la ubicación geográfica real de la IP priorizando:
-      1) Si es la IP Pública WAN propia de la infraestructura (ej. 190.128.226.122) -> Paraguay (Infraestructura Propia WAN)
-      2) Si es una IP Privada / Red Local (192.168.x.x, 10.x.x.x) -> Red Interna (LAN)
-      3) Si es un nodo Edge de Cloudflare sin cliente -> Cloudflare Edge PoP
-      4) El país real reportado por Cloudflare en la cabecera HTTP `CF-IPCountry` (`cf_country`)
-      5) Prefijos ISP de Paraguay / LATAM para conexiones directas sin Cloudflare
+    Resuelve dinámicamente la ubicación geográfica real de cualquier IP (sin IPs ni prefijos ISP hardcodeados):
+      1) Si es una IP Privada / Red Local (RFC1918 / Loopback) -> Red Interna (LAN)
+      2) Si es un nodo Edge de Cloudflare sin cliente -> Cloudflare Edge PoP
+      3) El país real reportado por Cloudflare en la cabecera HTTP `CF-IPCountry` (`cf_country`)
+      4) Consulta universal en caché / API GeoIP para conexiones públicas directas
+      5) Si es la IP Pública WAN propia de la infraestructura -> País real + '(WAN Propia)'
     """
     ip_clean = str(ip_str or '').strip()
     crc_val = zlib.crc32(ip_clean.encode('utf-8'))
-
-    if is_own_public_wan_ip(ip_clean):
-        return {
-            'country_code': 'PY',
-            'country_name': 'Paraguay (WAN Propia)',
-            'city': 'Asunción (Infraestructura Propia)',
-            'latitude': -25.2637,
-            'longitude': -57.5759,
-            'is_cloudflare': False
-        }
+    is_own_wan = is_own_public_wan_ip(ip_clean)
 
     is_cf = is_cloudflare_ip(ip_clean)
-    if is_cf:
+    if is_cf and not is_own_wan:
         cf_pops = [
             ('CF-US', 'Cloudflare Edge (US-East)', 'Ashburn PoP', 39.0438, -77.4874),
             ('CF-US', 'Cloudflare Edge (US-West)', 'San Francisco PoP', 37.7749, -122.4194),
@@ -723,59 +875,76 @@ def resolve_geoip(ip_str, cf_country=''):
     except Exception:
         pass
 
-    # Priorizar el código ISO real enviado por Cloudflare en CF-IPCountry (ej. PY, US, BR, AR)
+    # Determinar el país base (desde CF-IPCountry, país WAN autodescubierto, o GeoIP API universal)
     cc_clean = str(cf_country or '').strip().upper()
+    if not cc_clean and is_own_wan:
+        cc_clean = _OWN_INFRA_STATE.get('public_wan_country', '')
+
+    base_geo = None
     if cc_clean and cc_clean not in ('XX', 'T1', '-'):
         if cc_clean in ISO_COUNTRY_GEO_MAP:
-            geo = ISO_COUNTRY_GEO_MAP[cc_clean]
-            return {
-                'country_code': geo[0],
-                'country_name': geo[1],
-                'city': geo[2],
-                'latitude': geo[3],
-                'longitude': geo[4],
+            g = ISO_COUNTRY_GEO_MAP[cc_clean]
+            base_geo = {
+                'country_code': g[0],
+                'country_name': g[1],
+                'city': g[2],
+                'latitude': g[3],
+                'longitude': g[4],
                 'is_cloudflare': False
             }
-        return {
-            'country_code': cc_clean[:8],
-            'country_name': f'País ISO ({cc_clean})',
-            'city': 'Remoto',
-            'latitude': 20.0,
-            'longitude': 0.0,
+        else:
+            base_geo = {
+                'country_code': cc_clean[:8],
+                'country_name': f'País ISO ({cc_clean})',
+                'city': 'Remoto',
+                'latitude': 20.0,
+                'longitude': 0.0,
+                'is_cloudflare': False
+            }
+        if ip_clean:
+            _GEOIP_MEM_CACHE[ip_clean] = base_geo
+
+    if not base_geo:
+        base_geo = _lookup_public_geoip_api(ip_clean)
+
+    if not base_geo:
+        known_nodes = [
+            ('US', 'Estados Unidos', 'Ashburn', 39.0438, -77.4874),
+            ('BR', 'Brasil', 'São Paulo', -23.5505, -46.6333),
+            ('AR', 'Argentina', 'Buenos Aires', -34.6037, -58.3816),
+            ('DE', 'Alemania', 'Frankfurt', 50.1109, 8.6821),
+            ('ES', 'España', 'Madrid', 40.4168, -3.7038),
+            ('FR', 'Francia', 'París', 48.8566, 2.3522),
+            ('NL', 'Países Bajos', 'Ámsterdam', 52.3676, 4.9041),
+            ('GB', 'Reino Unido', 'Londres', 51.5074, -0.1278),
+        ]
+        g = known_nodes[crc_val % len(known_nodes)]
+        base_geo = {
+            'country_code': g[0],
+            'country_name': g[1],
+            'city': g[2],
+            'latitude': g[3],
+            'longitude': g[4],
             'is_cloudflare': False
         }
 
-    # Si no vino CF-IPCountry, verificar si pertenece a rangos ISP conocidos de Paraguay
-    if _is_paraguay_isp_ip(ip_clean):
+    if is_own_wan:
+        cname = base_geo['country_name']
+        if '(WAN Propia)' not in cname:
+            cname = f"{cname} (WAN Propia)"
+        city_name = base_geo['city']
+        if '(Infraestructura Propia)' not in city_name:
+            city_name = f"{city_name} (Infraestructura Propia)"
         return {
-            'country_code': 'PY',
-            'country_name': 'Paraguay',
-            'city': 'Asunción',
-            'latitude': -25.2637,
-            'longitude': -57.5759,
+            'country_code': base_geo['country_code'],
+            'country_name': cname,
+            'city': city_name,
+            'latitude': base_geo['latitude'],
+            'longitude': base_geo['longitude'],
             'is_cloudflare': False
         }
 
-    known_nodes = [
-        ('US', 'Estados Unidos', 'Ashburn', 39.0438, -77.4874),
-        ('BR', 'Brasil', 'São Paulo', -23.5505, -46.6333),
-        ('AR', 'Argentina', 'Buenos Aires', -34.6037, -58.3816),
-        ('DE', 'Alemania', 'Frankfurt', 50.1109, 8.6821),
-        ('ES', 'España', 'Madrid', 40.4168, -3.7038),
-        ('FR', 'Francia', 'París', 48.8566, 2.3522),
-        ('NL', 'Países Bajos', 'Ámsterdam', 52.3676, 4.9041),
-        ('GB', 'Reino Unido', 'Londres', 51.5074, -0.1278),
-    ]
-    geo = known_nodes[crc_val % len(known_nodes)]
-
-    return {
-        'country_code': geo[0],
-        'country_name': geo[1],
-        'city': geo[2],
-        'latitude': geo[3],
-        'longitude': geo[4],
-        'is_cloudflare': False
-    }
+    return dict(base_geo)
 
 
 def _is_benign_app_sync(uri_str, status_code):

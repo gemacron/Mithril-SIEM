@@ -100,7 +100,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function realClientIpCellHtml(event) {
     const ua = String(event.user_agent || '');
     const targetIp = event.real_client_ip || event.client_ip || '-';
-    if (event.is_own_public_ip || targetIp === '190.128.226.122') {
+    if (event.is_own_public_ip) {
       const suffix = ua.includes('Zabbix') ? ' (Zabbix)' : '';
       return `<code style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.55); font-size: 0.73rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Pública WAN propia de tu infraestructura (Inmune a bloqueos)">🛡️ WAN PROPIA: ${targetIp}${suffix}</code>`;
     }
