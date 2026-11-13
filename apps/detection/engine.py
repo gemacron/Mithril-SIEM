@@ -22,8 +22,8 @@ from apps.notifications.services import send_telegram_alert
 _RULES_CACHE = {'ts': 0.0, 'rules': []}
 # Cooldown por (client_ip, rule_code) para evitar saturar PostgreSQL ante ráfagas DoS/Scanners
 _EVENT_COOLDOWN_CACHE = {}
-# Control de cadencia de WebSocket (máx ~16 mensajes/seg hacia el navegador para no colgar el DOM/Canvas)
-_WS_LAST_BROADCAST = {'ts': 0.0}
+# Control de cadencia de WebSocket por ventana de 1s (permite micro-batches completos en orden cronológico sin descartar los más nuevos)
+_WS_LAST_BROADCAST = {'window_ts': 0.0, 'count': 0}
 
 def invalidate_rules_cache():
     _RULES_CACHE['ts'] = 0.0
@@ -1323,13 +1323,16 @@ def process_incoming_log(data, node=None):
 def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
     """
     Envía por WebSocket el evento para actualizar el mapa 2D y el Live Feed del operador.
-    Incluye control de cadencia (throttling) para no saturar ni colgar el navegador ante ráfagas masivas.
+    Permite ráfagas de micro-batches completos en orden estricto de llegada para que el último log
+    (el más nuevo) siempre llegue y se muestre primero arriba del todo en el Live Feed.
     """
     now_mono = time.monotonic()
-    min_interval = 0.035 if is_threat else 0.08  # Priorizar amenazas pero limitar a máx ~28 fps de red
-    if (now_mono - _WS_LAST_BROADCAST['ts']) < min_interval:
+    if (now_mono - _WS_LAST_BROADCAST['window_ts']) >= 1.0:
+        _WS_LAST_BROADCAST['window_ts'] = now_mono
+        _WS_LAST_BROADCAST['count'] = 0
+    _WS_LAST_BROADCAST['count'] += 1
+    if not is_threat and _WS_LAST_BROADCAST['count'] > 60:
         return
-    _WS_LAST_BROADCAST['ts'] = now_mono
 
     channel_layer = get_channel_layer()
     if not channel_layer:

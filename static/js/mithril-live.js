@@ -302,6 +302,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (data.nodes) renderNodesTable(data.nodes);
         if (data.candidates) renderCandidates(data.candidates);
+
+        // Sincronizar en Página 1 cualquier petición más nueva que aún no esté arriba del todo
+        if (!isFeedPaused && currentPage === 1 && !isFetchingFeedPage && tableBody && Array.isArray(data.recent_logs)) {
+          const topRow = tableBody.querySelector('tr[data-log-id]');
+          const currentTopId = topRow ? (parseInt(topRow.getAttribute('data-log-id') || '0', 10) || 0) : 0;
+          const orderedAsc = [...data.recent_logs].sort((a, b) => (parseInt(a.id || 0, 10) - parseInt(b.id || 0, 10)));
+          let insertedAny = false;
+          orderedAsc.forEach(ev => {
+            const evId = parseInt(ev.id || 0, 10) || 0;
+            if (evId > currentTopId && matchesActiveFeedFilters(ev)) {
+              const tempWrapper = document.createElement('tbody');
+              tempWrapper.innerHTML = buildRowHtml(ev).trim();
+              const row = tempWrapper.firstElementChild;
+              if (row && insertRowNewestFirst(row)) {
+                row.classList.add('live-row-new');
+                insertedAny = true;
+              }
+            }
+          });
+          if (insertedAny) {
+            enforceNewestFirstDomOrder();
+            updatePaginationUi();
+          }
+        }
       })
       .catch(err => {
         if (err.name !== 'AbortError') {
@@ -425,6 +449,76 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
   }
 
+  function insertRowNewestFirst(rowElement) {
+    if (!tableBody || !rowElement) return false;
+    const newId = parseInt(rowElement.getAttribute('data-log-id') || '0', 10) || 0;
+    if (newId > 0 && tableBody.querySelector(`tr[data-log-id="${newId}"]`)) {
+      return false;
+    }
+
+    const emptyRow = tableBody.querySelector('td[colspan="8"], td[colspan="7"]');
+    if (emptyRow && emptyRow.parentElement) {
+      emptyRow.parentElement.remove();
+    }
+
+    const existingRows = tableBody.querySelectorAll('tr[data-log-id]');
+    if (existingRows.length === 0 || newId <= 0) {
+      tableBody.insertBefore(rowElement, tableBody.firstChild);
+      return true;
+    }
+
+    for (let i = 0; i < existingRows.length; i++) {
+      const existingId = parseInt(existingRows[i].getAttribute('data-log-id') || '0', 10) || 0;
+      if (newId > existingId) {
+        tableBody.insertBefore(rowElement, existingRows[i]);
+        return true;
+      }
+    }
+
+    if (existingRows.length < currentPageSize) {
+      tableBody.appendChild(rowElement);
+      return true;
+    }
+    return false;
+  }
+
+  function enforceNewestFirstDomOrder() {
+    if (!tableBody) return;
+    const rows = Array.from(tableBody.querySelectorAll('tr[data-log-id]'));
+    if (rows.length <= 1) return;
+
+    let needsSort = false;
+    for (let i = 1; i < rows.length; i++) {
+      const prevId = parseInt(rows[i - 1].getAttribute('data-log-id') || '0', 10) || 0;
+      const currId = parseInt(rows[i].getAttribute('data-log-id') || '0', 10) || 0;
+      if (currId > prevId) {
+        needsSort = true;
+        break;
+      }
+    }
+
+    if (needsSort) {
+      rows.sort((a, b) => {
+        const idA = parseInt(a.getAttribute('data-log-id') || '0', 10) || 0;
+        const idB = parseInt(b.getAttribute('data-log-id') || '0', 10) || 0;
+        return idB - idA;
+      });
+      const frag = document.createDocumentFragment();
+      rows.forEach(r => frag.appendChild(r));
+      tableBody.innerHTML = '';
+      tableBody.appendChild(frag);
+    }
+
+    const currentRows = tableBody.querySelectorAll('tr[data-log-id]');
+    if (currentRows.length > currentPageSize) {
+      for (let i = currentPageSize; i < currentRows.length; i++) {
+        if (currentRows[i] && currentRows[i].parentNode) {
+          currentRows[i].remove();
+        }
+      }
+    }
+  }
+
   function updatePaginationUi() {
     totalPages = Math.max(1, Math.ceil(totalFilteredCount / currentPageSize));
     if (currentPage > totalPages) currentPage = totalPages;
@@ -491,7 +585,22 @@ document.addEventListener('DOMContentLoaded', () => {
         totalPages = data.total_pages || 1;
 
         const logs = data.logs || [];
-        if (logs.length === 0) {
+        // Ordenar explícitamente de más nuevo (ID mayor) a más viejo (ID menor)
+        logs.sort((a, b) => (parseInt(b.id || 0, 10) - parseInt(a.id || 0, 10)));
+
+        // Conservar filas en vivo más nuevas que hayan llegado por WebSocket mientras se consultaba la Página 1
+        const newerLiveRows = [];
+        if (currentPage === 1 && logs.length > 0) {
+          const maxFetchedId = parseInt(logs[0].id || 0, 10) || 0;
+          tableBody.querySelectorAll('tr[data-log-id]').forEach(existingRow => {
+            const rId = parseInt(existingRow.getAttribute('data-log-id') || '0', 10) || 0;
+            if (rId > maxFetchedId) {
+              newerLiveRows.push(existingRow.cloneNode(true));
+            }
+          });
+        }
+
+        if (logs.length === 0 && newerLiveRows.length === 0) {
           tableBody.innerHTML = `
             <tr>
               <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 2rem;">
@@ -501,6 +610,8 @@ document.addEventListener('DOMContentLoaded', () => {
           `;
         } else {
           tableBody.innerHTML = logs.map(ev => buildRowHtml(ev)).join('');
+          newerLiveRows.forEach(r => insertRowNewestFirst(r));
+          enforceNewestFirstDomOrder();
         }
         updatePaginationUi();
       })
@@ -579,7 +690,10 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const batch = wsQueue.splice(0, Math.min(wsQueue.length, 15));
+    const batch = wsQueue.splice(0, Math.min(wsQueue.length, 25));
+    // Ordenar lote por ID ascendente para que al insertar cada uno arriba del todo, el más nuevo quede primero en la fila 1
+    batch.sort((a, b) => (parseInt(a.id || 0, 10) - parseInt(b.id || 0, 10)));
+
     if (wsQueue.length > 0 && !rafScheduled) {
       rafScheduled = true;
       requestAnimationFrame(flushWsQueue);
@@ -588,7 +702,6 @@ document.addEventListener('DOMContentLoaded', () => {
     let logsDelta = 0;
     let threatsDelta = 0;
     let filteredMatchedDelta = 0;
-    const fragment = document.createDocumentFragment();
 
     batch.forEach(event => {
       logsDelta += 1;
@@ -611,14 +724,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       filteredMatchedDelta += 1;
 
-      // Solo insertar en vivo en el DOM si el operador está en la Página 1
+      // Solo insertar en vivo en el DOM si el operador está en la Página 1, colocando siempre el más nuevo arriba al principio
       if (tableBody && currentPage === 1) {
         const tempWrapper = document.createElement('tbody');
         tempWrapper.innerHTML = buildRowHtml(event).trim();
         const row = tempWrapper.firstElementChild;
         if (row) {
           row.classList.add('live-row-new');
-          fragment.insertBefore(row, fragment.firstChild);
+          insertRowNewestFirst(row);
         }
       }
     });
@@ -629,18 +742,9 @@ document.addEventListener('DOMContentLoaded', () => {
     addKpiDelta(kpiThreats, threatsDelta);
 
     if (tableBody && currentPage === 1 && filteredMatchedDelta > 0) {
-      const emptyRow = tableBody.querySelector('td[colspan="8"], td[colspan="7"]');
-      if (emptyRow && emptyRow.parentElement) {
-        emptyRow.parentElement.remove();
-      }
-      tableBody.insertBefore(fragment, tableBody.firstChild);
-      const allRows = tableBody.querySelectorAll('tr[data-log-id]');
-      if (allRows.length > currentPageSize) {
-        for (let i = currentPageSize; i < allRows.length; i++) {
-          if (allRows[i] && allRows[i].parentNode) {
-            allRows[i].remove();
-          }
-        }
+      enforceNewestFirstDomOrder();
+      if (tableBody.parentElement && tableBody.parentElement.scrollTop < 120) {
+        tableBody.parentElement.scrollTop = 0;
       }
     }
     updatePaginationUi();

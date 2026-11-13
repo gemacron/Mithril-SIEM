@@ -27,7 +27,7 @@ def _enrich_candidate_cf(c):
         recent_with_real = (
             TrafficLog.objects.filter(client_ip=c.client_ip)
             .exclude(raw_headers={})
-            .order_by('-created_at')[:10]
+            .order_by('-id')[:10]
         )
         for rl in recent_with_real:
             sub_meta = extract_log_ip_meta(rl.client_ip, rl.raw_headers)
@@ -48,7 +48,7 @@ def dashboard_view(request):
     candidates = list(BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule')[:5])
     for c in candidates:
         _enrich_candidate_cf(c)
-    recent_events = SecurityEvent.objects.select_related('rule', 'node').order_by('-created_at')[:8]
+    recent_events = SecurityEvent.objects.select_related('rule', 'node').order_by('-id')[:8]
 
     now = timezone.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -57,7 +57,7 @@ def dashboard_view(request):
     # Expirar bloqueos vencidos automáticamente
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=now).update(is_active=False)
 
-    recent_logs = list(TrafficLog.objects.select_related('node').order_by('-created_at')[:25])
+    recent_logs = list(TrafficLog.objects.select_related('node').order_by('-id')[:25])
     recent_ips = {log.client_ip for log in recent_logs}
     threat_ips = set(
         SecurityEvent.objects.filter(client_ip__in=recent_ips, created_at__gte=since_24h)
@@ -146,7 +146,7 @@ def api_map_data(request):
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(latitude__isnull=True)
         .values('latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method')
-        .order_by('-created_at')[:80]
+        .order_by('-id')[:80]
     )
     point_ips = {p['client_ip'] for p in raw_points}
     threat_ips = set(
@@ -221,7 +221,7 @@ def api_live_stats(request):
     pending_bans = BanCandidate.objects.filter(status='PENDING').count()
     active_bans = ActiveBan.objects.filter(is_active=True).count()
 
-    recent_logs_qs = list(TrafficLog.objects.select_related('node').order_by('-created_at')[:25])
+    recent_logs_qs = list(TrafficLog.objects.select_related('node').order_by('-id')[:25])
     recent_ips = {log.client_ip for log in recent_logs_qs}
     threat_ips = set(
         SecurityEvent.objects.filter(client_ip__in=recent_ips, created_at__gte=since_24h)
@@ -422,7 +422,7 @@ def api_live_feed_logs(request):
         page = total_pages
 
     offset = (page - 1) * page_size
-    page_logs = list(qs.order_by('-created_at')[offset:offset + page_size])
+    page_logs = list(qs.order_by('-id')[offset:offset + page_size])
 
     logs_data = []
     for log in page_logs:

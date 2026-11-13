@@ -51,7 +51,7 @@ class TrafficLog(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['-id']
         indexes = [
             models.Index(fields=['client_ip', 'created_at']),
             models.Index(fields=['node', 'status_code']),
@@ -78,7 +78,7 @@ class SecurityEvent(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
-        ordering = ['-created_at']
+        ordering = ['-id']
 
     def __str__(self):
         return f"[{self.severity}] {self.client_ip} detonó {self.rule.code if self.rule else 'Heurística'}"
