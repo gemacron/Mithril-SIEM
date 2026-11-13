@@ -1305,13 +1305,16 @@ def process_incoming_log(data, node=None):
                         )
                     )
 
-    # 6. Emitir evento en vivo por WebSockets al SOC (incluso si ya es candidato, el mapa sigue analizando)
-    is_threat = (
+    # 6. Emitir evento en vivo por WebSockets al SOC
+    is_threat = (not is_benign_sync) and (
         len(triggered_events) > 0
         or matched_any_rule
-        or reputation.status in ('PENDING_BAN', 'BANNED')
-        or (log.status_code >= 400 and not is_benign_sync)
+        or (log.status_code >= 400)
     )
+    if (len(triggered_events) > 0 or matched_any_rule) and not is_benign_sync:
+        incoming_headers['is_threat'] = True
+        log.raw_headers = incoming_headers
+        log.save(update_fields=['raw_headers'])
     broadcast_to_soc(log, is_threat=is_threat, reputation=reputation, events=triggered_events)
 
     return log

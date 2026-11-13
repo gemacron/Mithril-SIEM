@@ -96,27 +96,64 @@
     <div class="panel">
       <div class="panel-header" style="flex-wrap: wrap; gap: 0.75rem;">
         <div class="panel-title">
-          <span>⚡</span> LIVE FEED (PETICIONES EN VIVO DESDE PROXIES)
+          <span>⚡</span> LIVE FEED (PETICIONES DE HOY EN VIVO DESDE PROXIES)
         </div>
         <div style="display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;">
           <span id="feedPausedBadge" style="display: none; background: rgba(245, 158, 11, 0.2); color: var(--neon-amber); border: 1px solid rgba(245, 158, 11, 0.6); font-size: 0.68rem; font-weight: 800; padding: 0.15rem 0.5rem; border-radius: 4px; font-family: var(--font-mono); animation: pulse-orange 1.5s infinite;">⏸️ PAUSADO (Inspeccionando)</span>
           <button type="button" id="togglePauseFeedBtn" class="btn btn-dim" style="font-size: 0.72rem; padding: 0.2rem 0.55rem; font-family: var(--font-mono); display: inline-flex; align-items: center; gap: 0.35rem;" title="Congela el avance del Live Feed para inspeccionar URLs y datos">
             <span id="pauseFeedIcon">⏸️</span> <span id="pauseFeedText">Pausar Feed</span>
           </button>
-          <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: var(--neon-cyan); background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.35); padding: 0.22rem 0.65rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Oculta peticiones originadas por IPs locales (192.168.x.x, 10.x.x.x, 127.0.0.1 o el propio balanceador) mostrando solo tráfico externo de Internet">
+          <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: var(--neon-cyan); background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.35); padding: 0.22rem 0.65rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Filtro exclusivo de esta tabla (independiente del Mapa 2D): oculta peticiones originadas por IPs locales">
             <input type="checkbox" id="filterHideLocalIpsToggle" style="accent-color: var(--neon-cyan); cursor: pointer; width: 14px; height: 14px;" checked>
             <span>🛡️ Filtrar IPs Locales / Balanceador</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: #f6821f; background: rgba(246, 130, 31, 0.08); border: 1px solid rgba(246, 130, 31, 0.35); padding: 0.22rem 0.65rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Oculta las sondas automáticas repetitivas (Cloudflare Traffic Manager, TLS Handshakes) para visualizar con claridad las peticiones con IP de clientes/usuarios reales">
+          <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: #f6821f; background: rgba(246, 130, 31, 0.08); border: 1px solid rgba(246, 130, 31, 0.35); padding: 0.22rem 0.65rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Filtro exclusivo de esta tabla (independiente del Mapa 2D): oculta las sondas automáticas repetitivas y TLS Handshakes">
             <input type="checkbox" id="filterHideProbesToggle" style="accent-color: #f6821f; cursor: pointer; width: 14px; height: 14px;">
             <span>☁️ Ocultar Sondas / Handshakes</span>
           </label>
-          <div style="font-size: 0.75rem; color: var(--text-dim); font-family: var(--font-mono);">
-            BUFFER ACTIVO
+          <div style="font-size: 0.75rem; color: var(--neon-emerald); font-family: var(--font-mono); font-weight: 700;">
+            HOY: <span id="liveFeedHeaderCount">{{ total_logs_today|default:"0" }}</span>
           </div>
         </div>
       </div>
-      <div class="panel-body" style="padding: 0; max-height: 280px; overflow-y: auto;">
+
+      <!-- Barra de Filtros y Búsqueda del Live Feed (Todas las peticiones de Hoy) -->
+      <div style="display: flex; align-items: center; gap: 0.55rem; flex-wrap: wrap; padding: 0.65rem 1rem; background: rgba(10, 15, 28, 0.75); border-bottom: 1px solid var(--border-dim);">
+        <input type="text" id="liveFeedSearchInput" class="form-input" placeholder="🔍 Filtrar hoy por IP, dominio, ruta URI, país o User-Agent..." style="flex: 1; min-width: 220px; padding: 0.32rem 0.65rem; font-size: 0.76rem; font-family: var(--font-mono);">
+        <select id="liveFeedTypeFilter" class="form-input" style="width: auto; padding: 0.32rem 0.55rem; font-size: 0.75rem; font-family: var(--font-mono);">
+          <option value="all">Todos los Tipos</option>
+          <option value="threat">🚨 Solo Amenazas</option>
+          <option value="normal">✅ Solo Normales</option>
+        </select>
+        <select id="liveFeedMethodFilter" class="form-input" style="width: auto; padding: 0.32rem 0.55rem; font-size: 0.75rem; font-family: var(--font-mono);">
+          <option value="all">Todos los Métodos</option>
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+          <option value="HEAD">HEAD</option>
+          <option value="PROPFIND">PROPFIND</option>
+          <option value="PUT">PUT</option>
+          <option value="DELETE">DELETE</option>
+          <option value="OPTIONS">OPTIONS</option>
+        </select>
+        <select id="liveFeedStatusFilter" class="form-input" style="width: auto; padding: 0.32rem 0.55rem; font-size: 0.75rem; font-family: var(--font-mono);">
+          <option value="all">Todos los Códigos</option>
+          <option value="2xx">2xx (200 OK)</option>
+          <option value="3xx">3xx (Redirección)</option>
+          <option value="4xx">4xx (401/403/404)</option>
+          <option value="5xx">5xx (Error Server)</option>
+        </select>
+        <select id="liveFeedPageSize" class="form-input" style="width: auto; padding: 0.32rem 0.55rem; font-size: 0.75rem; font-family: var(--font-mono);" title="Cantidad de registros por página">
+          <option value="25">25 / pág</option>
+          <option value="50" selected>50 / pág</option>
+          <option value="100">100 / pág</option>
+          <option value="200">200 / pág</option>
+        </select>
+        <button type="button" id="liveFeedClearFiltersBtn" class="btn btn-dim" style="padding: 0.32rem 0.65rem; font-size: 0.74rem; font-family: var(--font-mono);" title="Restablecer filtros de búsqueda">
+          ✕ Limpiar
+        </button>
+      </div>
+
+      <div class="panel-body" style="padding: 0; max-height: 440px; overflow-y: auto;">
         <table class="terminal-table">
           <thead>
             <tr>
@@ -185,6 +222,21 @@
             {% endfor %}
           </tbody>
         </table>
+      </div>
+
+      <!-- Barra de Paginación Inferior (Todas las peticiones de Hoy) -->
+      <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; padding: 0.6rem 1rem; background: rgba(10, 15, 28, 0.85); border-top: 1px solid var(--border-dim); font-family: var(--font-mono); font-size: 0.74rem;">
+        <div style="color: var(--text-muted);">
+          Mostrando <strong id="liveFeedRangeText" style="color: var(--text-main);">1–{{ recent_logs|length }}</strong> de <strong id="liveFeedTotalFilteredText" style="color: var(--neon-cyan);">{{ total_logs_today|default:"0" }}</strong> peticiones filtradas hoy
+          <span style="color: var(--text-dim);"> (Total Hoy: <span id="liveFeedTotalTodayText">{{ total_logs_today|default:"0" }}</span>)</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.4rem;">
+          <button type="button" id="liveFeedFirstPageBtn" class="btn btn-dim" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" title="Ir a la primera página (En Vivo)">⏮ Primera</button>
+          <button type="button" id="liveFeedPrevPageBtn" class="btn btn-dim" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" title="Página anterior">◀ Anterior</button>
+          <span id="liveFeedPageIndicator" style="padding: 0.22rem 0.65rem; background: rgba(0, 229, 255, 0.1); border: 1px solid rgba(0, 229, 255, 0.35); border-radius: 4px; color: var(--neon-cyan); font-weight: 700;">Página 1 / 1</span>
+          <button type="button" id="liveFeedNextPageBtn" class="btn btn-dim" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" title="Página siguiente">Siguiente ▶</button>
+          <button type="button" id="liveFeedLastPageBtn" class="btn btn-dim" style="padding: 0.22rem 0.55rem; font-size: 0.72rem;" title="Ir a la última página de hoy">Última ⏭</button>
+        </div>
       </div>
     </div>
 
@@ -304,6 +356,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{% static 'js/mithril-map.js' %}?v=20261112e"></script>
-<script src="{% static 'js/mithril-live.js' %}?v=20261112e"></script>
+<script src="{% static 'js/mithril-map.js' %}?v=20261113a"></script>
+<script src="{% static 'js/mithril-live.js' %}?v=20261113a"></script>
 {% endblock %}

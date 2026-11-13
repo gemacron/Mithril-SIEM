@@ -302,37 +302,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (data.nodes) renderNodesTable(data.nodes);
         if (data.candidates) renderCandidates(data.candidates);
-
-        // La tabla del Live Feed se gestiona de forma fluida y continua por WebSocket para evitar
-        // parpadeos y reseteos bruscos. El poller solo puebla la tabla en frío si no hay WebSocket activo.
-        if (!isWsConnected && data.recent_logs && tableBody && tableBody.children.length === 0) {
-          let rowsHtml = '';
-          data.recent_logs.forEach((event) => {
-            const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
-            const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
-            const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
-            const uriDisplay = event.uri || '/';
-            const countryDisplay = event.country_name || event.country_code || 'Remoto';
-            const isLoc = isEventLocal(event);
-            const isProbe = isEventProbe(event);
-            const hideRow = (hideLocalIps && isLoc) || (hideProbes && isProbe);
-
-            rowsHtml += `
-              <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-is-probe="${isProbe ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" style="cursor: pointer; ${hideRow ? 'display: none;' : ''}" onclick="if (typeof openLogInspectModal === 'function') openLogInspectModal(${event.id || 0})" title="Haz clic para verificar los detalles técnicos de esta petición">
-                <td><span class="${badgeClass}">${badgeText}</span></td>
-                <td><strong>${event.timestamp || ''}</strong></td>
-                <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
-                <td>${realClientIpCellHtml(event)}</td>
-                <td>${countryDisplay}</td>
-                <td style="max-width: 450px; word-break: break-all;"><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem;">${uriDisplay}</code></td>
-                <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
-                <td><code>${event.node || 'Direct'}</code></td>
-              </tr>
-            `;
-          });
-          tableBody.innerHTML = rowsHtml;
-          updateRowAgesAndFade();
-        }
       })
       .catch(err => {
         if (err.name !== 'AbortError') {
@@ -345,11 +314,40 @@ document.addEventListener('DOMContentLoaded', () => {
       });
   }
 
-  // Botón y controles de Pausa / Inspección de URLs
+  // =========================================================================
+  // PAGINACIÓN Y FILTRADO DE TODAS LAS PETICIONES DE HOY (INDEPENDIENTE DEL MAPA 2D)
+  // =========================================================================
   const pauseFeedBtn = document.getElementById('togglePauseFeedBtn');
   const pauseFeedIcon = document.getElementById('pauseFeedIcon');
   const pauseFeedText = document.getElementById('pauseFeedText');
   const feedPausedBadge = document.getElementById('feedPausedBadge');
+
+  const localIpToggle = document.getElementById('filterHideLocalIpsToggle');
+  const probesToggle = document.getElementById('filterHideProbesToggle');
+  const searchInput = document.getElementById('liveFeedSearchInput');
+  const typeSelect = document.getElementById('liveFeedTypeFilter');
+  const methodSelect = document.getElementById('liveFeedMethodFilter');
+  const statusSelect = document.getElementById('liveFeedStatusFilter');
+  const pageSizeSelect = document.getElementById('liveFeedPageSize');
+  const clearFiltersBtn = document.getElementById('liveFeedClearFiltersBtn');
+
+  const rangeTextEl = document.getElementById('liveFeedRangeText');
+  const totalFilteredTextEl = document.getElementById('liveFeedTotalFilteredText');
+  const totalTodayTextEl = document.getElementById('liveFeedTotalTodayText');
+  const headerCountEl = document.getElementById('liveFeedHeaderCount');
+  const pageIndicatorEl = document.getElementById('liveFeedPageIndicator');
+  const firstPageBtn = document.getElementById('liveFeedFirstPageBtn');
+  const prevPageBtn = document.getElementById('liveFeedPrevPageBtn');
+  const nextPageBtn = document.getElementById('liveFeedNextPageBtn');
+  const lastPageBtn = document.getElementById('liveFeedLastPageBtn');
+
+  let currentPage = 1;
+  let currentPageSize = pageSizeSelect ? (parseInt(pageSizeSelect.value, 10) || 50) : 50;
+  let totalFilteredCount = 0;
+  let totalTodayCount = 0;
+  let totalPages = 1;
+  let searchDebounceTimer = null;
+  let isFetchingFeedPage = false;
 
   function setFeedPausedState(paused) {
     isFeedPaused = paused;
@@ -357,7 +355,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (pauseFeedText) pauseFeedText.textContent = paused ? 'Reanudar Feed' : 'Pausar Feed';
     if (feedPausedBadge) feedPausedBadge.style.display = paused ? 'inline-block' : 'none';
     if (!paused && pausedEventsQueue.length > 0) {
-      const toFlush = pausedEventsQueue.splice(0, 15);
+      const toFlush = pausedEventsQueue.splice(0, 25);
       toFlush.forEach(ev => wsQueue.push(ev));
       if (!rafScheduled) {
         rafScheduled = true;
@@ -372,59 +370,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  if (tableBody && tableBody.parentElement) {
-    // Al posar el mouse sobre la tabla, pausar temporalmente para que el operador pueda leer URLs y datos
-    tableBody.parentElement.addEventListener('mouseenter', () => {
-      if (!isFeedPaused) {
-        setFeedPausedState(true);
-      }
-    });
-    tableBody.parentElement.addEventListener('mouseleave', () => {
-      if (isFeedPaused) {
-        setFeedPausedState(false);
-      }
-    });
-  }
-
-  function applyFiltersToDom() {
-    if (!tableBody) return;
-    const rows = tableBody.querySelectorAll('tr[data-log-id], tr[data-client-ip], tr[data-is-local]');
-    rows.forEach(r => {
-      let hide = false;
-
-      // 1. Filtro de IPs Locales
-      if (hideLocalIps) {
-        const isLocAttr = r.getAttribute('data-is-local');
-        const rClientIp = r.getAttribute('data-client-ip');
-        const rRealIp = r.getAttribute('data-real-ip');
-        let isLocalRow = (isLocAttr === 'true');
-        if (rRealIp && isPrivateLocalIp(rRealIp)) isLocalRow = true;
-        if (rClientIp && isPrivateLocalIp(rClientIp)) isLocalRow = true;
-        if (r.innerText.includes('192.168.') || r.innerText.includes('10.') || r.innerText.includes('🏢')) isLocalRow = true;
-        if (isLocalRow) hide = true;
-      }
-
-      // 2. Filtro de Sondas Automáticas / Handshakes
-      if (!hide && hideProbes) {
-        const isProbeAttr = r.getAttribute('data-is-probe');
-        if (isProbeAttr === 'true') {
-          hide = true;
-        } else if (r.innerText.includes('Sonda Healthcheck') || r.innerText.includes('Handshake TLS')) {
-          hide = true;
-        }
-      }
-
-      r.style.display = hide ? 'none' : '';
-    });
-    updateRowAgesAndFade();
-  }
-
-  // Control interactivo del filtro de IPs Locales / Balanceador
-  const localIpToggle = document.getElementById('filterHideLocalIpsToggle');
-
-  // Control interactivo del filtro de Sondas Cloudflare / Handshakes
-  const probesToggle = document.getElementById('filterHideProbesToggle');
-
+  // Restaurar estado guardado de los checkboxes del Live Feed (100% independientes del Mapa 2D)
   if (localIpToggle) {
     const saved = localStorage.getItem('mithril_hide_local_ips');
     if (saved !== null) {
@@ -433,19 +379,10 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       hideLocalIps = localIpToggle.checked;
     }
-
     localIpToggle.addEventListener('change', () => {
       hideLocalIps = localIpToggle.checked;
       localStorage.setItem('mithril_hide_local_ips', hideLocalIps ? 'true' : 'false');
-      const mapLoc = document.getElementById('mapToggleLocal');
-      if (mapLoc && mapLoc.checked !== !hideLocalIps) {
-        mapLoc.checked = !hideLocalIps;
-        if (window.mithrilMap) {
-          window.mithrilMap.showLocal = !hideLocalIps;
-          window.mithrilMap.onFilterChanged();
-        }
-      }
-      applyFiltersToDom();
+      fetchPaginatedTodayLogs(1);
     });
   }
 
@@ -457,79 +394,183 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       hideProbes = probesToggle.checked;
     }
-
     probesToggle.addEventListener('change', () => {
       hideProbes = probesToggle.checked;
       localStorage.setItem('mithril_hide_probes', hideProbes ? 'true' : 'false');
-      const mapPrb = document.getElementById('mapToggleProbes');
-      if (mapPrb && mapPrb.checked !== !hideProbes) {
-        mapPrb.checked = !hideProbes;
-        if (window.mithrilMap) {
-          window.mithrilMap.showProbes = !hideProbes;
-          window.mithrilMap.onFilterChanged();
-        }
-      }
-      applyFiltersToDom();
+      fetchPaginatedTodayLogs(1);
     });
   }
 
-  window.applyLiveFeedFilters = applyFiltersToDom;
-  applyFiltersToDom();
+  function buildRowHtml(event) {
+    const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
+    const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
+    const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
+    const uriDisplay = event.uri || '/';
+    const countryDisplay = event.country_name || event.country_code || 'Remoto';
+    const isLoc = isEventLocal(event);
+    const isProbe = isEventProbe(event);
+    const isDir = Boolean(event.is_direct_public_ip) || (!event.is_cloudflare && !isLoc && !event.is_own_public_ip);
 
-  // Desvanecimiento y caída gradual (Fade Out) hacia el fondo de la tabla
-  function updateRowAgesAndFade() {
-    if (!tableBody) return;
-    const allRows = Array.from(tableBody.querySelectorAll('tr[data-log-id]'));
-    const visibleRows = allRows.filter(r => r.style.display !== 'none');
-    const MAX_VISIBLE = 32;
+    return `
+      <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-is-direct="${isDir ? 'true' : 'false'}" data-is-probe="${isProbe ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" style="cursor: pointer;" onclick="if (typeof openLogInspectModal === 'function') openLogInspectModal(${event.id || 0})" title="Haz clic para verificar los detalles técnicos de esta petición">
+        <td><span class="${badgeClass}">${badgeText}</span></td>
+        <td><strong>${event.timestamp || ''}</strong></td>
+        <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
+        <td>${realClientIpCellHtml(event)}</td>
+        <td>${countryDisplay}</td>
+        <td style="max-width: 450px; word-break: break-all;"><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem; color: #e2e8f0;">${uriDisplay}</code></td>
+        <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
+        <td><code>${event.node || 'Direct'}</code></td>
+      </tr>
+    `;
+  }
 
-    visibleRows.forEach((row, idx) => {
-      if (idx < 18) {
-        row.style.opacity = '1';
-      } else if (idx < 24) {
-        row.style.opacity = '0.85';
-      } else if (idx < 28) {
-        row.style.opacity = '0.62';
-      } else if (idx < MAX_VISIBLE) {
-        row.style.opacity = '0.38';
-      } else {
-        // Fila que superó el límite visible: desvanecimiento gradual con animación CSS
-        if (!row.classList.contains('live-row-fading')) {
-          row.classList.add('live-row-fading');
-          setTimeout(() => {
-            if (row && row.parentNode) {
-              row.remove();
-            }
-          }, 600);
-        }
-      }
-    });
+  function updatePaginationUi() {
+    totalPages = Math.max(1, Math.ceil(totalFilteredCount / currentPageSize));
+    if (currentPage > totalPages) currentPage = totalPages;
 
-    // Poda inteligente: conserva filas visibles para no vaciar la tabla si hay muchas sondas ocultas
-    if (visibleRows.length > 36) {
-      for (let i = 36; i < visibleRows.length; i++) {
-        if (visibleRows[i] && visibleRows[i].parentNode) {
-          visibleRows[i].remove();
-        }
-      }
+    const startIdx = totalFilteredCount === 0 ? 0 : ((currentPage - 1) * currentPageSize) + 1;
+    const endIdx = Math.min(totalFilteredCount, currentPage * currentPageSize);
+
+    if (rangeTextEl) rangeTextEl.textContent = `${startIdx}–${endIdx}`;
+    if (totalFilteredTextEl) totalFilteredTextEl.textContent = String(totalFilteredCount);
+    if (totalTodayTextEl) totalTodayTextEl.textContent = String(totalTodayCount);
+    if (headerCountEl) headerCountEl.textContent = `${totalFilteredCount} / ${totalTodayCount}`;
+    if (pageIndicatorEl) {
+      pageIndicatorEl.textContent = currentPage === 1
+        ? `Página 1 / ${totalPages} (EN VIVO)`
+        : `Página ${currentPage} / ${totalPages}`;
     }
-    if (allRows.length > 120) {
-      for (let i = 120; i < allRows.length; i++) {
-        if (allRows[i] && allRows[i].parentNode) {
-          allRows[i].remove();
-        }
-      }
+
+    const disablePrev = currentPage <= 1;
+    const disableNext = currentPage >= totalPages;
+    if (firstPageBtn) {
+      firstPageBtn.disabled = disablePrev;
+      firstPageBtn.style.opacity = disablePrev ? '0.45' : '1';
+    }
+    if (prevPageBtn) {
+      prevPageBtn.disabled = disablePrev;
+      prevPageBtn.style.opacity = disablePrev ? '0.45' : '1';
+    }
+    if (nextPageBtn) {
+      nextPageBtn.disabled = disableNext;
+      nextPageBtn.style.opacity = disableNext ? '0.45' : '1';
+    }
+    if (lastPageBtn) {
+      lastPageBtn.disabled = disableNext;
+      lastPageBtn.style.opacity = disableNext ? '0.45' : '1';
     }
   }
 
-  // Intervalo continuo para desvanecer suavemente peticiones viejas incluso en calma de tráfico
-  setInterval(updateRowAgesAndFade, 2500);
+  function fetchPaginatedTodayLogs(targetPage = 1) {
+    if (!tableBody || isFetchingFeedPage) return;
+    isFetchingFeedPage = true;
+    currentPage = Math.max(1, targetPage);
+    currentPageSize = pageSizeSelect ? (parseInt(pageSizeSelect.value, 10) || 50) : 50;
+
+    const params = new URLSearchParams({
+      page: String(currentPage),
+      page_size: String(currentPageSize),
+      q: searchInput ? searchInput.value.trim() : '',
+      type: typeSelect ? typeSelect.value : 'all',
+      method: methodSelect ? methodSelect.value : 'all',
+      status: statusSelect ? statusSelect.value : 'all',
+      hide_local: hideLocalIps ? '1' : '0',
+      hide_probes: hideProbes ? '1' : '0',
+    });
+
+    fetch(`/api/live-feed-logs/?${params.toString()}`)
+      .then(res => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then(data => {
+        currentPage = data.page || 1;
+        totalFilteredCount = data.total_filtered || 0;
+        totalTodayCount = data.total_today || 0;
+        totalPages = data.total_pages || 1;
+
+        const logs = data.logs || [];
+        if (logs.length === 0) {
+          tableBody.innerHTML = `
+            <tr>
+              <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 2rem;">
+                No se encontraron peticiones hoy con los filtros seleccionados.
+              </td>
+            </tr>
+          `;
+        } else {
+          tableBody.innerHTML = logs.map(ev => buildRowHtml(ev)).join('');
+        }
+        updatePaginationUi();
+      })
+      .catch(err => console.debug('Error cargando página del Live Feed:', err))
+      .finally(() => {
+        isFetchingFeedPage = false;
+      });
+  }
+
+  function matchesActiveFeedFilters(event) {
+    const isLoc = isEventLocal(event);
+    const isProbe = isEventProbe(event);
+    if (hideLocalIps && isLoc) return false;
+    if (hideProbes && isProbe) return false;
+
+    const tFilter = typeSelect ? typeSelect.value : 'all';
+    if (tFilter === 'threat' && !event.is_threat) return false;
+    if (tFilter === 'normal' && event.is_threat) return false;
+
+    const mFilter = methodSelect ? methodSelect.value.toUpperCase() : 'ALL';
+    if (mFilter !== 'ALL' && String(event.method || 'GET').toUpperCase() !== mFilter) return false;
+
+    const sFilter = statusSelect ? statusSelect.value : 'all';
+    const sc = parseInt(event.status_code || 200, 10);
+    if (sFilter === '2xx' && (sc < 200 || sc >= 300)) return false;
+    if (sFilter === '3xx' && (sc < 300 || sc >= 400)) return false;
+    if (sFilter === '4xx' && (sc < 400 || sc >= 500)) return false;
+    if (sFilter === '5xx' && sc < 500) return false;
+
+    const q = searchInput ? searchInput.value.trim().toLowerCase() : '';
+    if (q) {
+      const hay = `${event.client_ip || ''} ${event.real_client_ip || ''} ${event.cloudflare_ip || ''} ${event.uri || ''} ${event.country_name || ''} ${event.country_code || ''} ${event.user_agent || ''} ${event.method || ''} ${event.node || ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  }
+
+  if (searchInput) {
+    searchInput.addEventListener('input', () => {
+      if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+      searchDebounceTimer = setTimeout(() => fetchPaginatedTodayLogs(1), 260);
+    });
+  }
+  if (typeSelect) typeSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1));
+  if (methodSelect) methodSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1));
+  if (statusSelect) statusSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1));
+  if (pageSizeSelect) pageSizeSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1));
+
+  if (clearFiltersBtn) {
+    clearFiltersBtn.addEventListener('click', () => {
+      if (searchInput) searchInput.value = '';
+      if (typeSelect) typeSelect.value = 'all';
+      if (methodSelect) methodSelect.value = 'all';
+      if (statusSelect) statusSelect.value = 'all';
+      fetchPaginatedTodayLogs(1);
+    });
+  }
+
+  if (firstPageBtn) firstPageBtn.addEventListener('click', () => fetchPaginatedTodayLogs(1));
+  if (prevPageBtn) prevPageBtn.addEventListener('click', () => { if (currentPage > 1) fetchPaginatedTodayLogs(currentPage - 1); });
+  if (nextPageBtn) nextPageBtn.addEventListener('click', () => { if (currentPage < totalPages) fetchPaginatedTodayLogs(currentPage + 1); });
+  if (lastPageBtn) lastPageBtn.addEventListener('click', () => fetchPaginatedTodayLogs(totalPages));
+
+  window.applyLiveFeedFilters = () => fetchPaginatedTodayLogs(1);
 
   function flushWsQueue() {
     rafScheduled = false;
     if (wsQueue.length === 0) return;
 
-    // Si está pausado (por botón o por cursor sobre la tabla), guardar en cola en memoria sin mover el DOM
+    // Si está pausado, guardar en cola en memoria sin mover la tabla
     if (isFeedPaused) {
       while (wsQueue.length > 0 && pausedEventsQueue.length < 60) {
         pausedEventsQueue.push(wsQueue.shift());
@@ -538,7 +579,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const batch = wsQueue.splice(0, Math.min(wsQueue.length, 12));
+    const batch = wsQueue.splice(0, Math.min(wsQueue.length, 15));
     if (wsQueue.length > 0 && !rafScheduled) {
       rafScheduled = true;
       requestAnimationFrame(flushWsQueue);
@@ -546,6 +587,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let logsDelta = 0;
     let threatsDelta = 0;
+    let filteredMatchedDelta = 0;
     const fragment = document.createDocumentFragment();
 
     batch.forEach(event => {
@@ -555,6 +597,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const isLoc = isEventLocal(event);
       const isProbe = isEventProbe(event);
 
+      // El Mapa 2D tiene sus propios filtros independientes
       if (window.mithrilMap) {
         const lat = parseFloat(event.latitude);
         const lon = parseFloat(event.longitude);
@@ -563,61 +606,44 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
 
-      if (tableBody) {
-        const row = document.createElement('tr');
-        row.className = 'live-row-new'; // Deslizamiento suave de entrada
-        const statusColor = event.status_code >= 400 ? 'color: var(--neon-crimson);' : 'color: var(--neon-emerald);';
-        const badgeClass = event.is_threat ? 'badge critical' : 'badge low';
-        const badgeText = event.is_threat ? 'AMENAZA' : 'NORMAL';
-        const uriDisplay = event.uri || '/';
-        const countryDisplay = event.country_name || event.country_code || 'Remoto';
+      if (!matchesActiveFeedFilters(event)) {
+        return;
+      }
+      filteredMatchedDelta += 1;
 
-        if (event.id) {
-          row.setAttribute('data-log-id', event.id);
-          row.style.cursor = 'pointer';
-          row.setAttribute('title', 'Haz clic para verificar los detalles técnicos y estado de seguridad de esta petición');
-          row.addEventListener('click', () => {
-            if (typeof openLogInspectModal === 'function') {
-              openLogInspectModal(event.id);
-            }
-          });
+      // Solo insertar en vivo en el DOM si el operador está en la Página 1
+      if (tableBody && currentPage === 1) {
+        const tempWrapper = document.createElement('tbody');
+        tempWrapper.innerHTML = buildRowHtml(event).trim();
+        const row = tempWrapper.firstElementChild;
+        if (row) {
+          row.classList.add('live-row-new');
+          fragment.insertBefore(row, fragment.firstChild);
         }
-        const isDir = Boolean(event.is_direct_public_ip) || (!event.is_cloudflare && !isLoc);
-        row.setAttribute('data-is-local', isLoc ? 'true' : 'false');
-        row.setAttribute('data-is-direct', isDir ? 'true' : 'false');
-        row.setAttribute('data-is-probe', isProbe ? 'true' : 'false');
-        row.setAttribute('data-client-ip', event.client_ip || '');
-        row.setAttribute('data-real-ip', event.real_client_ip || '');
-
-        if ((hideLocalIps && isLoc) || (hideProbes && isProbe)) {
-          row.style.display = 'none';
-        }
-
-        row.innerHTML = `
-          <td><span class="${badgeClass}">${badgeText}</span></td>
-          <td><strong>${event.timestamp || ''}</strong></td>
-          <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
-          <td>${realClientIpCellHtml(event)}</td>
-          <td>${countryDisplay}</td>
-          <td style="max-width: 450px; word-break: break-all;"><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem;">${uriDisplay}</code></td>
-          <td style="${statusColor} font-weight: bold;">${event.status_code || 200}</td>
-          <td><code>${event.node || 'Direct'}</code></td>
-        `;
-        fragment.insertBefore(row, fragment.firstChild);
       }
     });
 
+    totalTodayCount += logsDelta;
+    totalFilteredCount += filteredMatchedDelta;
     addKpiDelta(kpiTotalLogs, logsDelta);
     addKpiDelta(kpiThreats, threatsDelta);
 
-    if (tableBody) {
+    if (tableBody && currentPage === 1 && filteredMatchedDelta > 0) {
       const emptyRow = tableBody.querySelector('td[colspan="8"], td[colspan="7"]');
       if (emptyRow && emptyRow.parentElement) {
         emptyRow.parentElement.remove();
       }
       tableBody.insertBefore(fragment, tableBody.firstChild);
-      updateRowAgesAndFade();
+      const allRows = tableBody.querySelectorAll('tr[data-log-id]');
+      if (allRows.length > currentPageSize) {
+        for (let i = currentPageSize; i < allRows.length; i++) {
+          if (allRows[i] && allRows[i].parentNode) {
+            allRows[i].remove();
+          }
+        }
+      }
     }
+    updatePaginationUi();
   }
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -663,6 +689,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   if (tableBody) {
+    fetchPaginatedTodayLogs(1);
     connectSocket();
   }
 

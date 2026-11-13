@@ -7,4 +7,5 @@ urlpatterns = [
     path('', views.dashboard_view, name='dashboard'),
     path('api/map-data/', views.api_map_data, name='api_map_data'),
     path('api/live-stats/', views.api_live_stats, name='api_live_stats'),
+    path('api/live-feed-logs/', views.api_live_feed_logs, name='api_live_feed_logs'),
 ]

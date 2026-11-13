@@ -113,13 +113,6 @@ class TacticalWorldMap {
       locToggle.addEventListener('change', () => {
         this.showLocal = locToggle.checked;
         localStorage.setItem('mithril_map_show_local', this.showLocal ? 'true' : 'false');
-        const feedLocToggle = document.getElementById('filterHideLocalIpsToggle');
-        if (feedLocToggle && feedLocToggle.checked !== !this.showLocal) {
-          feedLocToggle.checked = !this.showLocal;
-          if (typeof window.applyLiveFeedFilters === 'function') {
-            window.applyLiveFeedFilters();
-          }
-        }
         this.onFilterChanged();
       });
     }
@@ -128,13 +121,6 @@ class TacticalWorldMap {
       probesToggle.addEventListener('change', () => {
         this.showProbes = probesToggle.checked;
         localStorage.setItem('mithril_map_show_probes', this.showProbes ? 'true' : 'false');
-        const feedProbesToggle = document.getElementById('filterHideProbesToggle');
-        if (feedProbesToggle && feedProbesToggle.checked !== !this.showProbes) {
-          feedProbesToggle.checked = !this.showProbes;
-          if (typeof window.applyLiveFeedFilters === 'function') {
-            window.applyLiveFeedFilters();
-          }
-        }
         this.onFilterChanged();
       });
     }
