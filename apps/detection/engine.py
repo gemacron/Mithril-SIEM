@@ -953,12 +953,12 @@ def resolve_geoip(ip_str, cf_country=''):
 def _is_benign_app_sync(uri_str, status_code):
     """
     Identifica llamadas de sincronización en segundo plano legítimas de Nextcloud / WebDAV
-    para evitar falsos positivos de ráfaga o 404 de workspace vacíos contra usuarios legítimos.
+    para evitar falsos positivos de ráfaga o 404/412 de concurrencia contra usuarios legítimos.
     """
     u = str(uri_str or '').lower()
     if status_code == 404 and '/ocs/v2.php/apps/text/public/workspace' in u:
         return True
-    if status_code in (200, 204, 207, 304) and any(p in u for p in (
+    if status_code in (200, 204, 207, 304, 412) and any(p in u for p in (
         '/index.php/apps/text/session/',
         '/ocs/v2.php/apps/user_status/',
         '/ocs/v2.php/apps/notifications/',
