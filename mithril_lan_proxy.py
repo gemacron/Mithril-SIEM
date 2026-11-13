@@ -21,7 +21,7 @@ def detect_backend_host():
     try:
         res = subprocess.run(
             ["wsl", "-d", "podman-machine-default", "-u", "root", "sh", "-c", "ip -4 addr show eth0"],
-            capture_output=True, text=True, timeout=5, check=False
+            capture_output=True, text=True, encoding="utf-8", errors="ignore", timeout=5, check=False
         )
         if res.returncode == 0 and res.stdout:
             m = re.search(r"inet\s+(\d+\.\d+\.\d+\.\d+)", res.stdout)
@@ -29,7 +29,7 @@ def detect_backend_host():
                 return m.group(1)
     except Exception:
         pass
-    return "127.0.0.1"
+    return "172.24.154.190"
 
 LOCAL_HOST = detect_backend_host()
 BIND_HOST = "0.0.0.0"
@@ -52,11 +52,7 @@ def forward_tcp_stream(src_sock, dst_sock):
         pass
     finally:
         try:
-            src_sock.close()
-        except Exception:
-            pass
-        try:
-            dst_sock.close()
+            dst_sock.shutdown(socket.SHUT_WR)
         except Exception:
             pass
 

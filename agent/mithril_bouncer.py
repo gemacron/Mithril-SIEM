@@ -216,23 +216,49 @@ def init_fail2ban():
         return False
 
 def get_fail2ban_banned_ips():
-    """Obtiene el conjunto de IPs actualmente bloqueadas en el jail de Fail2ban."""
+    """Obtiene el conjunto de IPs actualmente bloqueadas en el jail de Fail2ban e ipset."""
+    banned = set()
+    # 1. Consultar estado del jail en Fail2ban
     try:
-        res = subprocess.run(["fail2ban-client", "get", FAIL2BAN_JAIL, "banip"], capture_output=True, text=True, check=False)
-        if res.returncode == 0:
-            out = res.stdout.strip()
-            if not out:
-                return set()
-            return {tok.strip() for tok in out.split() if tok.strip()}
-
-        # Fallback para versiones anteriores de fail2ban-client
         st = subprocess.run(["fail2ban-client", "status", FAIL2BAN_JAIL], capture_output=True, text=True, check=False)
         if st.returncode == 0 and "Banned IP list:" in st.stdout:
             after = st.stdout.split("Banned IP list:", 1)[1].splitlines()[0]
-            return {tok.strip() for tok in after.split() if tok.strip()}
+            for tok in after.replace(",", " ").split():
+                clean_ip = tok.strip()
+                if clean_ip and clean_ip not in ("-", "None", ""):
+                    try:
+                        ipaddress.ip_address(clean_ip)
+                        banned.add(clean_ip)
+                    except ValueError:
+                        pass
     except Exception:
         pass
-    return set(_F2B_MEM_BANS)
+
+    # 2. Consultar también directamente el ipset de Fail2ban en el kernel
+    for set_name in ("mithril_f2b", "mithril_f2b6"):
+        try:
+            res = subprocess.run(["ipset", "list", set_name], capture_output=True, text=True, check=False)
+            if res.returncode == 0 and res.stdout:
+                in_members = False
+                for line in res.stdout.splitlines():
+                    if line.startswith("Members:"):
+                        in_members = True
+                        continue
+                    if in_members:
+                        cand = line.strip()
+                        if cand:
+                            try:
+                                ipaddress.ip_address(cand)
+                                banned.add(cand)
+                            except ValueError:
+                                pass
+        except Exception:
+            pass
+
+    # 3. Incluir memoria interna si Fail2ban/ipset no reportaron nada
+    if not banned and _F2B_MEM_BANS:
+        banned.update(_F2B_MEM_BANS)
+    return banned
 
 def init_firewall():
     """Inicializa el motor de bloqueo configurado (fail2ban o ipset)"""
@@ -302,9 +328,13 @@ def apply_blocklist(banned_ips):
 
             for ip in to_unban:
                 res = subprocess.run(["fail2ban-client", "set", FAIL2BAN_JAIL, "unbanip", ip], capture_output=True, text=True, check=False)
-                if res.returncode == 0:
-                    _F2B_MEM_BANS.discard(ip)
-                    print(f"🔓 [FAIL2BAN] IP {ip} desbloqueada de jail '{FAIL2BAN_JAIL}'.")
+                # Respaldo inmediato en ipset para garantizar desbloqueo en el kernel
+                if ":" in ip:
+                    subprocess.run(["ipset", "del", "mithril_f2b6", ip, "-exist"], capture_output=True, check=False)
+                else:
+                    subprocess.run(["ipset", "del", "mithril_f2b", ip, "-exist"], capture_output=True, check=False)
+                _F2B_MEM_BANS.discard(ip)
+                print(f"🔓 [FAIL2BAN] IP {ip} desbloqueada de jail '{FAIL2BAN_JAIL}' e ipset.")
 
             print(f"✅ [FAIL2BAN] Sincronización activa: {len(target_set)} IPs bloqueadas en '{FAIL2BAN_JAIL}' (Cero cambios en Nginx).")
             return
