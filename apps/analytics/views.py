@@ -57,7 +57,13 @@ def dashboard_view(request):
     # Expirar bloqueos vencidos automáticamente
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=now).update(is_active=False)
 
-    recent_logs = list(TrafficLog.objects.select_related('node').order_by('-id')[:25])
+    recent_logs = list(
+        TrafficLog.objects.select_related('node')
+        .exclude(http_method='HTTPS')
+        .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
+        .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
+        .order_by('-id')[:25]
+    )
     recent_ips = {log.client_ip for log in recent_logs}
     threat_ips = set(
         SecurityEvent.objects.filter(client_ip__in=recent_ips, created_at__gte=since_24h)
@@ -132,22 +138,38 @@ def api_map_data(request):
     now = timezone.now()
     since = now - timedelta(hours=24)
 
-    # Top países con eventos de seguridad
+    # Top países con eventos de seguridad y tráfico real
     country_stats = (
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(country_code__in=['', 'LAN'])
+        .exclude(country_code__startswith='CF-')
         .values('country_code', 'country_name')
         .annotate(total=Count('id'))
         .order_by('-total')[:15]
     )
 
-    # Coordenadas recientes de incidentes y tráfico para los puntos del mapa
-    raw_points = list(
+    # Priorizar peticiones con IP real de cliente para que las sondas no desplacen a los clientes reales del mapa
+    real_client_points = list(
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(latitude__isnull=True)
-        .values('latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method')
-        .order_by('-id')[:80]
+        .exclude(http_method='HTTPS')
+        .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
+        .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
+        .values('id', 'latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method')
+        .order_by('-id')[:70]
     )
+    probe_points = list(
+        TrafficLog.objects.filter(created_at__gte=since)
+        .exclude(latitude__isnull=True)
+        .filter(
+            Q(http_method='HTTPS')
+            | Q(user_agent__icontains='Cloudflare-Traffic-Manager')
+            | (Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
+        )
+        .values('id', 'latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method')
+        .order_by('-id')[:20]
+    )
+    raw_points = real_client_points + probe_points
     point_ips = {p['client_ip'] for p in raw_points}
     threat_ips = set(
         SecurityEvent.objects.filter(client_ip__in=point_ips, created_at__gte=since)
@@ -160,26 +182,31 @@ def api_map_data(request):
 
     recent_points = []
     for p in raw_points:
-        # Si un punto histórico quedó con la misma coordenada exacta del nodo base (-34.6037, -58.3816), recalcular su origen para trazar su flecha de trayectoria
-        if p['latitude'] is not None and abs(p['latitude'] - (-34.6037)) < 0.01 and abs(p['longitude'] - (-58.3816)) < 0.01:
-            re_geo = resolve_geoip(p['client_ip'])
-            p['latitude'] = re_geo['latitude']
-            p['longitude'] = re_geo['longitude']
-            p['country_name'] = re_geo['country_name']
         meta = extract_log_ip_meta(p['client_ip'], p.pop('raw_headers', {}))
         ua = p.pop('user_agent', '') or ''
         method = p.pop('http_method', '') or ''
-        p['is_threat'] = (p['client_ip'] in threat_ips) or (p['status_code'] >= 400)
+        eff_ip = meta['real_client_ip'] if (not meta['is_cloudflare'] and meta['real_client_ip']) else p['client_ip']
+        conn_ip = meta['cloudflare_ip'] if (meta['is_cloudflare'] and meta['cloudflare_ip']) else eff_ip
+        real_ip_val = meta['real_client_ip'] or (eff_ip if not is_cloudflare_ip(eff_ip) else '')
+        target_geo_ip = real_ip_val or conn_ip
+
+        re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
+        p['latitude'] = re_geo['latitude']
+        p['longitude'] = re_geo['longitude']
+        p['country_name'] = re_geo['country_name']
+
+        p['is_threat'] = (p['client_ip'] in threat_ips) or (real_ip_val in threat_ips) or (p['status_code'] >= 400)
+        p['client_ip'] = conn_ip
         p['is_cloudflare'] = meta['is_cloudflare']
         p['cloudflare_ip'] = meta['cloudflare_ip']
-        p['real_client_ip'] = meta['real_client_ip']
-        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(meta['real_client_ip'] or p['client_ip'])
-        p['is_local'] = is_own_pub or meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (p['client_ip'] if not meta['is_cloudflare'] else ''))
-        p['is_direct_public_ip'] = meta.get('is_direct_public_ip', (not p['is_cloudflare'] and not p['is_local'] and bool(p['real_client_ip'] or p['client_ip'])))
-        p['is_probe'] = (not is_own_pub) and bool(
-            (meta['is_cloudflare'] and not meta['real_client_ip'])
+        p['real_client_ip'] = real_ip_val
+        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(target_geo_ip)
+        p['is_own_public_ip'] = is_own_pub
+        p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(real_ip_val or (conn_ip if not meta['is_cloudflare'] else ''))
+        p['is_direct_public_ip'] = meta.get('is_direct_public_ip', (not p['is_cloudflare'] and not p['is_local'] and not is_own_pub and bool(target_geo_ip)))
+        p['is_probe'] = bool(
+            (meta['is_cloudflare'] and not real_ip_val)
             or 'Cloudflare-Traffic-Manager' in ua
-            or 'UptimeRobot' in ua
             or 'TLS SNI' in ua
             or method == 'HTTPS'
         )
@@ -353,7 +380,7 @@ def api_live_feed_logs(request):
 
     qs = base_qs
 
-    # 1. Filtro independiente de IPs Locales / Balanceador / Infraestructura Propia (WAN Propia vía Cloudflare)
+    # 1. Filtro independiente de IPs Locales Privadas / Balanceador (RFC1918 / Loopback)
     if hide_local:
         qs = (
             qs.exclude(client_ip__startswith='127.')
@@ -362,15 +389,13 @@ def api_live_feed_logs(request):
             .exclude(client_ip__startswith='169.254.')
             .exclude(country_code='LAN')
             .exclude(raw_headers__is_local_ip=True)
-            .exclude(raw_headers__is_own_public_ip=True)
         )
 
-    # 2. Filtro independiente de Sondas / Handshakes de Cloudflare
+    # 2. Filtro independiente de Sondas de Cloudflare / Handshakes TLS sin IP de cliente final
     if hide_probes:
         qs = (
             qs.exclude(http_method='HTTPS')
             .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
-            .exclude(user_agent__icontains='UptimeRobot')
             .exclude(user_agent__icontains='TLS SNI')
             .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         )

@@ -275,11 +275,11 @@ class TacticalWorldMap {
     });
 
     const vec = this.getTargetNodeCoords(coords.x, coords.y);
-    const realSuffix = realClientIp ? ` ➔ 🎯${realClientIp}` : '';
-    const prefix = isThreat
-      ? (isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : '🚨DIR '))
-      : (isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : '🎯DIR '));
-    const tag = `${prefix}${clientIp || 'IP'}${realSuffix}`;
+    const realClient = realClientIp || (!isCloudflare ? clientIp : '');
+    const primaryLabelIp = realClient || clientIp || 'IP';
+    const cfNodeTag = (isCloudflare && clientIp && clientIp !== realClient) ? ' (☁️CF)' : (isCloudflare ? ' (☁️CF)' : '');
+    const prefix = isThreat ? '🚨 ' : (isLoc ? '🏢 ' : '🎯 ');
+    const tag = `${prefix}${primaryLabelIp}${cfNodeTag}`;
     this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, isThreat, tag, isCloudflare, isLoc, probe);
 
     const existingIdx = this.points.findIndex(p => Math.abs(p.lat - lat) < 0.1 && Math.abs(p.lon - lon) < 0.1);
@@ -338,11 +338,11 @@ class TacticalWorldMap {
     const coords = this.geoToCanvas(pt.lat, pt.lon);
     const vec = this.getTargetNodeCoords(coords.x, coords.y);
     const color = pt.isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (pt.isCloudflare ? '#f6821f' : '#f87171'));
-    const realSuffix = pt.realClientIp ? ` ➔ 🎯${pt.realClientIp}` : '';
-    const prefix = pt.isThreat
-      ? (pt.isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : '🚨DIR '))
-      : (pt.isCloudflare ? '☁️CF ' : (isLoc ? '🏢LAN ' : '🎯DIR '));
-    const label = `${prefix}${pt.ip || 'TRAFICO'}${realSuffix}`;
+    const realClient = pt.realClientIp || (!pt.isCloudflare ? pt.ip : '');
+    const primaryLabelIp = realClient || pt.ip || 'TRAFICO';
+    const cfNodeTag = (pt.isCloudflare && pt.ip && pt.ip !== realClient) ? ' (☁️CF)' : (pt.isCloudflare ? ' (☁️CF)' : '');
+    const prefix = pt.isThreat ? '🚨 ' : (isLoc ? '🏢 ' : '🎯 ');
+    const label = `${prefix}${primaryLabelIp}${cfNodeTag}`;
 
     this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, pt.isThreat, label, pt.isCloudflare, isLoc, pt.isProbe);
     if (this.pulses.length < 25) {
@@ -922,9 +922,11 @@ class TacticalWorldMap {
 
       if (this.hoverPoint) {
         const hp = this.hoverPoint;
-        const cfTag = hp.isCloudflare ? ' [☁️ CF]' : (hp.isLocal ? ' [🏢 LAN]' : ' [🎯 DIR IP]');
-        const realTag = hp.realClientIp ? ` ➔ 🎯${hp.realClientIp}` : '';
-        const text = `${hp.ip}${realTag}${cfTag} (${hp.country || (hp.isLocal ? 'Red Local' : 'Remoto')}) [HTTP ${hp.status_code || 200}]`;
+        const mainIp = hp.realClientIp || hp.ip || '';
+        const cfSuffix = (hp.isCloudflare && hp.realClientIp && hp.ip !== hp.realClientIp)
+          ? ` [☁️ Nodo CF: ${hp.ip}]`
+          : (hp.isCloudflare ? ' [☁️ CF]' : (hp.isLocal ? ' [🏢 LAN]' : ' [🎯 DIR IP]'));
+        const text = `🎯 ${mainIp}${cfSuffix} (${hp.country || (hp.isLocal ? 'Red Local' : 'Remoto')}) [HTTP ${hp.status_code || 200}]`;
         const boxW = text.length * 6.5 + 16;
         const boxX = Math.min(this.width - boxW - 6, Math.max(6, hp.screenX + 12));
         const boxY = Math.max(6, hp.screenY - 26);

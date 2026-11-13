@@ -730,7 +730,8 @@ def extract_log_ip_meta(ip_str, headers=None):
     if is_cf_flag or stored_cf or (stored_real and stored_real != ip_str):
         is_cf = is_cf_flag or bool(stored_cf) or is_cloudflare_ip(ip_str) or is_cloudflare_ip(merged.get('connection_ip'))
         cf_node = stored_cf or (ip_str if is_cloudflare_ip(ip_str) else str(merged.get('connection_ip') or ''))
-        eff_target = stored_real or ip_str
+        eff_real_out = stored_real or (ip_str if (ip_str and not is_cloudflare_ip(ip_str)) else '')
+        eff_target = eff_real_out or ip_str
         is_loc = is_private_local_ip(eff_target)
         is_own_pub = bool(merged.get('is_own_public_ip')) or is_own_public_wan_ip(eff_target)
         is_direct_val = merged.get('is_direct_public_ip')
@@ -739,7 +740,7 @@ def extract_log_ip_meta(ip_str, headers=None):
         return {
             'is_cloudflare': is_cf,
             'cloudflare_ip': cf_node if is_cf else '',
-            'real_client_ip': stored_real,
+            'real_client_ip': eff_real_out,
             'is_local_ip': is_loc,
             'is_own_public_ip': is_own_pub,
             'is_direct_public_ip': bool(is_direct_val) and not is_own_pub,
@@ -882,14 +883,16 @@ def resolve_geoip(ip_str, cf_country=''):
 
     base_geo = None
     if cc_clean and cc_clean not in ('XX', 'T1', '-'):
+        lat_jitter = (((crc_val % 100) - 50) / 100.0) * 0.55
+        lon_jitter = ((((crc_val // 100) % 100) - 50) / 100.0) * 0.55
         if cc_clean in ISO_COUNTRY_GEO_MAP:
             g = ISO_COUNTRY_GEO_MAP[cc_clean]
             base_geo = {
                 'country_code': g[0],
                 'country_name': g[1],
                 'city': g[2],
-                'latitude': g[3],
-                'longitude': g[4],
+                'latitude': round(g[3] + lat_jitter, 4),
+                'longitude': round(g[4] + lon_jitter, 4),
                 'is_cloudflare': False
             }
         else:
@@ -984,6 +987,14 @@ def process_incoming_log(data, node=None):
     is_cf = ip_meta['is_cloudflare']
     cf_node_ip = ip_meta['cloudflare_ip'] or (raw_conn_ip if is_cf else '')
     real_client_ip = ip_meta['real_client_ip']
+
+    http_method_val = str(data.get('http_method', 'GET')).upper()
+    ua_val = str(data.get('user_agent', '') or '')
+
+    # Ignorar paquetes pre-handshake TLS SNI de capa 4 sin desencriptar provenientes de Cloudflare
+    # (ya que 100ms después Nginx desencripta el paquete y entrega la petición HTTP real con CF-Connecting-IP)
+    if (http_method_val == 'HTTPS' or ua_val.startswith('TLS SNI')) and is_cf and not real_client_ip:
+        return None
 
     # La IP real del cliente que realiza la petición (detrás de Cloudflare, por LAN local, o directo a IP pública):
     target_client_ip = real_client_ip if real_client_ip else raw_conn_ip
@@ -1364,7 +1375,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'is_threat': is_threat,
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
-            'real_client_ip': meta['real_client_ip'] or '',
+            'real_client_ip': meta['real_client_ip'] or (log.client_ip if not is_cloudflare_ip(log.client_ip) else ''),
             'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (connection_ip if not meta['is_cloudflare'] else '')),
             'is_own_public_ip': bool(is_own_pub),
             'is_direct_public_ip': bool(is_direct_ip) and not is_own_pub,

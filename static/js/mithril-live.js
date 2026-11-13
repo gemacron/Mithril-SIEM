@@ -34,7 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let isWsConnected = false;
   let isFeedPaused = false;
   let hideLocalIps = true;
-  let hideProbes = false;
+  let hideProbes = true;
   const pausedEventsQueue = [];
 
   const wsQueue = [];
@@ -66,9 +66,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function isEventLocal(event) {
     if (!event) return false;
-    // Peticiones que nacen en la propia red local / infraestructura (ej. Zabbix interno o LAN propia)
-    // y salen por la IP Pública WAN propia hasta un nodo de Cloudflare para volver a entrar (Hairpinning)
-    if (event.is_own_public_ip === true) return true;
+    if (event.is_cloudflare) return false;
     if (event.is_local_ip === true) return true;
     const realIp = event.real_client_ip;
     const clientIp = event.client_ip;
@@ -79,9 +77,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function isEventProbe(event) {
     if (!event) return false;
-    if (event.is_own_public_ip === true) return false;
+    if (event.real_client_ip) return false;
     const ua = String(event.user_agent || '');
-    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('UptimeRobot') || ua.includes('TLS SNI')) return true;
+    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('TLS SNI')) return true;
     if (event.method === 'HTTPS' || event.http_method === 'HTTPS') return true;
     if (!event.real_client_ip && event.is_cloudflare) return true;
     return false;
@@ -105,31 +103,28 @@ document.addEventListener('DOMContentLoaded', () => {
     const targetIp = event.real_client_ip || event.client_ip || '-';
     if (event.is_own_public_ip) {
       const suffix = ua.includes('Zabbix') ? ' (Zabbix)' : '';
-      return `<code style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.55); font-size: 0.73rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Pública WAN propia de tu infraestructura (Inmune a bloqueos)">🛡️ WAN PROPIA: ${targetIp}${suffix}</code>`;
+      return `<code style="background: rgba(16, 185, 129, 0.16); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.55); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente (WAN Propia de tu infraestructura - Inmune a bloqueos)">🎯 ${targetIp} <span style="font-size: 0.64rem; opacity: 0.9;">🛡️ WAN Propia${suffix}</span></code>`;
     }
-    if (event.is_cloudflare && event.real_client_ip && !isPrivateLocalIp(event.real_client_ip)) {
-      return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente detrás de Cloudflare (Objetivo de evaluación)">🎯 ${event.real_client_ip}</code>`;
-    }
-    const isDirectPub = Boolean(event.is_direct_public_ip) || (!event.is_cloudflare && !isPrivateLocalIp(event.client_ip) && !isPrivateLocalIp(event.real_client_ip || ''));
-    if (isDirectPub) {
-      return `<code style="background: rgba(239, 68, 68, 0.16); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.55); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="Petición directa a la IP Pública del servidor (Bypass de Cloudflare / Origen)">🎯 DIRECTO A IP: ${targetIp}</code>`;
-    }
-    if (ua.includes('Cloudflare-Traffic-Manager') || ua.includes('Zabbix') || ua.includes('UptimeRobot')) {
-      return `<span style="color: #f6821f; font-size: 0.7rem; font-family: var(--font-mono);" title="Petición originada directamente por monitor de salud Cloudflare / Zabbix">☁️ Sonda Healthcheck</span>`;
-    }
-    if (event.method === 'HTTPS' || event.http_method === 'HTTPS' || ua.includes('TLS SNI')) {
-      return `<span style="color: var(--text-dim); font-size: 0.7rem; font-family: var(--font-mono);" title="Paquete TLS ClientHello previo a las cabeceras HTTP">🔒 Handshake TLS</span>`;
-    }
-    if (event.is_cloudflare) {
-      return `<span style="color: var(--neon-amber); font-size: 0.7rem; font-family: var(--font-mono);" title="Petición recibida vía nodo Cloudflare">☁️ Conexión Edge</span>`;
+    if (event.real_client_ip && !isPrivateLocalIp(event.real_client_ip)) {
+      return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente (Objetivo de evaluación)">🎯 ${event.real_client_ip}</code>`;
     }
     if (event.real_client_ip && isPrivateLocalIp(event.real_client_ip)) {
-      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏠 RED LOCAL: ${event.real_client_ip}</code>`;
+      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Real del Cliente en Red Local Privada / LAN">🎯 ${event.real_client_ip} (🏠 LAN)</code>`;
+    }
+    const isDirectPub = Boolean(event.is_direct_public_ip) || (!event.is_cloudflare && !isPrivateLocalIp(event.client_ip));
+    if (isDirectPub) {
+      return `<code style="background: rgba(239, 68, 68, 0.16); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.55); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;" title="Petición directa a la IP Pública del servidor (Bypass de Cloudflare / Origen)">🎯 ${targetIp} (Directo)</code>`;
     }
     if (isPrivateLocalIp(event.client_ip)) {
-      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🏠 RED LOCAL: ${event.client_ip || '-'}</code>`;
+      return `<code style="background: rgba(148, 163, 184, 0.16); color: #cbd5e1; border: 1px solid rgba(148, 163, 184, 0.45); font-size: 0.74rem; font-weight: 700; padding: 0.12rem 0.45rem; border-radius: 4px;" title="IP Local Privada / LAN">🎯 ${targetIp} (🏠 LAN)</code>`;
     }
-    return `<code style="color: var(--neon-emerald); font-size: 0.75rem;">${event.client_ip || '-'}</code>`;
+    if (ua.includes('Cloudflare-Traffic-Manager')) {
+      return `<code style="background: rgba(243, 128, 32, 0.14); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.45); font-size: 0.72rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px;" title="Sonda originada directamente por el nodo Cloudflare Traffic Manager">${targetIp} (☁️ Sonda CF)</code>`;
+    }
+    if (event.method === 'HTTPS' || event.http_method === 'HTTPS' || ua.includes('TLS SNI')) {
+      return `<code style="color: var(--text-dim); font-size: 0.72rem;" title="Paquete TLS ClientHello desde ${targetIp}">🔒 ${targetIp} (TLS)</code>`;
+    }
+    return `<code style="background: rgba(0, 229, 255, 0.14); color: #00e5ff; border: 1px solid rgba(0, 229, 255, 0.5); font-size: 0.75rem; font-weight: 800; padding: 0.12rem 0.45rem; border-radius: 4px;">🎯 ${targetIp}</code>`;
   }
 
   function updateKpiFast(element, newValue) {
@@ -414,16 +409,17 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   if (probesToggle) {
-    const savedProbes = localStorage.getItem('mithril_hide_probes');
+    const savedProbes = localStorage.getItem('mithril_hide_probes_v2');
     if (savedProbes !== null) {
       hideProbes = (savedProbes === 'true');
       probesToggle.checked = hideProbes;
     } else {
-      hideProbes = probesToggle.checked;
+      hideProbes = true;
+      probesToggle.checked = true;
     }
     probesToggle.addEventListener('change', () => {
       hideProbes = probesToggle.checked;
-      localStorage.setItem('mithril_hide_probes', hideProbes ? 'true' : 'false');
+      localStorage.setItem('mithril_hide_probes_v2', hideProbes ? 'true' : 'false');
       fetchPaginatedTodayLogs(1);
     });
   }
