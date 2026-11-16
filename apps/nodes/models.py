@@ -60,8 +60,16 @@ class ProxyNode(models.Model):
     def compute_live_rps(self):
         """Calcula las peticiones por segundo reales basadas en los logs recibidos en los últimos 10s"""
         try:
+            from apps.detection.models import TrafficLog
+            from django.db.models import Q
             window_start = timezone.now() - timezone.timedelta(seconds=10)
-            recent_count = self.logs.filter(created_at__gte=window_start).count()
+            if ProxyNode.objects.count() == 1:
+                recent_count = TrafficLog.objects.filter(
+                    Q(node=self) | Q(node__isnull=True),
+                    created_at__gte=window_start
+                ).count()
+            else:
+                recent_count = self.logs.filter(created_at__gte=window_start).count()
             if recent_count > 0:
                 return max(1, round(recent_count / 10))
             return 0
@@ -102,15 +110,32 @@ class ProxyNode(models.Model):
             self.status = 'MAINTENANCE'
             return self.status
 
+        now = timezone.now()
+        live_rps = self.compute_live_rps()
+
+        # Si el nodo está enviando logs activamente ahora mismo, actualizar su último latido
+        if live_rps > 0:
+            self.last_heartbeat = now
+        elif not self.last_heartbeat:
+            try:
+                from apps.detection.models import TrafficLog
+                from django.db.models import Q
+                if ProxyNode.objects.count() == 1:
+                    last_log = TrafficLog.objects.filter(Q(node=self) | Q(node__isnull=True)).order_by('-id').first()
+                else:
+                    last_log = self.logs.order_by('-id').first()
+                if last_log and (now - last_log.created_at).total_seconds() <= self.heartbeat_timeout_seconds:
+                    self.last_heartbeat = last_log.created_at
+            except Exception:
+                pass
+
         if not self.last_heartbeat:
             self.status = 'OFFLINE'
             return self.status
 
-        now = timezone.now()
         diff = (now - self.last_heartbeat).total_seconds()
-        live_rps = self.compute_live_rps()
 
-        if diff > self.heartbeat_timeout_seconds:
+        if diff > self.heartbeat_timeout_seconds and live_rps == 0:
             if self.status != 'OFFLINE' or self.current_rps != 0:
                 self.status = 'OFFLINE'
                 self.current_rps = 0
@@ -121,7 +146,7 @@ class ProxyNode(models.Model):
         if self.status != new_status or self.current_rps != live_rps:
             self.status = new_status
             self.current_rps = live_rps
-            self.save(update_fields=['status', 'current_rps'])
+            self.save(update_fields=['status', 'current_rps', 'last_heartbeat'])
 
         return self.status
 

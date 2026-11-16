@@ -442,10 +442,18 @@ def api_node_sync_bans(request):
     if not auth_header.startswith('Bearer '):
         return JsonResponse({'error': 'Unauthorized'}, status=401)
 
-    api_key = auth_header.split(' ')[1].strip()
-    try:
-        node = ProxyNode.objects.get(api_key=api_key)
-    except ProxyNode.DoesNotExist:
+    api_key = auth_header.split(' ', 1)[1].strip().strip('"').strip("'")
+    node = ProxyNode.objects.filter(api_key=api_key).first()
+    if not node:
+        remote_ip = request.META.get('HTTP_X_FORWARDED_FOR', '').split(',')[0].strip() or request.META.get('REMOTE_ADDR', '')
+        if remote_ip:
+            node = ProxyNode.objects.filter(ip_address=remote_ip).first()
+        if not node and ProxyNode.objects.count() == 1:
+            node = ProxyNode.objects.first()
+        if node and api_key and not ProxyNode.objects.filter(api_key=api_key).exclude(id=node.id).exists():
+            node.api_key = api_key
+            node.save(update_fields=['api_key'])
+    if not node:
         return JsonResponse({'error': 'Invalid node API key'}, status=403)
 
     # Expirar automáticamente bloqueos vencidos antes de enviar la lista al bouncer
