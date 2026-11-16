@@ -262,12 +262,18 @@
         </div>
       </div>
       <div class="panel-body" style="padding: 0;">
-        <div class="map-container" style="height: 440px;">
-          <canvas id="paraguayMapCanvas"></canvas>
+        <div class="map-container" style="height: 440px; position: relative;">
+          <canvas id="paraguayMapCanvas" style="cursor: grab;"></canvas>
+          <div style="position: absolute; top: 10px; right: 10px; display: flex; flex-direction: column; gap: 4px; z-index: 5;">
+            <button type="button" id="pyMapZoomInBtn" class="btn btn-dim" style="padding: 0.2rem 0.48rem; font-size: 0.78rem; font-family: var(--font-mono); background: rgba(8, 13, 25, 0.88); border: 1px solid rgba(0, 229, 255, 0.4); color: var(--neon-cyan);" title="Acercar mapa (Rueda del mouse)">➕</button>
+            <button type="button" id="pyMapZoomOutBtn" class="btn btn-dim" style="padding: 0.2rem 0.48rem; font-size: 0.78rem; font-family: var(--font-mono); background: rgba(8, 13, 25, 0.88); border: 1px solid rgba(0, 229, 255, 0.4); color: var(--neon-cyan);" title="Alejar mapa">➖</button>
+            <button type="button" id="pyMapFocusCapitalBtn" class="btn btn-dim" style="padding: 0.22rem 0.45rem; font-size: 0.66rem; font-family: var(--font-mono); background: rgba(8, 13, 25, 0.88); border: 1px solid rgba(0, 230, 118, 0.5); color: #00e676;" title="Enfocar Gran Asunción y Departamento Central">🎯 Capital</button>
+            <button type="button" id="pyMapResetViewBtn" class="btn btn-dim" style="padding: 0.22rem 0.45rem; font-size: 0.66rem; font-family: var(--font-mono); background: rgba(8, 13, 25, 0.88); border: 1px solid rgba(148, 163, 184, 0.4); color: #e2e8f0;" title="Ver mapa completo de Paraguay">🇵🇾 Todo</button>
+          </div>
           <div class="map-overlay-info" style="font-size: 0.68rem;">
-            • <span style="color: var(--neon-cyan);">➤ NORMAL PY</span> &nbsp;|&nbsp;
-            • <span style="color: var(--neon-crimson);">➤ AMENAZA PY</span> &nbsp;|&nbsp;
-            • <span style="color: #c084fc;">🏢 LAN LOCAL</span>
+            • <span style="color: var(--neon-cyan);">●/➤ ORIGEN + VECTOR PY</span> &nbsp;|&nbsp;
+            • <span style="color: var(--neon-crimson);">●/➤ AMENAZA PY</span> &nbsp;|&nbsp;
+            • <span style="color: #94a3b8;">🖱️ Rueda: Zoom / Arrastrar: Mover</span>
           </div>
         </div>
       </div>
@@ -384,6 +390,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{% static 'js/mithril-map.js' %}?v=20261116a"></script>
-<script src="{% static 'js/mithril-live.js' %}?v=20261116a"></script>
+<script src="{% static 'js/mithril-map.js' %}?v=20261116b"></script>
+<script src="{% static 'js/mithril-live.js' %}?v=20261116b"></script>
 {% endblock %}

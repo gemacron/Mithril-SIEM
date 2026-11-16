@@ -970,6 +970,9 @@ class TacticalWorldMap {
 
 /**
  * MITHRIL SIEM - 2D Tactical Paraguay Map (Exclusivo para Tráfico Nacional de Paraguay y LAN)
+ * - Soporta Zoom interactivo (1x a 18x con rueda del ratón o botones) y Paneo (Click & Drag)
+ * - Modo de enfoque directo en Gran Asunción / Departamento Central (🎯 Capital)
+ * - Marcadores de origen explícitos (◎ + Etiqueta 📍 Zona/Ciudad) anclados geográficamente
  */
 class TacticalParaguayMap {
   constructor(canvasId) {
@@ -988,11 +991,18 @@ class TacticalParaguayMap {
       maxLon: -53.8,
     };
 
+    // Estado de cámara interactiva (Zoom & Pan)
+    this.zoom = 1.0;
+    this.panX = 0;
+    this.panY = 0;
+    this.isDragging = false;
+    this.dragStart = { x: 0, y: 0 };
+
     this.points = [];
     this.pulses = [];
     this.arcs = [];
     this.nodes = [
-      { id: 'default', name: 'Proxy Principal', status: 'ONLINE', latitude: -25.2637, longitude: -57.5759 }
+      { id: 'default', name: 'Proxy Principal', status: 'ONLINE', latitude: -25.2820, longitude: -57.6350 }
     ];
     this.threatCursorIdx = 0;
     this.mouse = { x: -100, y: -100, active: false };
@@ -1001,12 +1011,20 @@ class TacticalParaguayMap {
     this.showPublic = true;
     this.showLocal = true;
     this.initFilterToggles();
+    this.initCameraControls();
 
-    // Ciudades y nodos de telecomunicaciones principales de Paraguay para distribuir IPs nacionales determinísticamente
+    // Zonas de Gran Asunción / Central y ciudades departamentales para distribuir IPs nacionales con separación clara del Nodo Proxy
     this.pyZones = [
-      { name: 'Gran Asunción', lat: -25.2800, lon: -57.6300 },
-      { name: 'Luque / Central', lat: -25.2667, lon: -57.4833 },
-      { name: 'San Lorenzo', lat: -25.3400, lon: -57.5080 },
+      { name: 'Villa Morra (Asunción)', lat: -25.2940, lon: -57.5800 },
+      { name: 'Sajonia (Asunción)', lat: -25.2760, lon: -57.6620 },
+      { name: 'Lambaré', lat: -25.3460, lon: -57.6060 },
+      { name: 'Fernando de la Mora', lat: -25.3210, lon: -57.5520 },
+      { name: 'San Lorenzo', lat: -25.3440, lon: -57.5080 },
+      { name: 'Luque', lat: -25.2667, lon: -57.4850 },
+      { name: 'Mariano Roque Alonso', lat: -25.2080, lon: -57.5320 },
+      { name: 'Capiatá', lat: -25.3550, lon: -57.4450 },
+      { name: 'Ñemby', lat: -25.3950, lon: -57.5440 },
+      { name: 'Limpio', lat: -25.1660, lon: -57.4850 },
       { name: 'Ciudad del Este', lat: -25.5097, lon: -54.6111 },
       { name: 'Encarnación', lat: -27.3306, lon: -55.8667 },
       { name: 'Coronel Oviedo', lat: -25.4444, lon: -56.4406 },
@@ -1022,12 +1040,6 @@ class TacticalParaguayMap {
 
     this.resize();
     window.addEventListener('resize', () => this.resize());
-
-    this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e), { passive: true });
-    this.canvas.addEventListener('mouseleave', () => {
-      this.mouse.active = false;
-      this.hoverPoint = null;
-    });
 
     setInterval(() => this.emitActiveVectors(), 2000);
 
@@ -1069,6 +1081,112 @@ class TacticalParaguayMap {
     }
   }
 
+  initCameraControls() {
+    // Zoom con rueda del ratón centrado en la posición del cursor
+    this.canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const rect = this.canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      const factor = e.deltaY < 0 ? 1.28 : (1 / 1.28);
+      this.zoomAt(mx, my, factor);
+    }, { passive: false });
+
+    // Arrastrar (Pan) con clic izquierdo
+    this.canvas.addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      this.isDragging = true;
+      this.dragStart.x = e.clientX - this.panX;
+      this.dragStart.y = e.clientY - this.panY;
+      this.canvas.style.cursor = 'grabbing';
+    });
+
+    window.addEventListener('mouseup', () => {
+      if (this.isDragging) {
+        this.isDragging = false;
+        if (this.canvas) this.canvas.style.cursor = 'grab';
+      }
+    });
+
+    this.canvas.addEventListener('mousemove', (e) => {
+      if (this.isDragging) {
+        this.panX = e.clientX - this.dragStart.x;
+        this.panY = e.clientY - this.dragStart.y;
+        this.clampPan();
+        this.renderStaticBackground();
+      }
+      this.handleMouseMove(e);
+    }, { passive: true });
+
+    this.canvas.addEventListener('mouseleave', () => {
+      this.mouse.active = false;
+      this.hoverPoint = null;
+    });
+
+    // Doble clic para acercar al punto deseado
+    this.canvas.addEventListener('dblclick', (e) => {
+      const rect = this.canvas.getBoundingClientRect();
+      this.zoomAt(e.clientX - rect.left, e.clientY - rect.top, 2.0);
+    });
+
+    const zoomInBtn = document.getElementById('pyMapZoomInBtn');
+    const zoomOutBtn = document.getElementById('pyMapZoomOutBtn');
+    const focusCapBtn = document.getElementById('pyMapFocusCapitalBtn');
+    const resetBtn = document.getElementById('pyMapResetViewBtn');
+
+    if (zoomInBtn) {
+      zoomInBtn.addEventListener('click', () => this.zoomAt(this.width / 2, this.height / 2, 1.45));
+    }
+    if (zoomOutBtn) {
+      zoomOutBtn.addEventListener('click', () => this.zoomAt(this.width / 2, this.height / 2, 1 / 1.45));
+    }
+    if (focusCapBtn) {
+      focusCapBtn.addEventListener('click', () => this.focusOnGeo(-25.305, -57.545, 5.2));
+    }
+    if (resetBtn) {
+      resetBtn.addEventListener('click', () => {
+        this.zoom = 1.0;
+        this.panX = 0;
+        this.panY = 0;
+        this.renderStaticBackground();
+      });
+    }
+  }
+
+  zoomAt(cx, cy, factor) {
+    const geoBefore = this.canvasToGeo(cx, cy);
+    this.zoom = Math.max(1.0, Math.min(18.0, this.zoom * factor));
+    if (this.zoom <= 1.02) {
+      this.zoom = 1.0;
+      this.panX = 0;
+      this.panY = 0;
+    } else {
+      const afterPos = this.geoToCanvas(geoBefore.lat, geoBefore.lon);
+      this.panX += (cx - afterPos.x);
+      this.panY += (cy - afterPos.y);
+      this.clampPan();
+    }
+    this.renderStaticBackground();
+  }
+
+  focusOnGeo(lat, lon, targetZoom = 5.0) {
+    this.zoom = Math.max(1.0, Math.min(18.0, targetZoom));
+    this.panX = 0;
+    this.panY = 0;
+    const pos = this.geoToCanvas(lat, lon);
+    this.panX = (this.width / 2) - pos.x;
+    this.panY = (this.height / 2) - pos.y;
+    this.clampPan();
+    this.renderStaticBackground();
+  }
+
+  clampPan() {
+    const maxPanX = this.width * (this.zoom - 0.5);
+    const maxPanY = this.height * (this.zoom - 0.5);
+    this.panX = Math.max(-maxPanX, Math.min(maxPanX, this.panX));
+    this.panY = Math.max(-maxPanY, Math.min(maxPanY, this.panY));
+  }
+
   resize() {
     const parent = this.canvas.parentElement;
     if (!parent) return;
@@ -1089,39 +1207,41 @@ class TacticalParaguayMap {
     this.renderStaticBackground();
   }
 
-  geoToCanvas(lat, lon) {
+  getBaseProjection() {
     const padX = 24;
     const padY = 24;
     const availW = Math.max(100, this.width - padX * 2);
     const availH = Math.max(100, this.height - padY * 2);
     const lonSpan = this.bounds.maxLon - this.bounds.minLon;
     const latSpan = this.bounds.maxLat - this.bounds.minLat;
-    const scale = Math.min(availW / lonSpan, availH / latSpan);
-    const mapW = lonSpan * scale;
-    const mapH = latSpan * scale;
+    const baseScale = Math.min(availW / lonSpan, availH / latSpan);
+    const mapW = lonSpan * baseScale;
+    const mapH = latSpan * baseScale;
     const offsetX = (this.width - mapW) / 2;
     const offsetY = (this.height - mapH) / 2;
+    return { lonSpan, latSpan, mapW, mapH, offsetX, offsetY };
+  }
 
-    const x = offsetX + ((lon - this.bounds.minLon) / lonSpan) * mapW;
-    const y = offsetY + ((this.bounds.maxLat - lat) / latSpan) * mapH;
-    return { x, y };
+  geoToCanvas(lat, lon) {
+    const { lonSpan, latSpan, mapW, mapH, offsetX, offsetY } = this.getBaseProjection();
+    const baseX = offsetX + ((lon - this.bounds.minLon) / lonSpan) * mapW;
+    const baseY = offsetY + ((this.bounds.maxLat - lat) / latSpan) * mapH;
+    const cx = this.width / 2;
+    const cy = this.height / 2;
+    return {
+      x: cx + (baseX - cx) * this.zoom + this.panX,
+      y: cy + (baseY - cy) * this.zoom + this.panY
+    };
   }
 
   canvasToGeo(x, y) {
-    const padX = 24;
-    const padY = 24;
-    const availW = Math.max(100, this.width - padX * 2);
-    const availH = Math.max(100, this.height - padY * 2);
-    const lonSpan = this.bounds.maxLon - this.bounds.minLon;
-    const latSpan = this.bounds.maxLat - this.bounds.minLat;
-    const scale = Math.min(availW / lonSpan, availH / latSpan);
-    const mapW = lonSpan * scale;
-    const mapH = latSpan * scale;
-    const offsetX = (this.width - mapW) / 2;
-    const offsetY = (this.height - mapH) / 2;
-
-    const lon = this.bounds.minLon + ((x - offsetX) / mapW) * lonSpan;
-    const lat = this.bounds.maxLat - ((y - offsetY) / mapH) * latSpan;
+    const { lonSpan, latSpan, mapW, mapH, offsetX, offsetY } = this.getBaseProjection();
+    const cx = this.width / 2;
+    const cy = this.height / 2;
+    const baseX = (x - this.panX - cx) / this.zoom + cx;
+    const baseY = (y - this.panY - cy) / this.zoom + cy;
+    const lon = this.bounds.minLon + ((baseX - offsetX) / mapW) * lonSpan;
+    const lat = this.bounds.maxLat - ((baseY - offsetY) / mapH) * latSpan;
     return { lat, lon };
   }
 
@@ -1136,19 +1256,20 @@ class TacticalParaguayMap {
   }
 
   resolveParaguayCoords(lat, lon, ipStr, isLocal) {
-    // Si tiene coordenadas específicas distintas del centroide genérico de Asunción, respetarlas si caen en Paraguay
-    const isGenericCentroid = (Math.abs(lat - (-25.2637)) < 0.08 && Math.abs(lon - (-57.5759)) < 0.08) || (!lat && !lon);
+    // El backend aplica un jitter de ±0.28° sobre el centroide de PY (-25.2637, -57.5759).
+    // Si cae en ese radio genérico, asignamos determinísticamente a una zona/ciudad real bien diferenciada del Nodo Proxy.
+    const isGenericCentroid = (Math.abs(lat - (-25.2637)) < 0.36 && Math.abs(lon - (-57.5759)) < 0.36) || (!lat && !lon);
     if (!isGenericCentroid && lat >= -27.8 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2) {
       return { lat, lon, zoneName: 'Paraguay' };
     }
     const h = this.hashIp(ipStr || 'py');
     const zone = this.pyZones[h % this.pyZones.length];
-    const jitterLat = (((h >> 4) % 100) - 50) * 0.0045;
-    const jitterLon = (((h >> 11) % 100) - 50) * 0.0045;
+    const jitterLat = (((h >> 4) % 100) - 50) * 0.0022;
+    const jitterLon = (((h >> 11) % 100) - 50) * 0.0022;
     return {
       lat: zone.lat + jitterLat,
       lon: zone.lon + jitterLon,
-      zoneName: isLocal ? `LAN (${zone.name})` : zone.name
+      zoneName: isLocal ? `LAN • ${zone.name}` : zone.name
     };
   }
 
@@ -1166,16 +1287,17 @@ class TacticalParaguayMap {
     return false;
   }
 
-  getNodeCoords(nodeName = '') {
+  getNodeGeo(nodeName = '') {
     let idx = 0;
     if (nodeName && this.nodes.length > 1) {
       const found = this.nodes.findIndex(n => n.name === nodeName);
       if (found !== -1) idx = found;
     }
-    // Base defensiva en Asunción con ligero desplazamiento si hay múltiples proxies
-    const lat = -25.2637 + (idx * 0.35);
-    const lon = -57.5759 + (idx * 0.45);
-    return this.geoToCanvas(lat, lon);
+    // Base defensiva en Microcentro Asunción (-25.2820, -57.6350)
+    return {
+      lat: -25.2820 + (idx * 0.06),
+      lon: -57.6350 - (idx * 0.06)
+    };
   }
 
   syncFromMapData(data) {
@@ -1186,6 +1308,7 @@ class TacticalParaguayMap {
     if (data.points && Array.isArray(data.points)) {
       const hadNoPoints = this.points.length === 0;
       const pyPoints = [];
+      const seenIps = new Set();
       for (const p of data.points) {
         const lat = parseFloat(p.latitude) || 0;
         const lon = parseFloat(p.longitude) || 0;
@@ -1196,6 +1319,16 @@ class TacticalParaguayMap {
         }
         const mainIp = p.real_client_ip || p.client_ip || '';
         const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLoc);
+        const isThr = Boolean(p.is_threat) || (p.status_code >= 400);
+        if (seenIps.has(mainIp)) {
+          const ex = pyPoints.find(item => (item.realClientIp || item.ip) === mainIp);
+          if (ex && isThr) {
+            ex.isThreat = true;
+            ex.status_code = p.status_code || 403;
+          }
+          continue;
+        }
+        seenIps.add(mainIp);
         pyPoints.push({
           lat: resolved.lat,
           lon: resolved.lon,
@@ -1203,7 +1336,7 @@ class TacticalParaguayMap {
           ip: p.client_ip || '',
           realClientIp: p.real_client_ip || '',
           nodeName: p.node_name || '',
-          isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
+          isThreat: isThr,
           isCloudflare: Boolean(p.is_cloudflare),
           isLocal: isLoc,
           status_code: p.status_code || 200
@@ -1227,14 +1360,13 @@ class TacticalParaguayMap {
 
     const mainIp = realClientIp || clientIp || 'PY';
     const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLocal);
-    const start = this.geoToCanvas(resolved.lat, resolved.lon);
-    const end = this.getNodeCoords(nodeName);
+    const nodeGeo = this.getNodeGeo(nodeName);
     const color = isThreat ? '#ff2a5f' : (isLocal ? '#c084fc' : '#00e5ff');
 
     if (this.pulses.length >= 25) this.pulses.shift();
     this.pulses.push({
-      x: start.x,
-      y: start.y,
+      lat: resolved.lat,
+      lon: resolved.lon,
       radius: 2,
       maxRadius: isThreat ? 26 : 16,
       alpha: 1.0,
@@ -1244,9 +1376,8 @@ class TacticalParaguayMap {
     });
 
     const prefix = isThreat ? '🚨 ' : (isLocal ? '🏢 ' : '🎯 ');
-    const cfTag = isCloudflare ? ' (☁️CF)' : '';
-    const label = `${prefix}${mainIp}${cfTag}`;
-    this.spawnArc(start.x, start.y, end.x, end.y, color, isThreat, label, isLocal);
+    const label = `${prefix}${mainIp} (${resolved.zoneName})`;
+    this.spawnGeoArc(resolved.lat, resolved.lon, nodeGeo.lat, nodeGeo.lon, color, isThreat, label, isLocal);
 
     const existingIdx = this.points.findIndex(pt => (pt.realClientIp || pt.ip) === mainIp);
     if (existingIdx !== -1) {
@@ -1271,23 +1402,15 @@ class TacticalParaguayMap {
     }
   }
 
-  spawnArc(startX, startY, endX, endY, color, isThreat, label, isLocal) {
-    if (this.arcs.length >= 18) this.arcs.shift();
-    const dist = Math.hypot(endX - startX, endY - startY);
-    if (dist < 18) {
-      startX -= 55;
-      startY -= 40;
-    }
-    const lift = Math.min(65, Math.max(24, dist * 0.28));
+  spawnGeoArc(startLat, startLon, endLat, endLon, color, isThreat, label, isLocal) {
+    if (this.arcs.length >= 16) this.arcs.shift();
     this.arcs.push({
-      startX,
-      startY,
-      endX,
-      endY,
-      midX: (startX + endX) / 2,
-      midY: Math.min(startY, endY) - lift,
+      startLat,
+      startLon,
+      endLat,
+      endLon,
       progress: 0.0,
-      speed: isThreat ? 0.020 : 0.026,
+      speed: isThreat ? 0.019 : 0.025,
       color,
       isThreat,
       isLocal: Boolean(isLocal),
@@ -1300,17 +1423,28 @@ class TacticalParaguayMap {
     const visible = this.points.filter(p => (p.isLocal ? this.showLocal : this.showPublic));
     if (visible.length === 0) return;
     const threats = visible.filter(p => p.isThreat);
-    const pool = threats.length > 0 ? threats.slice(0, 5) : visible.slice(0, 4);
+    const pool = threats.length > 0 ? threats.slice(0, 6) : visible.slice(0, 4);
     const pt = pool[this.threatCursorIdx % pool.length];
     this.threatCursorIdx += 1;
 
-    const start = this.geoToCanvas(pt.lat, pt.lon);
-    const end = this.getNodeCoords(pt.nodeName);
+    const nodeGeo = this.getNodeGeo(pt.nodeName);
     const color = pt.isThreat ? '#ff2a5f' : (pt.isLocal ? '#c084fc' : '#00e5ff');
     const mainIp = pt.realClientIp || pt.ip || 'PY';
     const prefix = pt.isThreat ? '🚨 ' : (pt.isLocal ? '🏢 ' : '🎯 ');
-    const cfTag = pt.isCloudflare ? ' (☁️CF)' : '';
-    this.spawnArc(start.x, start.y, end.x, end.y, color, pt.isThreat, `${prefix}${mainIp}${cfTag}`, pt.isLocal);
+    const label = `${prefix}${mainIp} (${pt.zoneName || 'PY'})`;
+    this.spawnGeoArc(pt.lat, pt.lon, nodeGeo.lat, nodeGeo.lon, color, pt.isThreat, label, pt.isLocal);
+    if (this.pulses.length < 20) {
+      this.pulses.push({
+        lat: pt.lat,
+        lon: pt.lon,
+        radius: 2,
+        maxRadius: pt.isThreat ? 22 : 14,
+        alpha: 0.9,
+        color,
+        isThreat: pt.isThreat,
+        isLocal: pt.isLocal
+      });
+    }
   }
 
   handleMouseMove(e) {
@@ -1325,7 +1459,7 @@ class TacticalParaguayMap {
       if (pt.isLocal && !this.showLocal) continue;
       if (!pt.isLocal && !this.showPublic) continue;
       const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
-      if (Math.hypot(x - this.mouse.x, y - this.mouse.y) < 11) {
+      if (Math.hypot(x - this.mouse.x, y - this.mouse.y) < 12) {
         this.hoverPoint = { ...pt, screenX: x, screenY: y };
         break;
       }
@@ -1348,16 +1482,19 @@ class TacticalParaguayMap {
     ctx.lineWidth = 0.6;
     ctx.font = '8px monospace';
     ctx.fillStyle = 'rgba(100, 116, 139, 0.45)';
-    for (let lat = -27; lat <= -19; lat += 2) {
+    const gridStep = this.zoom >= 3.0 ? 0.25 : 2;
+    for (let lat = -27; lat <= -19; lat += gridStep) {
       const { y } = this.geoToCanvas(lat, this.bounds.minLon);
+      if (y < 0 || y > h) continue;
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
       ctx.stroke();
-      ctx.fillText(`${lat}°S`, 6, y - 3);
+      ctx.fillText(`${lat.toFixed(gridStep < 1 ? 2 : 0)}°S`, 6, y - 3);
     }
-    for (let lon = -62; lon <= -54; lon += 2) {
+    for (let lon = -62; lon <= -54; lon += gridStep) {
       const { x } = this.geoToCanvas(this.bounds.maxLat, lon);
+      if (x < 0 || x > w) continue;
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
@@ -1412,34 +1549,49 @@ class TacticalParaguayMap {
       if (idx === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.38)';
-    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.42)';
+    ctx.lineWidth = 1.3;
     ctx.setLineDash([4, 3]);
     ctx.stroke();
     ctx.restore();
 
-    // Ciudades de referencia táctica en Paraguay
+    // Ciudades de referencia nacional y localidades de Gran Asunción al acercar el zoom
     const refCities = [
-      { name: 'Asunción', lat: -25.2637, lon: -57.5759, capital: true },
-      { name: 'Ciudad del Este', lat: -25.5097, lon: -54.6111 },
-      { name: 'Encarnación', lat: -27.3306, lon: -55.8667 },
-      { name: 'Pedro Juan Caballero', lat: -22.5472, lon: -55.7333 },
-      { name: 'Concepción', lat: -23.4064, lon: -57.4344 },
-      { name: 'Cnel. Oviedo', lat: -25.4444, lon: -56.4406 },
-      { name: 'Pilar', lat: -26.8681, lon: -58.2953 },
-      { name: 'Filadelfia (Chaco)', lat: -22.3500, lon: -60.0333 },
+      { name: 'Asunción', lat: -25.2820, lon: -57.6350, capital: true, minZoom: 1.0 },
+      { name: 'Ciudad del Este', lat: -25.5097, lon: -54.6111, minZoom: 1.0 },
+      { name: 'Encarnación', lat: -27.3306, lon: -55.8667, minZoom: 1.0 },
+      { name: 'Pedro Juan Caballero', lat: -22.5472, lon: -55.7333, minZoom: 1.0 },
+      { name: 'Concepción', lat: -23.4064, lon: -57.4344, minZoom: 1.0 },
+      { name: 'Cnel. Oviedo', lat: -25.4444, lon: -56.4406, minZoom: 1.0 },
+      { name: 'Villarrica', lat: -25.7806, lon: -56.4486, minZoom: 1.4 },
+      { name: 'Pilar', lat: -26.8681, lon: -58.2953, minZoom: 1.0 },
+      { name: 'Filadelfia (Chaco)', lat: -22.3500, lon: -60.0333, minZoom: 1.0 },
+      { name: 'Caacupé', lat: -25.3861, lon: -57.1408, minZoom: 1.8 },
+      // Sub-zonas de Gran Asunción / Central visibles al acercar el zoom
+      { name: 'Villa Morra', lat: -25.2940, lon: -57.5800, minZoom: 2.2 },
+      { name: 'Sajonia', lat: -25.2760, lon: -57.6620, minZoom: 2.5 },
+      { name: 'Lambaré', lat: -25.3460, lon: -57.6060, minZoom: 2.0 },
+      { name: 'Fdo. de la Mora', lat: -25.3210, lon: -57.5520, minZoom: 2.2 },
+      { name: 'San Lorenzo', lat: -25.3440, lon: -57.5080, minZoom: 1.8 },
+      { name: 'Luque', lat: -25.2667, lon: -57.4850, minZoom: 1.8 },
+      { name: 'M. R. Alonso', lat: -25.2080, lon: -57.5320, minZoom: 2.2 },
+      { name: 'Limpio', lat: -25.1660, lon: -57.4850, minZoom: 2.2 },
+      { name: 'Capiatá', lat: -25.3550, lon: -57.4450, minZoom: 2.0 },
+      { name: 'Ñemby', lat: -25.3950, lon: -57.5440, minZoom: 2.2 },
     ];
 
     ctx.save();
     refCities.forEach(c => {
+      if (this.zoom < (c.minZoom || 1.0)) return;
       const { x, y } = this.geoToCanvas(c.lat, c.lon);
+      if (x < -20 || x > w + 20 || y < -20 || y > h + 20) return;
       ctx.fillStyle = c.capital ? 'rgba(0, 230, 118, 0.85)' : 'rgba(148, 163, 184, 0.55)';
       ctx.beginPath();
       ctx.arc(x, y, c.capital ? 2.8 : 1.8, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.font = c.capital ? 'bold 9px monospace' : '8px monospace';
-      ctx.fillStyle = c.capital ? 'rgba(226, 232, 240, 0.9)' : 'rgba(148, 163, 184, 0.65)';
+      ctx.fillStyle = c.capital ? 'rgba(226, 232, 240, 0.9)' : 'rgba(148, 163, 184, 0.68)';
       ctx.fillText(c.name, x + 5, y + 3);
     });
     ctx.restore();
@@ -1449,26 +1601,56 @@ class TacticalParaguayMap {
     const ctx = this.ctx;
     ctx.drawImage(this.bgCanvas, 0, 0, this.width, this.height);
 
-    // 1. Puntos de origen en Paraguay
+    // 1. Puntos de origen en Paraguay (con marcador tipo diana ◎ y etiqueta de origen explícita)
+    let labelsDrawn = 0;
     for (let i = 0; i < this.points.length; i++) {
       const p = this.points[i];
       if (p.isLocal && !this.showLocal) continue;
       if (!p.isLocal && !this.showPublic) continue;
 
       const { x, y } = this.geoToCanvas(p.lat, p.lon);
+      if (x < -30 || x > this.width + 30 || y < -30 || y > this.height + 30) continue;
       const ptColor = p.isThreat ? '#ff2a5f' : (p.isLocal ? '#c084fc' : '#00e5ff');
 
       ctx.save();
+      // Anillo exterior de origen (permite distinguir claramente de dónde nace la flecha)
+      ctx.beginPath();
+      ctx.arc(x, y, p.isThreat ? 8.5 : 6.5, 0, Math.PI * 2);
+      ctx.strokeStyle = ptColor;
+      ctx.lineWidth = p.isThreat ? 1.5 : 1.1;
+      ctx.globalAlpha = 0.75;
+      ctx.stroke();
+
+      // Punto central de origen
+      ctx.globalAlpha = 1.0;
       ctx.beginPath();
       ctx.arc(x, y, p.isThreat ? 4.2 : 3.2, 0, Math.PI * 2);
       ctx.fillStyle = ptColor;
       ctx.shadowColor = ptColor;
-      ctx.shadowBlur = p.isThreat ? 9 : 5;
+      ctx.shadowBlur = p.isThreat ? 10 : 6;
       ctx.fill();
+
+      // Mostrar etiqueta de origen junto al punto para amenazas o al acercar el zoom
+      if ((p.isThreat || this.zoom >= 1.8 || labelsDrawn < 4) && labelsDrawn < 10) {
+        labelsDrawn += 1;
+        const mainIp = p.realClientIp || p.ip || '';
+        const pinText = `📍 ${p.zoneName || 'PY'}: ${mainIp}`;
+        ctx.font = 'bold 8.5px monospace';
+        const tw = ctx.measureText(pinText).width;
+        const bx = Math.min(this.width - tw - 8, Math.max(4, x - tw / 2));
+        const by = Math.max(14, y - 12);
+        ctx.fillStyle = 'rgba(6, 11, 22, 0.88)';
+        ctx.strokeStyle = ptColor;
+        ctx.lineWidth = 0.85;
+        ctx.fillRect(bx - 3, by - 9, tw + 6, 12);
+        ctx.strokeRect(bx - 3, by - 9, tw + 6, 12);
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillText(pinText, bx, by);
+      }
       ctx.restore();
     }
 
-    // 2. Flechas de trayectoria en Paraguay
+    // 2. Flechas de trayectoria en Paraguay (calculadas dinámicamente desde las coordenadas reales de origen -> destino)
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const arc = this.arcs[i];
       if (arc.isLocal && !this.showLocal) {
@@ -1482,20 +1664,39 @@ class TacticalParaguayMap {
         continue;
       }
 
+      const startPos = this.geoToCanvas(arc.startLat, arc.startLon);
+      const endPos = this.geoToCanvas(arc.endLat, arc.endLon);
+      const dist = Math.hypot(endPos.x - startPos.x, endPos.y - startPos.y);
+      const lift = Math.min(75, Math.max(18, dist * 0.30));
+      const midX = (startPos.x + endPos.x) / 2;
+      const midY = Math.min(startPos.y, endPos.y) - lift;
+
       const t = arc.progress;
-      const tailT = Math.max(0, t - 0.35);
+      const tailT = Math.max(0, t - 0.38);
 
       const getPos = (u) => {
         const inv = 1 - u;
         return {
-          x: inv * inv * arc.startX + 2 * inv * u * arc.midX + u * u * arc.endX,
-          y: inv * inv * arc.startY + 2 * inv * u * arc.midY + u * u * arc.endY
+          x: inv * inv * startPos.x + 2 * inv * u * midX + u * u * endPos.x,
+          y: inv * inv * startPos.y + 2 * inv * u * midY + u * u * endPos.y
         };
       };
 
       const head = getPos(t);
       const prev = getPos(Math.max(0, t - 0.03));
       const angle = Math.atan2(head.y - prev.y, head.x - prev.x);
+
+      // Línea guía punteada desde el origen hasta el destino para ver siempre de dónde viene la flecha
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(startPos.x, startPos.y);
+      ctx.quadraticCurveTo(midX, midY, endPos.x, endPos.y);
+      ctx.strokeStyle = arc.color;
+      ctx.globalAlpha = 0.24;
+      ctx.lineWidth = 1.0;
+      ctx.setLineDash([3, 3]);
+      ctx.stroke();
+      ctx.restore();
 
       ctx.save();
       ctx.beginPath();
@@ -1507,7 +1708,7 @@ class TacticalParaguayMap {
         else ctx.lineTo(pt.x, pt.y);
       }
       ctx.strokeStyle = arc.color;
-      ctx.lineWidth = arc.isThreat ? 2.0 : 1.5;
+      ctx.lineWidth = arc.isThreat ? 2.1 : 1.6;
       ctx.shadowColor = arc.color;
       ctx.shadowBlur = 6;
       ctx.stroke();
@@ -1524,22 +1725,6 @@ class TacticalParaguayMap {
       ctx.fill();
       ctx.restore();
 
-      if (arc.label && t > 0.08 && t < 0.92) {
-        ctx.save();
-        ctx.font = 'bold 9px monospace';
-        const tw = ctx.measureText(arc.label).width;
-        const lx = Math.min(this.width - tw - 10, Math.max(4, head.x + 8));
-        const ly = Math.max(14, head.y - 8);
-        ctx.fillStyle = 'rgba(6, 11, 22, 0.86)';
-        ctx.strokeStyle = arc.color;
-        ctx.lineWidth = 0.8;
-        ctx.fillRect(lx - 3, ly - 10, tw + 6, 13);
-        ctx.strokeRect(lx - 3, ly - 10, tw + 6, 13);
-        ctx.fillStyle = '#f8fafc';
-        ctx.fillText(arc.label, lx, ly);
-        ctx.restore();
-      }
-
       arc.progress += arc.speed;
       if (arc.progress >= 1.0) {
         this.arcs.splice(i, 1);
@@ -1550,7 +1735,8 @@ class TacticalParaguayMap {
     const now = Date.now();
     for (let i = 0; i < this.nodes.length; i++) {
       const node = this.nodes[i];
-      const { x, y } = this.getNodeCoords(node.name);
+      const nodeGeo = this.getNodeGeo(node.name);
+      const { x, y } = this.geoToCanvas(nodeGeo.lat, nodeGeo.lon);
       const isOnline = node.status === 'ONLINE';
       const nodeColor = isOnline ? '#00e676' : '#ff9900';
 
@@ -1575,17 +1761,18 @@ class TacticalParaguayMap {
       ctx.fill();
 
       ctx.font = 'bold 9.5px monospace';
-      ctx.fillStyle = '#f8fafc';
+      ctx.fillStyle = '#00e676';
       ctx.fillText(`🛡️ ${node.name}`, x + 9, y + 3);
       ctx.restore();
     }
 
-    // 4. Ondas sónicas
+    // 4. Ondas sónicas ancladas a coordenadas geográficas
     for (let i = this.pulses.length - 1; i >= 0; i--) {
       const p = this.pulses[i];
+      const pos = this.geoToCanvas(p.lat, p.lon);
       ctx.save();
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.arc(pos.x, pos.y, p.radius, 0, Math.PI * 2);
       ctx.strokeStyle = p.color;
       ctx.lineWidth = p.isThreat ? 2.0 : 1.3;
       ctx.globalAlpha = p.alpha;
@@ -1599,19 +1786,28 @@ class TacticalParaguayMap {
       }
     }
 
-    // 5. HUD bajo el cursor
+    // 5. Indicador de nivel de Zoom en esquina superior izquierda
+    if (this.zoom > 1.01) {
+      ctx.save();
+      ctx.font = 'bold 9px monospace';
+      ctx.fillStyle = 'rgba(0, 229, 255, 0.85)';
+      ctx.fillText(`🔍 ZOOM: ${this.zoom.toFixed(1)}x`, 10, 16);
+      ctx.restore();
+    }
+
+    // 6. HUD bajo el cursor
     if (this.mouse.active && this.hoverPoint) {
       const hp = this.hoverPoint;
       const mainIp = hp.realClientIp || hp.ip || '';
       const cfSuffix = hp.isCloudflare ? ' [☁️ CF]' : (hp.isLocal ? ' [🏢 LAN]' : ' [🇵🇾 WAN]');
-      const text = `🎯 ${mainIp}${cfSuffix} • ${hp.zoneName || 'Paraguay'} [HTTP ${hp.status_code || 200}]`;
+      const text = `🎯 ${mainIp}${cfSuffix} • Origen: ${hp.zoneName || 'Paraguay'} [HTTP ${hp.status_code || 200}]`;
       ctx.save();
       ctx.font = 'bold 9.5px monospace';
       const boxW = ctx.measureText(text).width + 14;
       const boxX = Math.min(this.width - boxW - 6, Math.max(6, hp.screenX + 10));
       const boxY = Math.max(6, hp.screenY - 24);
 
-      ctx.fillStyle = 'rgba(8, 13, 25, 0.94)';
+      ctx.fillStyle = 'rgba(8, 13, 25, 0.95)';
       ctx.strokeStyle = hp.isThreat ? '#ff2a5f' : (hp.isLocal ? '#c084fc' : '#00e5ff');
       ctx.lineWidth = 1.2;
       ctx.fillRect(boxX, boxY, boxW, 20);
