@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   mithril-db:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     container_name: mithril-db
     restart: unless-stopped
     environment:
@@ -20,7 +20,7 @@ services:
       retries: 5
 
   mithril-redis:
-    image: redis:7-alpine
+    image: docker.io/library/redis:7-alpine
     container_name: mithril-redis
     restart: unless-stopped
     volumes:
@@ -60,7 +60,7 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-False}
     volumes:
-      - .:/app:Z
+      - .:/app:z
       - mithril_static:/app/staticfiles
       - mithril_media:/app/media
     ports:
@@ -94,7 +94,7 @@ services:
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-False}
     volumes:
-      - .:/app:Z
+      - .:/app:z
     command: celery -A mithril_siem worker -l info -c 4
     depends_on:
       - mithril-db
@@ -118,7 +118,7 @@ services:
       REDIS_HOST: ${REDIS_HOST:-mithril-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
     volumes:
-      - .:/app:Z
+      - .:/app:z
     command: celery -A mithril_siem beat -l info
     depends_on:
       - mithril-db
