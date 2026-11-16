@@ -14,7 +14,7 @@ services:
     ports:
       - "5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-mithril_user} -d ${DB_NAME:-mithril_siem}"]
+      test: ["CMD", "pg_isready", "-U", "mithril_user", "-d", "mithril_siem"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -39,19 +39,36 @@ services:
       dockerfile: Containerfile
     container_name: mithril-web
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY:-mithril_soc_tactical_shield_2026_prod_key_xyz}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0,*}
+      MITHRIL_INIT_ADMIN_USER: ${MITHRIL_INIT_ADMIN_USER:-admin}
+      MITHRIL_INIT_ADMIN_PASSWORD: ${MITHRIL_INIT_ADMIN_PASSWORD:-MithrilSecurity2026!}
+      MITHRIL_INIT_ADMIN_EMAIL: ${MITHRIL_INIT_ADMIN_EMAIL:-security@mithril.local}
+      DB_NAME: ${DB_NAME:-mithril_siem}
+      DB_USER: ${DB_USER:-mithril_user}
+      DB_PASSWORD: ${DB_PASSWORD:-mithril_secure_pg_pass_2026}
+      DB_HOST: ${DB_HOST:-mithril-db}
+      DB_PORT: ${DB_PORT:-5432}
+      REDIS_HOST: ${REDIS_HOST:-mithril-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      MITHRIL_BAN_CANDIDATE_THRESHOLD: ${MITHRIL_BAN_CANDIDATE_THRESHOLD:-80}
+      MITHRIL_ANOMALY_WINDOW_SECONDS: ${MITHRIL_ANOMALY_WINDOW_SECONDS:-600}
+      MITHRIL_DEFAULT_BAN_HOURS: ${MITHRIL_DEFAULT_BAN_HOURS:-24}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-False}
     volumes:
-      - .:/app
+      - .:/app:Z
       - mithril_static:/app/staticfiles
       - mithril_media:/app/media
     ports:
       - "9900:9900"
+      - "5140:5140/udp"
     depends_on:
-      mithril-db:
-        condition: service_healthy
-      mithril-redis:
-        condition: service_healthy
+      - mithril-db
+      - mithril-redis
 
   mithril-worker:
     build:
@@ -59,10 +76,25 @@ services:
       dockerfile: Containerfile
     container_name: mithril-worker
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY:-mithril_soc_tactical_shield_2026_prod_key_xyz}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0,*}
+      DB_NAME: ${DB_NAME:-mithril_siem}
+      DB_USER: ${DB_USER:-mithril_user}
+      DB_PASSWORD: ${DB_PASSWORD:-mithril_secure_pg_pass_2026}
+      DB_HOST: ${DB_HOST:-mithril-db}
+      DB_PORT: ${DB_PORT:-5432}
+      REDIS_HOST: ${REDIS_HOST:-mithril-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      MITHRIL_BAN_CANDIDATE_THRESHOLD: ${MITHRIL_BAN_CANDIDATE_THRESHOLD:-80}
+      MITHRIL_ANOMALY_WINDOW_SECONDS: ${MITHRIL_ANOMALY_WINDOW_SECONDS:-600}
+      MITHRIL_DEFAULT_BAN_HOURS: ${MITHRIL_DEFAULT_BAN_HOURS:-24}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-False}
     volumes:
-      - .:/app
+      - .:/app:Z
     command: celery -A mithril_siem worker -l info -c 4
     depends_on:
       - mithril-db
@@ -74,10 +106,19 @@ services:
       dockerfile: Containerfile
     container_name: mithril-beat
     restart: unless-stopped
-    env_file:
-      - .env
+    environment:
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY:-mithril_soc_tactical_shield_2026_prod_key_xyz}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1,0.0.0.0,*}
+      DB_NAME: ${DB_NAME:-mithril_siem}
+      DB_USER: ${DB_USER:-mithril_user}
+      DB_PASSWORD: ${DB_PASSWORD:-mithril_secure_pg_pass_2026}
+      DB_HOST: ${DB_HOST:-mithril-db}
+      DB_PORT: ${DB_PORT:-5432}
+      REDIS_HOST: ${REDIS_HOST:-mithril-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
     volumes:
-      - .:/app
+      - .:/app:Z
     command: celery -A mithril_siem beat -l info
     depends_on:
       - mithril-db

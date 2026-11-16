@@ -15,9 +15,15 @@ import urllib.request
 import urllib.error
 import queue
 import time
+import sys
+import os
+
+SYSLOG_ONLY = "--syslog-only" in sys.argv
 
 def detect_backend_host():
-    """Detecta automáticamente la IP de la máquina WSL de Podman para evitar bucles en 0.0.0.0:9900"""
+    """Detecta automáticamente la IP de la máquina WSL de Podman en Windows o usa 127.0.0.1 en Linux"""
+    if SYSLOG_ONLY or os.name != "nt":
+        return "127.0.0.1"
     try:
         res = subprocess.run(
             ["wsl", "-d", "podman-machine-default", "-u", "root", "sh", "-c", "ip -4 addr show eth0"],
@@ -29,7 +35,7 @@ def detect_backend_host():
                 return m.group(1)
     except Exception:
         pass
-    return "172.24.154.190"
+    return "127.0.0.1"
 
 LOCAL_HOST = detect_backend_host()
 BIND_HOST = "0.0.0.0"
@@ -409,13 +415,17 @@ def main():
     print("=" * 65)
     print("🛡️  MITHRIL SIEM - LAN PORT FORWARDER & SYSLOG RECEIVER")
     print(f"   IP Escucha : {BIND_HOST}")
-    print(f"   Puertos    : TCP {TCP_PORT} (Web/API) | UDP {UDP_PORT} (Syslog Nginx)")
+    if SYSLOG_ONLY:
+        print(f"   Puertos    : UDP {UDP_PORT} (Syslog Nginx -> {INGEST_URL})")
+    else:
+        print(f"   Puertos    : TCP {TCP_PORT} (Web/API) | UDP {UDP_PORT} (Syslog Nginx)")
     print("=" * 65, flush=True)
 
-    t_tcp = threading.Thread(target=run_tcp_forwarder, daemon=True)
-    t_udp = threading.Thread(target=run_udp_syslog_receiver, daemon=True)
+    if not SYSLOG_ONLY:
+        t_tcp = threading.Thread(target=run_tcp_forwarder, daemon=True)
+        t_tcp.start()
 
-    t_tcp.start()
+    t_udp = threading.Thread(target=run_udp_syslog_receiver, daemon=True)
     t_udp.start()
 
     try:

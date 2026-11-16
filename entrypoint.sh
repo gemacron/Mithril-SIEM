@@ -42,4 +42,10 @@ echo "=========================================="
 echo "🚀 MITHRIL SIEM LISTO. ARRANCANDO SERVIDOR."
 echo "=========================================="
 
+# Si es el contenedor web (daphne), iniciar también el receptor Syslog UDP en el puerto 5140 en segundo plano
+if [ "$1" = "daphne" ] && [ -f "/app/mithril_lan_proxy.py" ]; then
+    echo "📡 Iniciando receptor Syslog UDP (puerto 5140) en segundo plano..."
+    python /app/mithril_lan_proxy.py --syslog-only &
+fi
+
 exec "$@"
