@@ -253,7 +253,10 @@ class TacticalWorldMap {
     });
   }
 
-  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false, nodeName = '') {
+  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false, nodeName = '', countryCode = '', countryName = '') {
+    if (window.mithrilParaguayMap) {
+      window.mithrilParaguayMap.addLivePulse(lat, lon, isThreat, clientIp, isCloudflare, realClientIp, isLocal, isProbe, nodeName, countryCode, countryName);
+    }
     const isLoc = Boolean(isLocal) || this.isLocalIp(realClientIp || clientIp);
     const probe = Boolean(isProbe) || (isCloudflare && !realClientIp);
 
@@ -385,6 +388,9 @@ class TacticalWorldMap {
         return res.json();
       })
       .then(data => {
+        if (window.mithrilParaguayMap) {
+          window.mithrilParaguayMap.syncFromMapData(data);
+        }
         if (data.nodes && Array.isArray(data.nodes) && data.nodes.length > 0) {
           this.nodes = data.nodes;
         }
@@ -397,6 +403,8 @@ class TacticalWorldMap {
             ip: p.client_ip || '',
             realClientIp: p.real_client_ip || '',
             country: p.country_name || '',
+            countryCode: p.country_code || '',
+            nodeName: p.node_name || '',
             isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
             isCloudflare: Boolean(p.is_cloudflare),
             isLocal: Boolean(p.is_local) || this.isLocalIp(p.real_client_ip || p.client_ip),
@@ -960,6 +968,665 @@ class TacticalWorldMap {
   }
 }
 
+/**
+ * MITHRIL SIEM - 2D Tactical Paraguay Map (Exclusivo para Tráfico Nacional de Paraguay y LAN)
+ */
+class TacticalParaguayMap {
+  constructor(canvasId) {
+    this.canvas = document.getElementById(canvasId);
+    if (!this.canvas) return;
+    this.ctx = this.canvas.getContext('2d', { alpha: false });
+
+    this.bgCanvas = document.createElement('canvas');
+    this.bgCtx = this.bgCanvas.getContext('2d', { alpha: false });
+
+    // Límites geográficos de Paraguay con margen táctico
+    this.bounds = {
+      minLat: -28.0,
+      maxLat: -18.8,
+      minLon: -63.1,
+      maxLon: -53.8,
+    };
+
+    this.points = [];
+    this.pulses = [];
+    this.arcs = [];
+    this.nodes = [
+      { id: 'default', name: 'Proxy Principal', status: 'ONLINE', latitude: -25.2637, longitude: -57.5759 }
+    ];
+    this.threatCursorIdx = 0;
+    this.mouse = { x: -100, y: -100, active: false };
+    this.hoverPoint = null;
+
+    this.showPublic = true;
+    this.showLocal = true;
+    this.initFilterToggles();
+
+    // Ciudades y nodos de telecomunicaciones principales de Paraguay para distribuir IPs nacionales determinísticamente
+    this.pyZones = [
+      { name: 'Gran Asunción', lat: -25.2800, lon: -57.6300 },
+      { name: 'Luque / Central', lat: -25.2667, lon: -57.4833 },
+      { name: 'San Lorenzo', lat: -25.3400, lon: -57.5080 },
+      { name: 'Ciudad del Este', lat: -25.5097, lon: -54.6111 },
+      { name: 'Encarnación', lat: -27.3306, lon: -55.8667 },
+      { name: 'Coronel Oviedo', lat: -25.4444, lon: -56.4406 },
+      { name: 'Pedro Juan Caballero', lat: -22.5472, lon: -55.7333 },
+      { name: 'Concepción', lat: -23.4064, lon: -57.4344 },
+      { name: 'Villarrica', lat: -25.7806, lon: -56.4486 },
+      { name: 'Caacupé', lat: -25.3861, lon: -57.1408 },
+      { name: 'Pilar', lat: -26.8681, lon: -58.2953 },
+      { name: 'Salto del Guairá', lat: -24.0625, lon: -54.3069 },
+      { name: 'San Ignacio (Misiones)', lat: -26.8833, lon: -57.0333 },
+      { name: 'Filadelfia (Chaco)', lat: -22.3500, lon: -60.0333 },
+    ];
+
+    this.resize();
+    window.addEventListener('resize', () => this.resize());
+
+    this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e), { passive: true });
+    this.canvas.addEventListener('mouseleave', () => {
+      this.mouse.active = false;
+      this.hoverPoint = null;
+    });
+
+    setInterval(() => this.emitActiveVectors(), 2000);
+
+    this.render = this.render.bind(this);
+    requestAnimationFrame(this.render);
+  }
+
+  initFilterToggles() {
+    const pubToggle = document.getElementById('pyMapTogglePublic');
+    const locToggle = document.getElementById('pyMapToggleLocal');
+
+    const savedPub = localStorage.getItem('mithril_py_map_show_public');
+    if (savedPub !== null) {
+      this.showPublic = (savedPub === 'true');
+      if (pubToggle) pubToggle.checked = this.showPublic;
+    } else if (pubToggle) {
+      this.showPublic = pubToggle.checked;
+    }
+
+    const savedLoc = localStorage.getItem('mithril_py_map_show_local');
+    if (savedLoc !== null) {
+      this.showLocal = (savedLoc === 'true');
+      if (locToggle) locToggle.checked = this.showLocal;
+    } else if (locToggle) {
+      this.showLocal = locToggle.checked;
+    }
+
+    if (pubToggle) {
+      pubToggle.addEventListener('change', () => {
+        this.showPublic = pubToggle.checked;
+        localStorage.setItem('mithril_py_map_show_public', this.showPublic ? 'true' : 'false');
+      });
+    }
+    if (locToggle) {
+      locToggle.addEventListener('change', () => {
+        this.showLocal = locToggle.checked;
+        localStorage.setItem('mithril_py_map_show_local', this.showLocal ? 'true' : 'false');
+      });
+    }
+  }
+
+  resize() {
+    const parent = this.canvas.parentElement;
+    if (!parent) return;
+
+    this.width = parent.clientWidth || 420;
+    this.height = parent.clientHeight || 440;
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    this.canvas.width = Math.floor(this.width * dpr);
+    this.canvas.height = Math.floor(this.height * dpr);
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+    this.ctx.scale(dpr, dpr);
+
+    this.bgCanvas.width = Math.floor(this.width * dpr);
+    this.bgCanvas.height = Math.floor(this.height * dpr);
+    this.bgCtx.setTransform(1, 0, 0, 1, 0, 0);
+    this.bgCtx.scale(dpr, dpr);
+    this.renderStaticBackground();
+  }
+
+  geoToCanvas(lat, lon) {
+    const padX = 24;
+    const padY = 24;
+    const availW = Math.max(100, this.width - padX * 2);
+    const availH = Math.max(100, this.height - padY * 2);
+    const lonSpan = this.bounds.maxLon - this.bounds.minLon;
+    const latSpan = this.bounds.maxLat - this.bounds.minLat;
+    const scale = Math.min(availW / lonSpan, availH / latSpan);
+    const mapW = lonSpan * scale;
+    const mapH = latSpan * scale;
+    const offsetX = (this.width - mapW) / 2;
+    const offsetY = (this.height - mapH) / 2;
+
+    const x = offsetX + ((lon - this.bounds.minLon) / lonSpan) * mapW;
+    const y = offsetY + ((this.bounds.maxLat - lat) / latSpan) * mapH;
+    return { x, y };
+  }
+
+  canvasToGeo(x, y) {
+    const padX = 24;
+    const padY = 24;
+    const availW = Math.max(100, this.width - padX * 2);
+    const availH = Math.max(100, this.height - padY * 2);
+    const lonSpan = this.bounds.maxLon - this.bounds.minLon;
+    const latSpan = this.bounds.maxLat - this.bounds.minLat;
+    const scale = Math.min(availW / lonSpan, availH / latSpan);
+    const mapW = lonSpan * scale;
+    const mapH = latSpan * scale;
+    const offsetX = (this.width - mapW) / 2;
+    const offsetY = (this.height - mapH) / 2;
+
+    const lon = this.bounds.minLon + ((x - offsetX) / mapW) * lonSpan;
+    const lat = this.bounds.maxLat - ((y - offsetY) / mapH) * latSpan;
+    return { lat, lon };
+  }
+
+  hashIp(ipStr) {
+    let h = 2166136261;
+    const s = String(ipStr || '');
+    for (let i = 0; i < s.length; i++) {
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return Math.abs(h);
+  }
+
+  resolveParaguayCoords(lat, lon, ipStr, isLocal) {
+    // Si tiene coordenadas específicas distintas del centroide genérico de Asunción, respetarlas si caen en Paraguay
+    const isGenericCentroid = (Math.abs(lat - (-25.2637)) < 0.08 && Math.abs(lon - (-57.5759)) < 0.08) || (!lat && !lon);
+    if (!isGenericCentroid && lat >= -27.8 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2) {
+      return { lat, lon, zoneName: 'Paraguay' };
+    }
+    const h = this.hashIp(ipStr || 'py');
+    const zone = this.pyZones[h % this.pyZones.length];
+    const jitterLat = (((h >> 4) % 100) - 50) * 0.0045;
+    const jitterLon = (((h >> 11) % 100) - 50) * 0.0045;
+    return {
+      lat: zone.lat + jitterLat,
+      lon: zone.lon + jitterLon,
+      zoneName: isLocal ? `LAN (${zone.name})` : zone.name
+    };
+  }
+
+  isParaguayEvent(lat, lon, countryCode, countryName, isLocal, isProbe) {
+    if (isProbe) return false;
+    if (isLocal) return true;
+    const cc = String(countryCode || '').toUpperCase().trim();
+    const cn = String(countryName || '').toLowerCase().trim();
+    if (cc === 'PY' || cc === 'LAN' || cn.includes('paraguay') || cn.includes('asunción') || cn.includes('asuncion') || cn.includes('local')) {
+      return true;
+    }
+    if (lat >= -27.7 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2) {
+      return true;
+    }
+    return false;
+  }
+
+  getNodeCoords(nodeName = '') {
+    let idx = 0;
+    if (nodeName && this.nodes.length > 1) {
+      const found = this.nodes.findIndex(n => n.name === nodeName);
+      if (found !== -1) idx = found;
+    }
+    // Base defensiva en Asunción con ligero desplazamiento si hay múltiples proxies
+    const lat = -25.2637 + (idx * 0.35);
+    const lon = -57.5759 + (idx * 0.45);
+    return this.geoToCanvas(lat, lon);
+  }
+
+  syncFromMapData(data) {
+    if (!data) return;
+    if (data.nodes && Array.isArray(data.nodes) && data.nodes.length > 0) {
+      this.nodes = data.nodes;
+    }
+    if (data.points && Array.isArray(data.points)) {
+      const hadNoPoints = this.points.length === 0;
+      const pyPoints = [];
+      for (const p of data.points) {
+        const lat = parseFloat(p.latitude) || 0;
+        const lon = parseFloat(p.longitude) || 0;
+        const isLoc = Boolean(p.is_local);
+        const isPrb = Boolean(p.is_probe) || (Boolean(p.is_cloudflare) && !p.real_client_ip);
+        if (!this.isParaguayEvent(lat, lon, p.country_code, p.country_name, isLoc, isPrb)) {
+          continue;
+        }
+        const mainIp = p.real_client_ip || p.client_ip || '';
+        const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLoc);
+        pyPoints.push({
+          lat: resolved.lat,
+          lon: resolved.lon,
+          zoneName: resolved.zoneName,
+          ip: p.client_ip || '',
+          realClientIp: p.real_client_ip || '',
+          nodeName: p.node_name || '',
+          isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
+          isCloudflare: Boolean(p.is_cloudflare),
+          isLocal: isLoc,
+          status_code: p.status_code || 200
+        });
+      }
+      if (pyPoints.length > 0) {
+        this.points = pyPoints.slice(0, 60);
+        if (hadNoPoints) {
+          this.emitActiveVectors();
+        }
+      }
+    }
+  }
+
+  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false, nodeName = '', countryCode = '', countryName = '') {
+    if (!this.isParaguayEvent(lat, lon, countryCode, countryName, isLocal, isProbe)) {
+      return;
+    }
+    if (isLocal && !this.showLocal) return;
+    if (!isLocal && !this.showPublic) return;
+
+    const mainIp = realClientIp || clientIp || 'PY';
+    const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLocal);
+    const start = this.geoToCanvas(resolved.lat, resolved.lon);
+    const end = this.getNodeCoords(nodeName);
+    const color = isThreat ? '#ff2a5f' : (isLocal ? '#c084fc' : '#00e5ff');
+
+    if (this.pulses.length >= 25) this.pulses.shift();
+    this.pulses.push({
+      x: start.x,
+      y: start.y,
+      radius: 2,
+      maxRadius: isThreat ? 26 : 16,
+      alpha: 1.0,
+      color,
+      isThreat,
+      isLocal
+    });
+
+    const prefix = isThreat ? '🚨 ' : (isLocal ? '🏢 ' : '🎯 ');
+    const cfTag = isCloudflare ? ' (☁️CF)' : '';
+    const label = `${prefix}${mainIp}${cfTag}`;
+    this.spawnArc(start.x, start.y, end.x, end.y, color, isThreat, label, isLocal);
+
+    const existingIdx = this.points.findIndex(pt => (pt.realClientIp || pt.ip) === mainIp);
+    if (existingIdx !== -1) {
+      if (isThreat) {
+        this.points[existingIdx].isThreat = true;
+        this.points[existingIdx].status_code = 403;
+      }
+    } else {
+      this.points.unshift({
+        lat: resolved.lat,
+        lon: resolved.lon,
+        zoneName: resolved.zoneName,
+        ip: clientIp,
+        realClientIp: realClientIp,
+        nodeName: nodeName,
+        isThreat: isThreat,
+        isCloudflare: isCloudflare,
+        isLocal: isLocal,
+        status_code: isThreat ? 403 : 200
+      });
+      if (this.points.length > 60) this.points.pop();
+    }
+  }
+
+  spawnArc(startX, startY, endX, endY, color, isThreat, label, isLocal) {
+    if (this.arcs.length >= 18) this.arcs.shift();
+    const dist = Math.hypot(endX - startX, endY - startY);
+    if (dist < 18) {
+      startX -= 55;
+      startY -= 40;
+    }
+    const lift = Math.min(65, Math.max(24, dist * 0.28));
+    this.arcs.push({
+      startX,
+      startY,
+      endX,
+      endY,
+      midX: (startX + endX) / 2,
+      midY: Math.min(startY, endY) - lift,
+      progress: 0.0,
+      speed: isThreat ? 0.020 : 0.026,
+      color,
+      isThreat,
+      isLocal: Boolean(isLocal),
+      label: label || ''
+    });
+  }
+
+  emitActiveVectors() {
+    if (!this.points || this.points.length === 0) return;
+    const visible = this.points.filter(p => (p.isLocal ? this.showLocal : this.showPublic));
+    if (visible.length === 0) return;
+    const threats = visible.filter(p => p.isThreat);
+    const pool = threats.length > 0 ? threats.slice(0, 5) : visible.slice(0, 4);
+    const pt = pool[this.threatCursorIdx % pool.length];
+    this.threatCursorIdx += 1;
+
+    const start = this.geoToCanvas(pt.lat, pt.lon);
+    const end = this.getNodeCoords(pt.nodeName);
+    const color = pt.isThreat ? '#ff2a5f' : (pt.isLocal ? '#c084fc' : '#00e5ff');
+    const mainIp = pt.realClientIp || pt.ip || 'PY';
+    const prefix = pt.isThreat ? '🚨 ' : (pt.isLocal ? '🏢 ' : '🎯 ');
+    const cfTag = pt.isCloudflare ? ' (☁️CF)' : '';
+    this.spawnArc(start.x, start.y, end.x, end.y, color, pt.isThreat, `${prefix}${mainIp}${cfTag}`, pt.isLocal);
+  }
+
+  handleMouseMove(e) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.mouse.x = e.clientX - rect.left;
+    this.mouse.y = e.clientY - rect.top;
+    this.mouse.active = true;
+
+    this.hoverPoint = null;
+    for (let i = 0; i < this.points.length; i++) {
+      const pt = this.points[i];
+      if (pt.isLocal && !this.showLocal) continue;
+      if (!pt.isLocal && !this.showPublic) continue;
+      const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
+      if (Math.hypot(x - this.mouse.x, y - this.mouse.y) < 11) {
+        this.hoverPoint = { ...pt, screenX: x, screenY: y };
+        break;
+      }
+    }
+  }
+
+  renderStaticBackground() {
+    const ctx = this.bgCtx;
+    const w = this.width;
+    const h = this.height;
+
+    const bgGrad = ctx.createRadialGradient(w * 0.5, h * 0.5, 20, w * 0.5, h * 0.5, Math.max(w, h) * 0.75);
+    bgGrad.addColorStop(0, '#091426');
+    bgGrad.addColorStop(1, '#040811');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, w, h);
+
+    // Retícula táctica de coordenadas de Paraguay
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.06)';
+    ctx.lineWidth = 0.6;
+    ctx.font = '8px monospace';
+    ctx.fillStyle = 'rgba(100, 116, 139, 0.45)';
+    for (let lat = -27; lat <= -19; lat += 2) {
+      const { y } = this.geoToCanvas(lat, this.bounds.minLon);
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(w, y);
+      ctx.stroke();
+      ctx.fillText(`${lat}°S`, 6, y - 3);
+    }
+    for (let lon = -62; lon <= -54; lon += 2) {
+      const { x } = this.geoToCanvas(this.bounds.maxLat, lon);
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, h);
+      ctx.stroke();
+    }
+
+    // Contorno nacional de Paraguay de alta precisión (Chaco + Región Oriental)
+    const pyBorder = [
+      [-22.23, -62.64], [-20.55, -62.25], [-19.90, -61.92], [-19.62, -60.60],
+      [-19.29, -59.97], [-19.65, -58.85], [-19.85, -58.18], [-20.17, -58.16],
+      [-21.04, -57.87], [-21.68, -57.89], [-22.09, -57.95], [-22.12, -57.15],
+      [-22.28, -56.40], [-22.54, -55.73], [-23.25, -55.52], [-23.88, -55.45],
+      [-24.06, -54.31], [-24.75, -54.35], [-25.51, -54.61], [-26.05, -54.68],
+      [-26.55, -54.92], [-27.10, -55.45], [-27.33, -55.87], [-27.55, -56.40],
+      [-27.28, -56.72], [-27.38, -57.62], [-27.29, -58.60], [-26.87, -58.30],
+      [-26.15, -58.18], [-25.28, -57.64], [-25.05, -57.85], [-24.65, -58.80],
+      [-23.90, -60.20], [-23.10, -61.35], [-22.23, -62.64]
+    ];
+
+    ctx.save();
+    ctx.beginPath();
+    pyBorder.forEach(([lat, lon], idx) => {
+      const { x, y } = this.geoToCanvas(lat, lon);
+      if (idx === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.closePath();
+
+    const landGrad = ctx.createLinearGradient(0, 0, w, h);
+    landGrad.addColorStop(0, '#10243e');
+    landGrad.addColorStop(1, '#0b182c');
+    ctx.fillStyle = landGrad;
+    ctx.fill();
+
+    ctx.shadowColor = 'rgba(0, 229, 255, 0.45)';
+    ctx.shadowBlur = 8;
+    ctx.strokeStyle = 'rgba(0, 229, 255, 0.72)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+
+    // Río Paraguay (División Región Occidental / Chaco y Región Oriental)
+    const rioParaguay = [
+      [-20.17, -58.16], [-21.04, -57.87], [-22.09, -57.95], [-22.80, -57.70],
+      [-23.41, -57.44], [-24.15, -57.18], [-25.09, -57.52], [-25.28, -57.64],
+      [-25.85, -57.75], [-26.87, -58.30], [-27.29, -58.60]
+    ];
+    ctx.save();
+    ctx.beginPath();
+    rioParaguay.forEach(([lat, lon], idx) => {
+      const { x, y } = this.geoToCanvas(lat, lon);
+      if (idx === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.38)';
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([4, 3]);
+    ctx.stroke();
+    ctx.restore();
+
+    // Ciudades de referencia táctica en Paraguay
+    const refCities = [
+      { name: 'Asunción', lat: -25.2637, lon: -57.5759, capital: true },
+      { name: 'Ciudad del Este', lat: -25.5097, lon: -54.6111 },
+      { name: 'Encarnación', lat: -27.3306, lon: -55.8667 },
+      { name: 'Pedro Juan Caballero', lat: -22.5472, lon: -55.7333 },
+      { name: 'Concepción', lat: -23.4064, lon: -57.4344 },
+      { name: 'Cnel. Oviedo', lat: -25.4444, lon: -56.4406 },
+      { name: 'Pilar', lat: -26.8681, lon: -58.2953 },
+      { name: 'Filadelfia (Chaco)', lat: -22.3500, lon: -60.0333 },
+    ];
+
+    ctx.save();
+    refCities.forEach(c => {
+      const { x, y } = this.geoToCanvas(c.lat, c.lon);
+      ctx.fillStyle = c.capital ? 'rgba(0, 230, 118, 0.85)' : 'rgba(148, 163, 184, 0.55)';
+      ctx.beginPath();
+      ctx.arc(x, y, c.capital ? 2.8 : 1.8, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.font = c.capital ? 'bold 9px monospace' : '8px monospace';
+      ctx.fillStyle = c.capital ? 'rgba(226, 232, 240, 0.9)' : 'rgba(148, 163, 184, 0.65)';
+      ctx.fillText(c.name, x + 5, y + 3);
+    });
+    ctx.restore();
+  }
+
+  render() {
+    const ctx = this.ctx;
+    ctx.drawImage(this.bgCanvas, 0, 0, this.width, this.height);
+
+    // 1. Puntos de origen en Paraguay
+    for (let i = 0; i < this.points.length; i++) {
+      const p = this.points[i];
+      if (p.isLocal && !this.showLocal) continue;
+      if (!p.isLocal && !this.showPublic) continue;
+
+      const { x, y } = this.geoToCanvas(p.lat, p.lon);
+      const ptColor = p.isThreat ? '#ff2a5f' : (p.isLocal ? '#c084fc' : '#00e5ff');
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, p.isThreat ? 4.2 : 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = ptColor;
+      ctx.shadowColor = ptColor;
+      ctx.shadowBlur = p.isThreat ? 9 : 5;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 2. Flechas de trayectoria en Paraguay
+    for (let i = this.arcs.length - 1; i >= 0; i--) {
+      const arc = this.arcs[i];
+      if (arc.isLocal && !this.showLocal) {
+        arc.progress += arc.speed;
+        if (arc.progress >= 1.0) this.arcs.splice(i, 1);
+        continue;
+      }
+      if (!arc.isLocal && !this.showPublic) {
+        arc.progress += arc.speed;
+        if (arc.progress >= 1.0) this.arcs.splice(i, 1);
+        continue;
+      }
+
+      const t = arc.progress;
+      const tailT = Math.max(0, t - 0.35);
+
+      const getPos = (u) => {
+        const inv = 1 - u;
+        return {
+          x: inv * inv * arc.startX + 2 * inv * u * arc.midX + u * u * arc.endX,
+          y: inv * inv * arc.startY + 2 * inv * u * arc.midY + u * u * arc.endY
+        };
+      };
+
+      const head = getPos(t);
+      const prev = getPos(Math.max(0, t - 0.03));
+      const angle = Math.atan2(head.y - prev.y, head.x - prev.x);
+
+      ctx.save();
+      ctx.beginPath();
+      const steps = 12;
+      for (let s = 0; s <= steps; s++) {
+        const u = tailT + (t - tailT) * (s / steps);
+        const pt = getPos(u);
+        if (s === 0) ctx.moveTo(pt.x, pt.y);
+        else ctx.lineTo(pt.x, pt.y);
+      }
+      ctx.strokeStyle = arc.color;
+      ctx.lineWidth = arc.isThreat ? 2.0 : 1.5;
+      ctx.shadowColor = arc.color;
+      ctx.shadowBlur = 6;
+      ctx.stroke();
+
+      ctx.translate(head.x, head.y);
+      ctx.rotate(angle);
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(6, 0);
+      ctx.lineTo(-4, -3.5);
+      ctx.lineTo(-2, 0);
+      ctx.lineTo(-4, 3.5);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+
+      if (arc.label && t > 0.08 && t < 0.92) {
+        ctx.save();
+        ctx.font = 'bold 9px monospace';
+        const tw = ctx.measureText(arc.label).width;
+        const lx = Math.min(this.width - tw - 10, Math.max(4, head.x + 8));
+        const ly = Math.max(14, head.y - 8);
+        ctx.fillStyle = 'rgba(6, 11, 22, 0.86)';
+        ctx.strokeStyle = arc.color;
+        ctx.lineWidth = 0.8;
+        ctx.fillRect(lx - 3, ly - 10, tw + 6, 13);
+        ctx.strokeRect(lx - 3, ly - 10, tw + 6, 13);
+        ctx.fillStyle = '#f8fafc';
+        ctx.fillText(arc.label, lx, ly);
+        ctx.restore();
+      }
+
+      arc.progress += arc.speed;
+      if (arc.progress >= 1.0) {
+        this.arcs.splice(i, 1);
+      }
+    }
+
+    // 3. Nodos Proxy en Paraguay
+    const now = Date.now();
+    for (let i = 0; i < this.nodes.length; i++) {
+      const node = this.nodes[i];
+      const { x, y } = this.getNodeCoords(node.name);
+      const isOnline = node.status === 'ONLINE';
+      const nodeColor = isOnline ? '#00e676' : '#ff9900';
+
+      ctx.save();
+      const ringRadius = ((now / 22) % 22) + 5;
+      const ringAlpha = 1 - (ringRadius - 5) / 22;
+      ctx.beginPath();
+      ctx.arc(x, y, ringRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = nodeColor;
+      ctx.lineWidth = 1.4;
+      ctx.globalAlpha = ringAlpha * 0.75;
+      ctx.stroke();
+
+      ctx.globalAlpha = 1.0;
+      ctx.fillStyle = nodeColor;
+      ctx.beginPath();
+      ctx.moveTo(x, y - 6);
+      ctx.lineTo(x + 6, y);
+      ctx.lineTo(x, y + 6);
+      ctx.lineTo(x - 6, y);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.font = 'bold 9.5px monospace';
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillText(`🛡️ ${node.name}`, x + 9, y + 3);
+      ctx.restore();
+    }
+
+    // 4. Ondas sónicas
+    for (let i = this.pulses.length - 1; i >= 0; i--) {
+      const p = this.pulses[i];
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = p.isThreat ? 2.0 : 1.3;
+      ctx.globalAlpha = p.alpha;
+      ctx.stroke();
+      ctx.restore();
+
+      p.radius += 0.55;
+      p.alpha -= 0.03;
+      if (p.alpha <= 0 || p.radius >= p.maxRadius) {
+        this.pulses.splice(i, 1);
+      }
+    }
+
+    // 5. HUD bajo el cursor
+    if (this.mouse.active && this.hoverPoint) {
+      const hp = this.hoverPoint;
+      const mainIp = hp.realClientIp || hp.ip || '';
+      const cfSuffix = hp.isCloudflare ? ' [☁️ CF]' : (hp.isLocal ? ' [🏢 LAN]' : ' [🇵🇾 WAN]');
+      const text = `🎯 ${mainIp}${cfSuffix} • ${hp.zoneName || 'Paraguay'} [HTTP ${hp.status_code || 200}]`;
+      ctx.save();
+      ctx.font = 'bold 9.5px monospace';
+      const boxW = ctx.measureText(text).width + 14;
+      const boxX = Math.min(this.width - boxW - 6, Math.max(6, hp.screenX + 10));
+      const boxY = Math.max(6, hp.screenY - 24);
+
+      ctx.fillStyle = 'rgba(8, 13, 25, 0.94)';
+      ctx.strokeStyle = hp.isThreat ? '#ff2a5f' : (hp.isLocal ? '#c084fc' : '#00e5ff');
+      ctx.lineWidth = 1.2;
+      ctx.fillRect(boxX, boxY, boxW, 20);
+      ctx.strokeRect(boxX, boxY, boxW, 20);
+
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(text, boxX + 7, boxY + 13);
+      ctx.restore();
+    }
+
+    requestAnimationFrame(this.render);
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  window.mithrilParaguayMap = new TacticalParaguayMap('paraguayMapCanvas');
   window.mithrilMap = new TacticalWorldMap('tacticalMapCanvas');
 });

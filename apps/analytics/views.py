@@ -155,7 +155,7 @@ def api_map_data(request):
         .exclude(http_method='HTTPS')
         .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
         .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-        .values('id', 'latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
         .order_by('-id')[:70]
     )
     probe_points = list(
@@ -166,10 +166,28 @@ def api_map_data(request):
             | Q(user_agent__icontains='Cloudflare-Traffic-Manager')
             | (Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         )
-        .values('id', 'latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
         .order_by('-id')[:20]
     )
-    raw_points = real_client_points + probe_points
+    py_points = list(
+        TrafficLog.objects.filter(created_at__gte=since)
+        .exclude(http_method='HTTPS')
+        .filter(
+            Q(country_code__in=['PY', 'LAN'])
+            | Q(country_name__icontains='Paraguay')
+            | Q(raw_headers__cf_country='PY')
+            | Q(raw_headers__is_local_ip=True)
+            | Q(raw_headers__is_own_public_ip=True)
+        )
+        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .order_by('-id')[:45]
+    )
+    seen_ids = set()
+    raw_points = []
+    for item in (real_client_points + py_points + probe_points):
+        if item['id'] not in seen_ids:
+            seen_ids.add(item['id'])
+            raw_points.append(item)
     point_ips = {p['client_ip'] for p in raw_points}
     threat_ips = set(
         SecurityEvent.objects.filter(client_ip__in=point_ips, created_at__gte=since)
@@ -193,6 +211,7 @@ def api_map_data(request):
         re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
         p['latitude'] = re_geo['latitude']
         p['longitude'] = re_geo['longitude']
+        p['country_code'] = re_geo['country_code']
         p['country_name'] = re_geo['country_name']
 
         p['is_threat'] = (p['client_ip'] in threat_ips) or (real_ip_val in threat_ips) or (p['status_code'] >= 400)

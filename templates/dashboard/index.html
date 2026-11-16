@@ -240,9 +240,39 @@
 
   </div>
 
-  <!-- Right Column: Ban Candidates Queue & Proxies Health -->
+  <!-- Right Column: Paraguay 2D Tactical Map + Ban Candidates Queue + Proxies Health -->
   <div style="display: flex; flex-direction: column; gap: 1.25rem;">
-    
+
+    <!-- 2D Tactical Paraguay Map Panel (National Traffic Only) -->
+    <div class="panel">
+      <div class="panel-header" style="flex-wrap: wrap; gap: 0.55rem; border-left: 3px solid var(--neon-cyan);">
+        <div class="panel-title" style="font-size: 0.85rem;">
+          <span>🇵🇾</span> MAPA TÁCTICO PARAGUAY 2D (TRÁFICO NACIONAL)
+        </div>
+        <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+          <label style="display: flex; align-items: center; gap: 0.3rem; cursor: pointer; font-size: 0.68rem; font-family: var(--font-mono); color: var(--neon-cyan); background: rgba(0, 229, 255, 0.08); border: 1px solid rgba(0, 229, 255, 0.35); padding: 0.16rem 0.45rem; border-radius: 4px; user-select: none;" title="Mostrar u ocultar peticiones de IPs públicas de Paraguay">
+            <input type="checkbox" id="pyMapTogglePublic" style="accent-color: var(--neon-cyan); cursor: pointer; width: 13px; height: 13px;" checked>
+            <span>🌐 WAN PY</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.3rem; cursor: pointer; font-size: 0.68rem; font-family: var(--font-mono); color: #c084fc; background: rgba(192, 132, 252, 0.08); border: 1px solid rgba(192, 132, 252, 0.35); padding: 0.16rem 0.45rem; border-radius: 4px; user-select: none;" title="Mostrar u ocultar peticiones de red local (LAN)">
+            <input type="checkbox" id="pyMapToggleLocal" style="accent-color: #c084fc; cursor: pointer; width: 13px; height: 13px;" checked>
+            <span>🏢 LAN</span>
+          </label>
+          <span id="pyMapActiveBadge" class="badge safe" style="font-size: 0.65rem; padding: 0.12rem 0.45rem;">EN VIVO</span>
+        </div>
+      </div>
+      <div class="panel-body" style="padding: 0;">
+        <div class="map-container" style="height: 440px;">
+          <canvas id="paraguayMapCanvas"></canvas>
+          <div class="map-overlay-info" style="font-size: 0.68rem;">
+            • <span style="color: var(--neon-cyan);">➤ NORMAL PY</span> &nbsp;|&nbsp;
+            • <span style="color: var(--neon-crimson);">➤ AMENAZA PY</span> &nbsp;|&nbsp;
+            • <span style="color: #c084fc;">🏢 LAN LOCAL</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Pending Ban Candidates (Human Decision Center) -->
     <div class="panel">
       <div class="panel-header" style="border-left: 3px solid var(--neon-amber);">
@@ -354,6 +384,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{% static 'js/mithril-map.js' %}?v=20261113d"></script>
-<script src="{% static 'js/mithril-live.js' %}?v=20261113d"></script>
+<script src="{% static 'js/mithril-map.js' %}?v=20261116a"></script>
+<script src="{% static 'js/mithril-live.js' %}?v=20261116a"></script>
 {% endblock %}
