@@ -714,7 +714,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const lat = parseFloat(event.latitude);
         const lon = parseFloat(event.longitude);
         if (!isNaN(lat) && !isNaN(lon)) {
-          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip, isLoc, isProbe);
+          window.mithrilMap.addLivePulse(lat, lon, event.is_threat, event.client_ip, event.is_cloudflare, event.real_client_ip, isLoc, isProbe, event.node_name || '');
         }
       }
 

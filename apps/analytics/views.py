@@ -155,7 +155,7 @@ def api_map_data(request):
         .exclude(http_method='HTTPS')
         .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
         .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-        .values('id', 'latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method')
+        .values('id', 'latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
         .order_by('-id')[:70]
     )
     probe_points = list(
@@ -166,7 +166,7 @@ def api_map_data(request):
             | Q(user_agent__icontains='Cloudflare-Traffic-Manager')
             | (Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         )
-        .values('id', 'latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method')
+        .values('id', 'latitude', 'longitude', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
         .order_by('-id')[:20]
     )
     raw_points = real_client_points + probe_points
@@ -210,19 +210,22 @@ def api_map_data(request):
             or 'TLS SNI' in ua
             or method == 'HTTPS'
         )
+        p['node_name'] = p.pop('node__name', '') or ''
         recent_points.append(p)
 
-    proxy_nodes = [
-        {
+    proxy_nodes = []
+    for idx, n in enumerate(ProxyNode.objects.all()):
+        node_geo = resolve_geoip(n.ip_address) if not is_private_local_ip(n.ip_address) else None
+        base_lat = node_geo['latitude'] if (node_geo and node_geo.get('latitude')) else -34.6037
+        base_lon = node_geo['longitude'] if (node_geo and node_geo.get('longitude')) else -58.3816
+        proxy_nodes.append({
             'id': str(n.id),
             'name': n.name,
             'ip': n.ip_address,
             'status': n.status,
-            'latitude': -34.6037,
-            'longitude': -58.3816
-        }
-        for n in ProxyNode.objects.all()
-    ]
+            'latitude': base_lat + (idx * 2.2),
+            'longitude': base_lon + (idx * 2.8),
+        })
 
     return JsonResponse({
         'countries': list(country_stats),
@@ -441,6 +444,8 @@ def api_live_feed_logs(request):
             | Q(http_method__icontains=search_q)
             | Q(raw_headers__real_client_ip__icontains=search_q)
             | Q(raw_headers__cloudflare_ip__icontains=search_q)
+            | Q(node__name__icontains=search_q)
+            | Q(node__ip_address__icontains=search_q)
         )
 
     total_filtered = qs.count()

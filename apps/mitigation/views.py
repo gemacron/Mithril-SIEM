@@ -462,11 +462,14 @@ def api_node_sync_bans(request):
     # Filtro de seguridad absoluto: bajo ninguna circunstancia sincronizar una IP de Cloudflare ni de la propia infraestructura
     ban_ips = [b.client_ip for b in active_bans if not is_cloudflare_ip(b.client_ip) and not is_own_infrastructure_ip(b.client_ip)]
 
-    # Confirmar sincronización
-    NodeBanSync.objects.filter(node=node, ban__in=active_bans).update(
-        is_synced=True,
-        synced_at=timezone.now()
-    )
+    # Confirmar sincronización para este nodo en cada bloqueo activo
+    now_ts = timezone.now()
+    for b in active_bans:
+        NodeBanSync.objects.update_or_create(
+            ban=b,
+            node=node,
+            defaults={'is_synced': True, 'synced_at': now_ts}
+        )
 
     return JsonResponse({
         'status': 'ok',

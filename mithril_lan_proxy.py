@@ -156,7 +156,7 @@ def is_duplicate_event(log_obj):
     raw_uri = str(log_obj.get('uri', '/'))
     clean_uri = re.sub(r'^\[[^\]]+\]\s*', '', raw_uri)
     sig = (
-        log_obj.get('node_ip', ''),
+        log_obj.get('node_api_key') or log_obj.get('node_ip', ''),
         log_obj.get('client_ip', ''),
         log_obj.get('http_method', 'GET'),
         clean_uri,

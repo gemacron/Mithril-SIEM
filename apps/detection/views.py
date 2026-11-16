@@ -147,19 +147,17 @@ def api_ingest(request):
         return JsonResponse({'error': 'POST required'}, status=405)
 
     auth_header = request.META.get('HTTP_AUTHORIZATION', '')
-    node = None
+    header_node = None
     if auth_header.startswith('Bearer '):
         api_key = auth_header.split(' ', 1)[1].strip().strip('"').strip("'")
-        node = ProxyNode.objects.filter(api_key=api_key).first()
+        header_node = ProxyNode.objects.filter(api_key=api_key).first()
 
-    if not node:
+    if not header_node:
         node_ip = request.META.get('HTTP_X_NODE_IP') or request.META.get('REMOTE_ADDR')
         if node_ip:
-            node = ProxyNode.objects.filter(ip_address=node_ip).first()
+            header_node = ProxyNode.objects.filter(ip_address=node_ip).first()
 
-    if not node:
-        # En contenedores Podman rootless (pasta/slirp4netns), la IP origen UDP se traduce a NAT local (10.0.2.x / 127.0.0.1)
-        node = ProxyNode.objects.order_by('-last_heartbeat', 'created_at').first()
+    single_fallback_node = ProxyNode.objects.first() if ProxyNode.objects.count() == 1 else None
 
     try:
         body = json.loads(request.body.decode('utf-8'))
@@ -169,24 +167,32 @@ def api_ingest(request):
     # Si es una lista de logs (batch) o un solo log
     logs_data = body if isinstance(body, list) else [body]
     processed_count = 0
-    active_node = node
+    touched_nodes = {}
 
     for item in logs_data:
         try:
-            target_node = node
-            if 'node_ip' in item and item['node_ip']:
-                by_ip = ProxyNode.objects.filter(ip_address=item['node_ip']).first()
-                if by_ip:
-                    target_node = by_ip
+            target_node = None
+            item_key = str(item.get('node_api_key') or '').strip().strip('"').strip("'")
+            if item_key:
+                target_node = ProxyNode.objects.filter(api_key=item_key).first()
+            if not target_node:
+                item_ips = item.get('node_ips')
+                if isinstance(item_ips, list) and item_ips:
+                    target_node = ProxyNode.objects.filter(ip_address__in=item_ips).first()
+            if not target_node and item.get('node_ip'):
+                target_node = ProxyNode.objects.filter(ip_address=item['node_ip']).first()
+            if not target_node:
+                target_node = header_node or single_fallback_node
+
             if target_node:
-                active_node = target_node
+                touched_nodes[target_node.id] = target_node
             process_incoming_log(item, node=target_node)
             processed_count += 1
         except Exception as e:
             print(f"Error procesando log individual: {e}")
 
-    if active_node:
-        active_node.update_heartbeat()
+    for n in touched_nodes.values():
+        n.update_heartbeat()
 
     return JsonResponse({
         'status': 'ok',

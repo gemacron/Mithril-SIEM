@@ -507,6 +507,7 @@ def discover_own_public_wan_ip():
 
 
 _OWN_HOST_IPS = get_own_interface_ips()
+_LOCAL_NODE_IPS = sorted(ip for ip in _OWN_HOST_IPS if not ip.startswith("127.") and ip != "::1")
 _MITHRIL_SIEM_HOST = urllib.parse.urlparse(MITHRIL_URL).hostname or "127.0.0.1"
 _OWN_PUBLIC_WAN_IP = discover_own_public_wan_ip()
 _EXTRA_PROTECTED_IPS = {
@@ -604,6 +605,8 @@ def kernel_network_mirror_worker():
             if now_ts - req_item["ts"] >= 0.8:
                 pending_http.pop(k, None)
                 event_json = json.dumps({
+                    "node_api_key": NODE_API_KEY,
+                    "node_ips": _LOCAL_NODE_IPS,
                     "client_ip": req_item["client_ip"],
                     "real_client_ip": req_item.get("real_client_ip", ""),
                     "cloudflare_ip": req_item.get("cloudflare_ip", ""),
@@ -792,6 +795,8 @@ def kernel_network_mirror_worker():
                     status_code = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 200
                     latency = round(max(0.0, now - req_item["ts"]), 4)
                     event_json = json.dumps({
+                        "node_api_key": NODE_API_KEY,
+                        "node_ips": _LOCAL_NODE_IPS,
                         "client_ip": req_item["client_ip"],
                         "real_client_ip": req_item.get("real_client_ip", ""),
                         "cloudflare_ip": req_item.get("cloudflare_ip", ""),
@@ -814,6 +819,8 @@ def kernel_network_mirror_worker():
                 if sni and (now - recent_client_activity.get(src_ip, 0)) > 2.5:
                     recent_client_activity[src_ip] = now
                     event_json = json.dumps({
+                        "node_api_key": NODE_API_KEY,
+                        "node_ips": _LOCAL_NODE_IPS,
                         "client_ip": src_ip,
                         "real_client_ip": "",
                         "cloudflare_ip": src_ip if is_cf_ip(src_ip) else "",
@@ -864,7 +871,8 @@ def main():
             "ram": ram,
             "nginx_version": nginx_ver,
             "active_connections": active_conns,
-            "rps": 0
+            "rps": 0,
+            "node_ips": _LOCAL_NODE_IPS,
         }
         status_code, resp = http_request(f"{MITHRIL_URL}/nodes/api/heartbeat/", method="POST", data=hb_data)
         if status_code == 200:

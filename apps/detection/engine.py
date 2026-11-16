@@ -449,7 +449,7 @@ def _refresh_own_infra_ips_if_needed():
                     if _is_valid_ip(nip):
                         if is_private_local_ip(nip):
                             _OWN_INFRA_STATE['internal_node_ips'].add(nip)
-                        elif nip in own_wan_db:
+                        else:
                             _OWN_INFRA_STATE['public_wan_ips'].add(nip)
                 for wip in own_wan_db:
                     if _is_valid_ip(wip) and not is_private_local_ip(wip):
