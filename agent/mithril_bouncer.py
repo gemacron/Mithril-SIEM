@@ -28,6 +28,12 @@ import urllib.request
 import urllib.parse
 import urllib.error
 
+# Forzar salida sin buffer para que systemd/journalctl muestre los logs en tiempo real
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True)
+
 # Configuracion desde Variables de Entorno (o valores por defecto)
 MITHRIL_URL = os.getenv("MITHRIL_URL", "http://127.0.0.1:9900").rstrip("/")
 NODE_API_KEY = os.getenv("NODE_API_KEY", "")
@@ -118,7 +124,7 @@ failregex = ^MITHRIL_MANUAL_BAN <HOST>$
 ignoreregex =
 """
 
-FAIL2BAN_ACTION_CONTENT = """# Mithril SIEM - Smart Hybrid Action (Universal: Kernel ipset L3/L4 + Kernel L7 Real-IP DPI + Cloudflare Edge API opcional)
+FAIL2BAN_ACTION_CONTENT = """# Mithril SIEM - Smart Hybrid Action v2 (Universal: Kernel ipset L3/L4 + Kernel L7 Real-IP DPI, sin punto y coma para INI parser)
 [Definition]
 actionstart = ipset create mithril_f2b hash:ip family inet timeout 0 -exist
               ipset create mithril_f2b6 hash:ip family inet6 timeout 0 -exist 2>/dev/null || true
@@ -139,15 +145,13 @@ actionstop  = iptables -D INPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || true
 
 actioncheck = ipset list mithril_f2b >/dev/null 2>&1
 
-actionban   = case "<ip>" in *:*) ipset add mithril_f2b6 <ip> -exist 2>/dev/null || true ;; *) ipset add mithril_f2b <ip> -exist 2>/dev/null || true ;; esac
-              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset
-              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset
-              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\\"mode\\":\\"block\\",\\"configuration\\":{\\"target\\":\\"ip\\",\\"value\\":\\"<ip>\\"},\\"notes\\":\\"Mithril-SIEM-Fail2ban\\"}" >/dev/null 2>&1 || true; fi; fi
+actionban   = ipset add mithril_f2b <ip> -exist 2>/dev/null || ipset add mithril_f2b6 <ip> -exist 2>/dev/null || true
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
 
-actionunban = case "<ip>" in *:*) ipset del mithril_f2b6 <ip> -exist 2>/dev/null || true ;; *) ipset del mithril_f2b <ip> -exist 2>/dev/null || true ;; esac
+actionunban = ipset del mithril_f2b <ip> -exist 2>/dev/null || ipset del mithril_f2b6 <ip> -exist 2>/dev/null || true
               iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
               iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
-              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
 
 [Init]
 name = mithril
@@ -164,9 +168,53 @@ findtime = 600
 maxretry = 1
 """
 
+def ensure_f2b_kernel_structures():
+    """Garantiza que los conjuntos ipset (mithril_f2b / mithril_f2b6) y la cadena MITHRIL_REALIP existan en el kernel."""
+    try:
+        subprocess.run(["ipset", "create", "mithril_f2b", "hash:ip", "family", "inet", "timeout", "0", "-exist"], capture_output=True, check=False)
+        subprocess.run(["ipset", "create", "mithril_f2b6", "hash:ip", "family", "inet6", "timeout", "0", "-exist"], capture_output=True, check=False)
+        if subprocess.run(["iptables", "-C", "INPUT", "-m", "set", "--match-set", "mithril_f2b", "src", "-j", "DROP"], capture_output=True, check=False).returncode != 0:
+            subprocess.run(["iptables", "-I", "INPUT", "1", "-m", "set", "--match-set", "mithril_f2b", "src", "-j", "DROP"], capture_output=True, check=False)
+        if subprocess.run(["ip6tables", "-C", "INPUT", "-m", "set", "--match-set", "mithril_f2b6", "src", "-j", "DROP"], capture_output=True, check=False).returncode != 0:
+            subprocess.run(["ip6tables", "-I", "INPUT", "1", "-m", "set", "--match-set", "mithril_f2b6", "src", "-j", "DROP"], capture_output=True, check=False)
+        subprocess.run(["iptables", "-N", "MITHRIL_REALIP"], capture_output=True, check=False)
+        if subprocess.run(["iptables", "-C", "INPUT", "-p", "tcp", "-j", "MITHRIL_REALIP"], capture_output=True, check=False).returncode != 0:
+            subprocess.run(["iptables", "-I", "INPUT", "2", "-p", "tcp", "-j", "MITHRIL_REALIP"], capture_output=True, check=False)
+        if subprocess.run(["iptables", "-C", "OUTPUT", "-p", "tcp", "-j", "MITHRIL_REALIP"], capture_output=True, check=False).returncode != 0:
+            subprocess.run(["iptables", "-I", "OUTPUT", "1", "-p", "tcp", "-j", "MITHRIL_REALIP"], capture_output=True, check=False)
+    except Exception:
+        pass
+
+def sync_f2b_kernel_ip(ip, ban=True):
+    """Sincroniza una IP directamente en mithril_f2b/mithril_f2b6 y en MITHRIL_REALIP como garantía de kernel."""
+    try:
+        set_name = "mithril_f2b6" if ":" in ip else "mithril_f2b"
+        if ban:
+            subprocess.run(["ipset", "add", set_name, ip, "-exist"], capture_output=True, check=False)
+            for hdr in (f"CF-Connecting-IP: {ip}", f"X-Real-IP: {ip}"):
+                chk = subprocess.run(
+                    ["iptables", "-C", "MITHRIL_REALIP", "-p", "tcp", "-m", "string", "--algo", "bm", "--icase", "--string", hdr, "-j", "REJECT", "--reject-with", "tcp-reset"],
+                    capture_output=True, check=False
+                )
+                if chk.returncode != 0:
+                    subprocess.run(
+                        ["iptables", "-A", "MITHRIL_REALIP", "-p", "tcp", "-m", "string", "--algo", "bm", "--icase", "--string", hdr, "-j", "REJECT", "--reject-with", "tcp-reset"],
+                        capture_output=True, check=False
+                    )
+        else:
+            subprocess.run(["ipset", "del", set_name, ip, "-exist"], capture_output=True, check=False)
+            for hdr in (f"CF-Connecting-IP: {ip}", f"X-Real-IP: {ip}"):
+                subprocess.run(
+                    ["iptables", "-D", "MITHRIL_REALIP", "-p", "tcp", "-m", "string", "--algo", "bm", "--icase", "--string", hdr, "-j", "REJECT", "--reject-with", "tcp-reset"],
+                    capture_output=True, check=False
+                )
+    except Exception:
+        pass
+
 def init_fail2ban():
     """Verifica que Fail2ban y el jail 'mithril-jail' esten activos; los provisiona o actualiza si existen los binarios."""
     try:
+        ensure_f2b_kernel_structures()
         need_reload = False
         os.makedirs("/etc/fail2ban/filter.d", exist_ok=True)
         os.makedirs("/etc/fail2ban/action.d", exist_ok=True)
@@ -184,7 +232,7 @@ def init_fail2ban():
         if not write_action:
             try:
                 with open(action_path, "r") as f:
-                    if "MITHRIL_REALIP" not in f.read():
+                    if "Smart Hybrid Action v2" not in f.read():
                         write_action = True
             except Exception:
                 write_action = True
@@ -204,9 +252,10 @@ def init_fail2ban():
 
         subprocess.run(["systemctl", "enable", "--now", "fail2ban"], capture_output=True, check=False)
         subprocess.run(["fail2ban-client", "reload"], capture_output=True, text=True, check=False)
+        ensure_f2b_kernel_structures()
         chk2 = subprocess.run(["fail2ban-client", "status", FAIL2BAN_JAIL], capture_output=True, text=True, check=False)
         if chk2.returncode == 0:
-            print(f"🛡️ [FAIL2BAN] Jail '{FAIL2BAN_JAIL}' (Smart Hybrid Action) activo y listo.")
+            print(f"🛡️ [FAIL2BAN] Jail '{FAIL2BAN_JAIL}' (Smart Hybrid Action v2) activo y listo.")
             return True
         return False
     except FileNotFoundError:
@@ -320,23 +369,24 @@ def apply_blocklist(banned_ips):
 
             for ip in to_ban:
                 res = subprocess.run(["fail2ban-client", "set", FAIL2BAN_JAIL, "banip", ip], capture_output=True, text=True, check=False)
+                sync_f2b_kernel_ip(ip, ban=True)
                 if res.returncode == 0:
                     _F2B_MEM_BANS.add(ip)
-                    print(f"🔒 [FAIL2BAN] IP {ip} bloqueada en jail '{FAIL2BAN_JAIL}'.")
+                    print(f"🔒 [FAIL2BAN] IP {ip} bloqueada en jail '{FAIL2BAN_JAIL}' e ipset.")
                 else:
                     print(f"⚠️ [FAIL2BAN] Error bloqueando {ip}: {res.stderr.strip() or res.stdout.strip()}")
 
+            # Garantizar que todas las IPs activas esten cargadas en mithril_f2b y MITHRIL_REALIP
+            for ip in sorted(target_set):
+                sync_f2b_kernel_ip(ip, ban=True)
+
             for ip in to_unban:
-                res = subprocess.run(["fail2ban-client", "set", FAIL2BAN_JAIL, "unbanip", ip], capture_output=True, text=True, check=False)
-                # Respaldo inmediato en ipset para garantizar desbloqueo en el kernel
-                if ":" in ip:
-                    subprocess.run(["ipset", "del", "mithril_f2b6", ip, "-exist"], capture_output=True, check=False)
-                else:
-                    subprocess.run(["ipset", "del", "mithril_f2b", ip, "-exist"], capture_output=True, check=False)
+                subprocess.run(["fail2ban-client", "set", FAIL2BAN_JAIL, "unbanip", ip], capture_output=True, text=True, check=False)
+                sync_f2b_kernel_ip(ip, ban=False)
                 _F2B_MEM_BANS.discard(ip)
                 print(f"🔓 [FAIL2BAN] IP {ip} desbloqueada de jail '{FAIL2BAN_JAIL}' e ipset.")
 
-            print(f"✅ [FAIL2BAN] Sincronización activa: {len(target_set)} IPs bloqueadas en '{FAIL2BAN_JAIL}' (Cero cambios en Nginx).")
+            print(f"✅ [FAIL2BAN] Sincronización activa: {len(target_set)} IPs bloqueadas en '{FAIL2BAN_JAIL}' e ipset (Cero cambios en Nginx).")
             return
         else:
             print("⚠️ [FAIL2BAN] Servicio Fail2ban no disponible localmente; aplicando respaldo en Kernel ipset.")
