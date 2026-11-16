@@ -113,40 +113,60 @@ Al iniciar el contenedor `mithril-web`, el sistema configura automáticamente 11
 
 ---
 
-## 🚀 Despliegue con Podman
+## 🚀 Despliegue Rápido en Servidor Linux (Podman)
 
-Mithril está empaquetado para correr mediante **Podman Compose** (o Docker Compose).
+Mithril está preparado para desplegarse en segundos sobre **Rocky Linux, AlmaLinux, RHEL, CentOS, Ubuntu o Debian** utilizando **Podman Compose**.
 
-### 1. Clonar el Repositorio
+### Opción 1: Despliegue Automático en 1 Comando (Recomendado)
+Clona el repositorio y ejecuta el instalador automático `install_siem.sh` (instala `podman-compose`, configura `.env`, abre los puertos `9900/tcp` y `5140/udp` en el firewall y levanta todos los contenedores):
+
 ```bash
 git clone https://github.com/gemacron/Mithril-SIEM.git
 cd Mithril-SIEM
+bash install_siem.sh
 ```
 
-### 2. Configurar Variables de Entorno
-Copia la plantilla si aún no tienes un archivo `.env`:
+---
+
+### Opción 2: Despliegue Manual Paso a Paso
+
+#### 1. Instalar Podman y `podman-compose`
 ```bash
-cp .env.example .env
+# En Rocky Linux / AlmaLinux / RHEL / CentOS:
+sudo dnf install -y epel-release
+sudo dnf install -y podman podman-compose git
+
+# En Ubuntu / Debian:
+sudo apt-get update && sudo apt-get install -y podman podman-compose git
 ```
 
-### 3. Levantar los Contenedores
+#### 2. Clonar y Levantar el Proyecto
 ```bash
-podman compose up -d --build
+git clone https://github.com/gemacron/Mithril-SIEM.git
+cd Mithril-SIEM
+cp -n .env.example .env
+chmod +x entrypoint.sh
+podman-compose up -d --build
 ```
-*(O `docker compose up -d --build` si utilizas Docker).*
 
-El comando inicializará automáticamente:
+#### 3. Abrir Puertos en el Firewall del Servidor SIEM
+```bash
+# En Rocky Linux / RHEL (firewalld):
+sudo firewall-cmd --add-port=9900/tcp --add-port=5140/udp --permanent
+sudo firewall-cmd --reload
+
+# En Ubuntu / Debian (UFW):
+sudo ufw allow 9900/tcp && sudo ufw allow 5140/udp
+```
+
+El sistema levanta automáticamente los 5 contenedores (incluyendo el receptor Syslog UDP `5140` integrado dentro de `mithril-web`):
 - **`mithril-db`**: PostgreSQL 16 con volumen persistente (`5432/tcp`).
 - **`mithril-redis`**: Redis 7 en memoria (`6379/tcp`).
-- **`mithril-web`**: Servidor Django + Daphne en el puerto `9900`.
+- **`mithril-web`**: Panel Web SOC + API REST (`9900/tcp`) + Receptor Syslog Universal (`5140/udp`).
 - **`mithril-worker`**: Celery Worker para procesamiento asíncrono de telemetría y heurísticas.
 - **`mithril-beat`**: Celery Beat para tareas programadas y expiración de bloqueos.
 
-### 4. Iniciar el Proxy LAN y Receptor Syslog Universal
-Para recibir telemetría UDP (`5140`) y peticiones HTTP de los agentes (`9900`) desde cualquier servidor en la red LAN:
-```bash
-python mithril_lan_proxy.py
-```
+> *(Nota para entornos Windows / WSL2 de desarrollo: ejecuta `python mithril_lan_proxy.py` en el host Windows para puentear la interfaz LAN hacia la máquina virtual de Podman).*
 
 ---
 
@@ -154,7 +174,7 @@ python mithril_lan_proxy.py
 
 1. Ingresa a la interfaz web en tu navegador:
    ```text
-   http://localhost:9900
+   http://IP_DEL_SERVIDOR_MITHRIL:9900
    ```
 2. Utiliza las credenciales iniciales definidas en `.env` (por defecto `admin` / `MithrilSecurity2026!`).
 3. El sistema te guiará por el **Asistente de Seguridad Inicial**:
@@ -164,104 +184,59 @@ python mithril_lan_proxy.py
 
 ---
 
-## 📡 Conexión de Servidores Proxy Nginx (Rocky Linux / RHEL / Debian / Ubuntu)
+## 📡 Conexión de Servidores Proxy Nginx (1 Comando - Cero Cambios en Nginx)
 
 ### Paso 1: Dar de alta el nodo en Mithril
-1. En el menú superior de Mithril, ve a **Nodos Proxy (`/nodes/`)** y haz clic en **+ Alta de Nuevo Proxy**.
-2. Asigna un nombre (ej: `servbalancer150`) y su dirección IP.
-3. Copia el **Token de Conexión (`API_KEY`)** generado para ese nodo.
+1. En el menú superior de Mithril, ve a **Nodos Proxy (`/nodes/`)** y haz clic en **+ Alta Proxy**.
+2. Asigna un nombre (ej: `Proxy-Personal`) y la dirección IP de tu servidor proxy (ej: `192.168.150.181`).
+3. Al guardarlo, Mithril te mostrará en pantalla el **Comando de Instalación de 1 Línea** con tu `NODE_API_KEY` ya incluido.
 
-### Paso 2: Instalación Automática en 1 Comando (Incluye Fail2ban Smart Action)
-Ejecuta en tu servidor Linux el instalador automático provisto por Mithril:
+### Paso 2: Ejecutar el Instalador de 1 Línea en el Servidor Proxy
+Copia y pega el comando en la terminal de tu servidor proxy Nginx:
 
 #### Opción A — Modo Activo Universal con Fail2ban (Recomendado - Sin tocar Nginx)
 ```bash
-curl -sSL http://IP_DE_MITHRIL:9900/nodes/install.sh | sudo bash -s -- --server http://IP_DE_MITHRIL:9900 --key "TU_API_KEY" --mode fail2ban
+curl -fsSL http://IP_DE_MITHRIL:9900/nodes/install.sh | sudo bash -s -- --server http://IP_DE_MITHRIL:9900 --key "TU_API_KEY" --mode fail2ban
 ```
 
-#### Opción B — Modo Monitor Pasivo (Cero cambios en Firewall)
+#### Opción B — Modo Monitor Pasivo (Solo Observación - Cero Bloqueos)
 ```bash
-curl -sSL http://IP_DE_MITHRIL:9900/nodes/install.sh | sudo bash -s -- --server http://IP_DE_MITHRIL:9900 --key "TU_API_KEY" --mode monitor
+curl -fsSL http://IP_DE_MITHRIL:9900/nodes/install.sh | sudo bash -s -- --server http://IP_DE_MITHRIL:9900 --key "TU_API_KEY" --mode monitor
 ```
+
+> **¿Qué hace este comando automáticamente en segundos?**
+> 1. Instala `fail2ban`, `ipset` e `iptables` según tu distribución Linux.
+> 2. Configura `mithril-jail` y la acción `mithril-smart` (`Smart Hybrid Action v2`) en Fail2ban.
+> 3. Descarga `/opt/mithril-agent/mithril_bouncer.py` y activa el servicio `mithril-bouncer.service`.
+> 4. **No modifica ni recarga ningún archivo de Nginx.**
 
 ---
 
-## 🛡️ Instalación y Configuración de Fail2ban en el Agente (Paso a Paso)
+## 🔍 Comandos de Verificación Rápida en el Servidor Proxy
 
-Si deseas instalar o auditar manualmente la integración de **Fail2ban** en cualquier servidor proxy (con o sin Cloudflare), sigue estos pasos:
-
-### 1. Instalar Fail2ban e `ipset`
-```bash
-# En Ubuntu / Debian:
-sudo apt-get update && sudo apt-get install -y fail2ban ipset iptables curl
-
-# En Rocky Linux / AlmaLinux / RHEL:
-sudo dnf install -y epel-release && sudo dnf install -y fail2ban ipset iptables iptables-nft curl
-```
-
-### 2. Crear el Filtro Base y el Archivo de Control
-```bash
-sudo mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/action.d /etc/fail2ban/jail.d /etc/mithril
-sudo touch /var/log/mithril-fail2ban.log
-
-sudo tee /etc/fail2ban/filter.d/mithril-empty.conf > /dev/null <<'EOF'
-[Definition]
-failregex = ^MITHRIL_MANUAL_BAN <HOST>$
-ignoreregex =
-EOF
-```
-
-### 3. Crear la Acción Híbrida Universal (`/etc/fail2ban/action.d/mithril-smart.conf`)
-Esta acción bloquea siempre en el Kernel de Linux (`ipset`/`iptables`) para proteger cualquier plataforma sin Cloudflare y frenar ataques directos a la IP pública, y si existe `/etc/mithril/cloudflare.env`, bloquea también en el borde de Cloudflare vía API:
+Una vez instalado el agente en tu servidor proxy, puedes verificar su funcionamiento con:
 
 ```bash
-sudo tee /etc/fail2ban/action.d/mithril-smart.conf > /dev/null <<'EOF'
-[Definition]
-actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
-              iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+# 1. Ver el log en vivo del agente Mithril Bouncer:
+sudo journalctl -u mithril-bouncer -n 20 -f
 
-actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
-              ipset destroy mithril_f2b 2>/dev/null || true
-
-actioncheck = ipset list mithril_f2b >/dev/null 2>&1
-
-actionban   = ipset add mithril_f2b <ip> -exist
-              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\"mode\":\"block\",\"configuration\":{\"target\":\"ip\",\"value\":\"<ip>\"},\"notes\":\"Mithril-SIEM-Fail2ban\"}" >/dev/null 2>&1 || true; fi; fi
-
-actionunban = ipset del mithril_f2b <ip> -exist
-              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
-
-[Init]
-name = mithril
-EOF
-```
-
-### 4. Crear el Jail Dedicado (`/etc/fail2ban/jail.d/mithril.local`) y Reiniciar Fail2ban
-```bash
-sudo tee /etc/fail2ban/jail.d/mithril.local > /dev/null <<'EOF'
-[mithril-jail]
-enabled  = true
-filter   = mithril-empty
-action   = mithril-smart
-logpath  = /var/log/mithril-fail2ban.log
-bantime  = -1
-findtime = 600
-maxretry = 1
-EOF
-
-sudo systemctl enable --now fail2ban
-sudo fail2ban-client reload
+# 2. Ver las IPs bloqueadas actualmente en Fail2ban:
 sudo fail2ban-client status mithril-jail
+
+# 3. Ver las IPs cargadas en la tabla ipset del Kernel:
+sudo ipset list mithril_f2b
+
+# 4. Ver el contador de paquetes/intentos bloqueados en tiempo real:
+sudo iptables -L INPUT -n -v | grep mithril_f2b
+sudo iptables -L MITHRIL_REALIP -n -v
 ```
 
-### 5. (Opcional) Activar Bloqueo en el Borde de Cloudflare
-Si tu dominio pasa por Cloudflare, crea el archivo `/etc/mithril/cloudflare.env` para que Fail2ban bloquee también en el Edge de Cloudflare sin tocar Nginx:
+### Cambiar la IP del Servidor Mithril en un Agente ya Instalado
+Si mudas Mithril SIEM a una nueva IP (ej. `192.168.150.48`), ejecuta en tu servidor proxy:
 ```bash
-sudo tee /etc/mithril/cloudflare.env > /dev/null <<'EOF'
-CF_API_TOKEN="TU_CLOUDFLARE_API_TOKEN"
-CF_ZONE_ID="TU_CLOUDFLARE_ZONE_ID"
-EOF
-sudo chmod 600 /etc/mithril/cloudflare.env
+sudo sed -i 's|^Environment="MITHRIL_URL=.*|Environment="MITHRIL_URL=http://192.168.150.48:9900"|' /etc/systemd/system/mithril-bouncer.service
+sudo curl -fsSL "http://192.168.150.48:9900/nodes/mithril_bouncer.py" -o /opt/mithril-agent/mithril_bouncer.py
+sudo systemctl daemon-reload && sudo systemctl restart mithril-bouncer
 ```
 
 ---
