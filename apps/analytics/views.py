@@ -155,7 +155,7 @@ def api_map_data(request):
         .exclude(http_method='HTTPS')
         .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
         .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'city', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
         .order_by('-id')[:70]
     )
     probe_points = list(
@@ -166,7 +166,7 @@ def api_map_data(request):
             | Q(user_agent__icontains='Cloudflare-Traffic-Manager')
             | (Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         )
-        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'city', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
         .order_by('-id')[:20]
     )
     py_points = list(
@@ -179,7 +179,7 @@ def api_map_data(request):
             | Q(raw_headers__is_local_ip=True)
             | Q(raw_headers__is_own_public_ip=True)
         )
-        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'city', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
         .order_by('-id')[:45]
     )
     seen_ids = set()
@@ -213,9 +213,11 @@ def api_map_data(request):
         p['longitude'] = re_geo['longitude']
         p['country_code'] = re_geo['country_code']
         p['country_name'] = re_geo['country_name']
+        p['city'] = re_geo.get('city') or p.get('city', '')
 
         p['is_threat'] = (p['client_ip'] in threat_ips) or (real_ip_val in threat_ips) or (p['status_code'] >= 400)
-        p['client_ip'] = conn_ip
+        p['client_ip'] = real_ip_val or conn_ip
+        p['connection_ip'] = conn_ip
         p['is_cloudflare'] = meta['is_cloudflare']
         p['cloudflare_ip'] = meta['cloudflare_ip']
         p['real_client_ip'] = real_ip_val

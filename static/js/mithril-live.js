@@ -725,7 +725,8 @@ document.addEventListener('DOMContentLoaded', () => {
             isProbe,
             event.node_name || '',
             event.country_code || '',
-            event.country_name || ''
+            event.country_name || '',
+            event.city || ''
           );
         }
       }

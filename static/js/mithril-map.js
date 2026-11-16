@@ -93,12 +93,14 @@ class TacticalWorldMap {
       this.showLocal = locToggle.checked;
     }
 
-    const savedProbes = localStorage.getItem('mithril_map_show_probes');
+    const savedProbes = localStorage.getItem('mithril_map_show_probes_v2');
     if (savedProbes !== null) {
       this.showProbes = (savedProbes === 'true');
       if (probesToggle) probesToggle.checked = this.showProbes;
     } else if (probesToggle) {
       this.showProbes = probesToggle.checked;
+    } else {
+      this.showProbes = false;
     }
 
     if (extToggle) {
@@ -120,7 +122,7 @@ class TacticalWorldMap {
     if (probesToggle) {
       probesToggle.addEventListener('change', () => {
         this.showProbes = probesToggle.checked;
-        localStorage.setItem('mithril_map_show_probes', this.showProbes ? 'true' : 'false');
+        localStorage.setItem('mithril_map_show_probes_v2', this.showProbes ? 'true' : 'false');
         this.onFilterChanged();
       });
     }
@@ -253,9 +255,9 @@ class TacticalWorldMap {
     });
   }
 
-  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false, nodeName = '', countryCode = '', countryName = '') {
+  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false, nodeName = '', countryCode = '', countryName = '', cityName = '') {
     if (window.mithrilParaguayMap) {
-      window.mithrilParaguayMap.addLivePulse(lat, lon, isThreat, clientIp, isCloudflare, realClientIp, isLocal, isProbe, nodeName, countryCode, countryName);
+      window.mithrilParaguayMap.addLivePulse(lat, lon, isThreat, clientIp, isCloudflare, realClientIp, isLocal, isProbe, nodeName, countryCode, countryName, cityName);
     }
     const isLoc = Boolean(isLocal) || this.isLocalIp(realClientIp || clientIp);
     const probe = Boolean(isProbe) || (isCloudflare && !realClientIp);
@@ -288,7 +290,7 @@ class TacticalWorldMap {
     const vec = this.getTargetNodeCoords(coords.x, coords.y, nodeName);
     const realClient = realClientIp || (!isCloudflare ? clientIp : '');
     const primaryLabelIp = realClient || clientIp || 'IP';
-    const cfNodeTag = (isCloudflare && clientIp && clientIp !== realClient) ? ' (☁️CF)' : (isCloudflare ? ' (☁️CF)' : '');
+    const cfNodeTag = isCloudflare ? ' (☁️CF)' : '';
     const prefix = isThreat ? '🚨 ' : (isLoc ? '🏢 ' : '🎯 ');
     const tag = `${prefix}${primaryLabelIp}${cfNodeTag}`;
     this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, isThreat, tag, isCloudflare, isLoc, probe);
@@ -355,7 +357,7 @@ class TacticalWorldMap {
     const color = pt.isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (pt.isCloudflare ? '#f6821f' : '#f87171'));
     const realClient = pt.realClientIp || (!pt.isCloudflare ? pt.ip : '');
     const primaryLabelIp = realClient || pt.ip || 'TRAFICO';
-    const cfNodeTag = (pt.isCloudflare && pt.ip && pt.ip !== realClient) ? ' (☁️CF)' : (pt.isCloudflare ? ' (☁️CF)' : '');
+    const cfNodeTag = pt.isCloudflare ? ' (☁️CF)' : '';
     const prefix = pt.isThreat ? '🚨 ' : (isLoc ? '🏢 ' : '🎯 ');
     const label = `${prefix}${primaryLabelIp}${cfNodeTag}`;
 
@@ -404,6 +406,7 @@ class TacticalWorldMap {
             realClientIp: p.real_client_ip || '',
             country: p.country_name || '',
             countryCode: p.country_code || '',
+            city: p.city || '',
             nodeName: p.node_name || '',
             isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
             isCloudflare: Boolean(p.is_cloudflare),
@@ -1013,31 +1016,6 @@ class TacticalParaguayMap {
     this.initFilterToggles();
     this.initCameraControls();
 
-    // Zonas de Gran Asunción / Central y ciudades departamentales para distribuir IPs nacionales con separación clara del Nodo Proxy
-    this.pyZones = [
-      { name: 'Villa Morra (Asunción)', lat: -25.2940, lon: -57.5800 },
-      { name: 'Sajonia (Asunción)', lat: -25.2760, lon: -57.6620 },
-      { name: 'Lambaré', lat: -25.3460, lon: -57.6060 },
-      { name: 'Fernando de la Mora', lat: -25.3210, lon: -57.5520 },
-      { name: 'San Lorenzo', lat: -25.3440, lon: -57.5080 },
-      { name: 'Luque', lat: -25.2667, lon: -57.4850 },
-      { name: 'Mariano Roque Alonso', lat: -25.2080, lon: -57.5320 },
-      { name: 'Capiatá', lat: -25.3550, lon: -57.4450 },
-      { name: 'Ñemby', lat: -25.3950, lon: -57.5440 },
-      { name: 'Limpio', lat: -25.1660, lon: -57.4850 },
-      { name: 'Ciudad del Este', lat: -25.5097, lon: -54.6111 },
-      { name: 'Encarnación', lat: -27.3306, lon: -55.8667 },
-      { name: 'Coronel Oviedo', lat: -25.4444, lon: -56.4406 },
-      { name: 'Pedro Juan Caballero', lat: -22.5472, lon: -55.7333 },
-      { name: 'Concepción', lat: -23.4064, lon: -57.4344 },
-      { name: 'Villarrica', lat: -25.7806, lon: -56.4486 },
-      { name: 'Caacupé', lat: -25.3861, lon: -57.1408 },
-      { name: 'Pilar', lat: -26.8681, lon: -58.2953 },
-      { name: 'Salto del Guairá', lat: -24.0625, lon: -54.3069 },
-      { name: 'San Ignacio (Misiones)', lat: -26.8833, lon: -57.0333 },
-      { name: 'Filadelfia (Chaco)', lat: -22.3500, lon: -60.0333 },
-    ];
-
     this.resize();
     window.addEventListener('resize', () => this.resize());
 
@@ -1255,21 +1233,58 @@ class TacticalParaguayMap {
     return Math.abs(h);
   }
 
-  resolveParaguayCoords(lat, lon, ipStr, isLocal) {
-    // El backend aplica un jitter de ±0.28° sobre el centroide de PY (-25.2637, -57.5759).
-    // Si cae en ese radio genérico, asignamos determinísticamente a una zona/ciudad real bien diferenciada del Nodo Proxy.
-    const isGenericCentroid = (Math.abs(lat - (-25.2637)) < 0.36 && Math.abs(lon - (-57.5759)) < 0.36) || (!lat && !lon);
-    if (!isGenericCentroid && lat >= -27.8 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2) {
-      return { lat, lon, zoneName: 'Paraguay' };
-    }
+  isLocalIp(ip) {
+    if (!ip) return false;
+    const s = String(ip).trim().replace(/^🎯\s*/, '').replace(/^🏢\s*/, '');
+    if (!s || s === '-' || s === '::1' || s.startsWith('127.')) return true;
+    if (s.startsWith('10.') || s.startsWith('192.168.') || s.startsWith('169.254.')) return true;
+    if (/^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(s)) return true;
+    return false;
+  }
+
+  resolveParaguayCoords(lat, lon, ipStr, isLocal, cityName = '') {
     const h = this.hashIp(ipStr || 'py');
-    const zone = this.pyZones[h % this.pyZones.length];
-    const jitterLat = (((h >> 4) % 100) - 50) * 0.0022;
-    const jitterLon = (((h >> 11) % 100) - 50) * 0.0022;
+    // Para cualquier IP de red local (LAN) o WAN propia:
+    // La Sede Central y los servidores residen en Asunción. Se ubican estrictamente en Asunción.
+    if (isLocal || this.isLocalIp(ipStr)) {
+      const jitterLat = (((h >> 3) % 100) - 50) * 0.00018; // ±0.009° micro-separación para hacerlas clickeables individualmente
+      const jitterLon = (((h >> 9) % 100) - 50) * 0.00018;
+      return {
+        lat: -25.2840 + jitterLat,
+        lon: -57.6180 + jitterLon,
+        zoneName: 'Asunción (LAN Central)'
+      };
+    }
+
+    // Para IPs públicas de Paraguay (WAN):
+    const inPyBounds = (lat >= -27.8 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2);
+    let targetLat = lat;
+    let targetLon = lon;
+    let name = cityName ? String(cityName).trim() : '';
+
+    if (!inPyBounds || (!lat && !lon)) {
+      // Coordenadas base en Asunción / Gran Asunción para IPs de PY sin coordenadas específicas
+      const jitterLat = (((h >> 4) % 100) - 50) * 0.00035;
+      const jitterLon = (((h >> 10) % 100) - 50) * 0.00035;
+      targetLat = -25.2637 + jitterLat;
+      targetLon = -57.5759 + jitterLon;
+      name = name || 'Asunción';
+    }
+
+    // Separación visual del nodo Proxy en Asunción (-25.2820, -57.6350) para que el vector de la flecha sea visible
+    if (Math.abs(targetLat - (-25.2820)) < 0.02 && Math.abs(targetLon - (-57.6350)) < 0.02) {
+      targetLat += 0.018;
+      targetLon += 0.022;
+    }
+
+    if (!name) {
+      name = Math.abs(targetLat - (-25.26)) < 0.35 ? 'Gran Asunción' : 'Paraguay';
+    }
+
     return {
-      lat: zone.lat + jitterLat,
-      lon: zone.lon + jitterLon,
-      zoneName: isLocal ? `LAN • ${zone.name}` : zone.name
+      lat: targetLat,
+      lon: targetLon,
+      zoneName: name
     };
   }
 
@@ -1281,7 +1296,7 @@ class TacticalParaguayMap {
     if (cc === 'PY' || cc === 'LAN' || cn.includes('paraguay') || cn.includes('asunción') || cn.includes('asuncion') || cn.includes('local')) {
       return true;
     }
-    if (lat >= -27.7 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2) {
+    if (lat >= -27.8 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2) {
       return true;
     }
     return false;
@@ -1312,13 +1327,13 @@ class TacticalParaguayMap {
       for (const p of data.points) {
         const lat = parseFloat(p.latitude) || 0;
         const lon = parseFloat(p.longitude) || 0;
-        const isLoc = Boolean(p.is_local);
+        const isLoc = Boolean(p.is_local) || this.isLocalIp(p.real_client_ip || p.client_ip);
         const isPrb = Boolean(p.is_probe) || (Boolean(p.is_cloudflare) && !p.real_client_ip);
         if (!this.isParaguayEvent(lat, lon, p.country_code, p.country_name, isLoc, isPrb)) {
           continue;
         }
         const mainIp = p.real_client_ip || p.client_ip || '';
-        const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLoc);
+        const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLoc, p.city || '');
         const isThr = Boolean(p.is_threat) || (p.status_code >= 400);
         if (seenIps.has(mainIp)) {
           const ex = pyPoints.find(item => (item.realClientIp || item.ip) === mainIp);
@@ -1335,6 +1350,7 @@ class TacticalParaguayMap {
           zoneName: resolved.zoneName,
           ip: p.client_ip || '',
           realClientIp: p.real_client_ip || '',
+          cityName: p.city || '',
           nodeName: p.node_name || '',
           isThreat: isThr,
           isCloudflare: Boolean(p.is_cloudflare),
@@ -1351,17 +1367,18 @@ class TacticalParaguayMap {
     }
   }
 
-  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false, nodeName = '', countryCode = '', countryName = '') {
-    if (!this.isParaguayEvent(lat, lon, countryCode, countryName, isLocal, isProbe)) {
+  addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false, nodeName = '', countryCode = '', countryName = '', cityName = '') {
+    const isLoc = Boolean(isLocal) || this.isLocalIp(realClientIp || clientIp);
+    if (!this.isParaguayEvent(lat, lon, countryCode, countryName, isLoc, isProbe)) {
       return;
     }
-    if (isLocal && !this.showLocal) return;
-    if (!isLocal && !this.showPublic) return;
+    if (isLoc && !this.showLocal) return;
+    if (!isLoc && !this.showPublic) return;
 
     const mainIp = realClientIp || clientIp || 'PY';
-    const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLocal);
+    const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLoc, cityName);
     const nodeGeo = this.getNodeGeo(nodeName);
-    const color = isThreat ? '#ff2a5f' : (isLocal ? '#c084fc' : '#00e5ff');
+    const color = isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : '#00e5ff');
 
     if (this.pulses.length >= 25) this.pulses.shift();
     this.pulses.push({
@@ -1372,12 +1389,13 @@ class TacticalParaguayMap {
       alpha: 1.0,
       color,
       isThreat,
-      isLocal
+      isLocal: isLoc
     });
 
-    const prefix = isThreat ? '🚨 ' : (isLocal ? '🏢 ' : '🎯 ');
-    const label = `${prefix}${mainIp} (${resolved.zoneName})`;
-    this.spawnGeoArc(resolved.lat, resolved.lon, nodeGeo.lat, nodeGeo.lon, color, isThreat, label, isLocal);
+    const prefix = isThreat ? '🚨 ' : (isLoc ? '🏢 ' : '🎯 ');
+    const cfTag = isCloudflare ? ' (☁️CF)' : '';
+    const label = `${prefix}${mainIp}${cfTag} (${resolved.zoneName})`;
+    this.spawnGeoArc(resolved.lat, resolved.lon, nodeGeo.lat, nodeGeo.lon, color, isThreat, label, isLoc);
 
     const existingIdx = this.points.findIndex(pt => (pt.realClientIp || pt.ip) === mainIp);
     if (existingIdx !== -1) {
@@ -1385,6 +1403,10 @@ class TacticalParaguayMap {
         this.points[existingIdx].isThreat = true;
         this.points[existingIdx].status_code = 403;
       }
+      if (realClientIp) {
+        this.points[existingIdx].realClientIp = realClientIp;
+      }
+      this.points[existingIdx].zoneName = resolved.zoneName;
     } else {
       this.points.unshift({
         lat: resolved.lat,
@@ -1392,10 +1414,11 @@ class TacticalParaguayMap {
         zoneName: resolved.zoneName,
         ip: clientIp,
         realClientIp: realClientIp,
+        cityName: cityName,
         nodeName: nodeName,
         isThreat: isThreat,
         isCloudflare: isCloudflare,
-        isLocal: isLocal,
+        isLocal: isLoc,
         status_code: isThreat ? 403 : 200
       });
       if (this.points.length > 60) this.points.pop();
@@ -1431,7 +1454,8 @@ class TacticalParaguayMap {
     const color = pt.isThreat ? '#ff2a5f' : (pt.isLocal ? '#c084fc' : '#00e5ff');
     const mainIp = pt.realClientIp || pt.ip || 'PY';
     const prefix = pt.isThreat ? '🚨 ' : (pt.isLocal ? '🏢 ' : '🎯 ');
-    const label = `${prefix}${mainIp} (${pt.zoneName || 'PY'})`;
+    const cfTag = pt.isCloudflare ? ' (☁️CF)' : '';
+    const label = `${prefix}${mainIp}${cfTag} (${pt.zoneName || 'PY'})`;
     this.spawnGeoArc(pt.lat, pt.lon, nodeGeo.lat, nodeGeo.lon, color, pt.isThreat, label, pt.isLocal);
     if (this.pulses.length < 20) {
       this.pulses.push({

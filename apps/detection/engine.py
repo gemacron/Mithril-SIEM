@@ -859,18 +859,14 @@ def resolve_geoip(ip_str, cf_country=''):
     try:
         ip_obj = ipaddress.ip_address(ip_clean)
         if ip_obj.is_private or ip_obj.is_loopback:
-            lan_origins = [
-                ('LAN', 'Red Interna (LAN)', 'Segmento Corporativo LAN', -25.2637, -57.5759),
-                ('LAN', 'Red Interna (LAN)', 'Segmento DataCenter LAN', -25.2800, -57.6300),
-                ('LAN', 'Red Interna (LAN)', 'Segmento Interno DMZ', -25.3000, -57.5500),
-            ]
-            loc = lan_origins[crc_val % len(lan_origins)]
+            lat_micro = (((crc_val % 100) - 50) / 100.0) * 0.012
+            lon_micro = ((((crc_val // 100) % 100) - 50) / 100.0) * 0.012
             return {
-                'country_code': loc[0],
-                'country_name': loc[1],
-                'city': loc[2],
-                'latitude': loc[3],
-                'longitude': loc[4],
+                'country_code': 'LAN',
+                'country_name': 'Red Interna (LAN)',
+                'city': 'Asunción (Sede Central LAN)',
+                'latitude': round(-25.2840 + lat_micro, 4),
+                'longitude': round(-57.6200 + lon_micro, 4),
                 'is_cloudflare': False
             }
     except Exception:
@@ -882,9 +878,14 @@ def resolve_geoip(ip_str, cf_country=''):
         cc_clean = _OWN_INFRA_STATE.get('public_wan_country', '')
 
     base_geo = None
-    if cc_clean and cc_clean not in ('XX', 'T1', '-'):
-        lat_jitter = (((crc_val % 100) - 50) / 100.0) * 0.55
-        lon_jitter = ((((crc_val // 100) % 100) - 50) / 100.0) * 0.55
+    # Si es una IP pública real (especialmente de Paraguay o sin país previo), consultar GeoIP real cacheado para obtener su ciudad exacta
+    if not is_own_wan and (not cc_clean or cc_clean == 'PY'):
+        base_geo = _lookup_public_geoip_api(ip_clean)
+
+    if not base_geo and cc_clean and cc_clean not in ('XX', 'T1', '-'):
+        jitter_scale = 0.025 if cc_clean == 'PY' else 0.45
+        lat_jitter = (((crc_val % 100) - 50) / 100.0) * jitter_scale
+        lon_jitter = ((((crc_val // 100) % 100) - 50) / 100.0) * jitter_scale
         if cc_clean in ISO_COUNTRY_GEO_MAP:
             g = ISO_COUNTRY_GEO_MAP[cc_clean]
             base_geo = {
@@ -1351,7 +1352,8 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
 
     meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
     connection_ip = log.raw_headers.get('connection_ip') or (meta['cloudflare_ip'] if meta['is_cloudflare'] else log.client_ip)
-    eff_real_ip = meta['real_client_ip'] or log.client_ip
+    real_ip_clean = meta['real_client_ip'] or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
+    eff_real_ip = real_ip_clean or connection_ip
     is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(eff_real_ip)
     is_direct_ip = meta.get('is_direct_public_ip')
     if is_direct_ip is None:
@@ -1362,7 +1364,8 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
         'event': {
             'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
-            'client_ip': connection_ip,
+            'client_ip': eff_real_ip,
+            'connection_ip': connection_ip,
             'method': log.http_method,
             'uri': log.uri,
             'status_code': log.status_code,
@@ -1375,8 +1378,8 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
             'is_threat': is_threat,
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
-            'real_client_ip': meta['real_client_ip'] or (log.client_ip if not is_cloudflare_ip(log.client_ip) else ''),
-            'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(meta['real_client_ip'] or (connection_ip if not meta['is_cloudflare'] else '')),
+            'real_client_ip': real_ip_clean,
+            'is_local_ip': meta.get('is_local_ip', False) or is_private_local_ip(real_ip_clean or (connection_ip if not meta['is_cloudflare'] else '')),
             'is_own_public_ip': bool(is_own_pub),
             'is_direct_public_ip': bool(is_direct_ip) and not is_own_pub,
             'user_agent': log.user_agent or '',
