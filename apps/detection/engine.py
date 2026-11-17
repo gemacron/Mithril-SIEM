@@ -793,7 +793,7 @@ def _lookup_public_geoip_api(ip_clean):
     try:
         url = f"http://ip-api.com/json/{ip_clean}?fields=status,countryCode,country,city,lat,lon&lang=es"
         req = urllib.request.Request(url, headers={'User-Agent': 'Mithril-SIEM/2.1'}, method='GET')
-        with urllib.request.urlopen(req, timeout=1.5) as resp:
+        with urllib.request.urlopen(req, timeout=2.0) as resp:
             payload = json.loads(resp.read().decode('utf-8', errors='ignore'))
         if payload.get('status') == 'success' and payload.get('countryCode'):
             cc = str(payload['countryCode']).strip().upper()[:8]
@@ -819,17 +819,75 @@ def _lookup_public_geoip_api(ip_clean):
             return res
     except Exception:
         pass
+
+    # Fallback secundario si ip-api.com excede el límite de 45 req/min
+    try:
+        url2 = f"http://ipwho.is/{ip_clean}"
+        req2 = urllib.request.Request(url2, headers={'User-Agent': 'Mithril-SIEM/2.1'}, method='GET')
+        with urllib.request.urlopen(req2, timeout=2.0) as resp2:
+            p2 = json.loads(resp2.read().decode('utf-8', errors='ignore'))
+        if p2.get('success') and p2.get('country_code'):
+            cc = str(p2['country_code']).strip().upper()[:8]
+            cname = str(p2.get('country') or ISO_COUNTRY_GEO_MAP.get(cc, (cc, cc, 'Remoto', 0.0, 0.0))[1])
+            city = str(p2.get('city') or 'Remoto')
+            lat = float(p2.get('latitude') or 0.0)
+            lon = float(p2.get('longitude') or 0.0)
+            res = {
+                'country_code': cc,
+                'country_name': cname,
+                'city': city,
+                'latitude': lat,
+                'longitude': lon,
+                'is_cloudflare': False,
+            }
+            _GEOIP_MEM_CACHE[ip_clean] = res
+            try:
+                cache.set(cache_key, res, timeout=86400)
+            except Exception:
+                pass
+            return res
+    except Exception:
+        pass
     return None
+
+
+# Subredes IPv4 asignadas por LACNIC a los principales proveedores de Paraguay (Tigo, Personal, Copaco, Claro, etc.)
+PARAGUAY_NETWORKS = [
+    ipaddress.ip_network('181.120.0.0/13'),  # Personal / Tigo (181.120.0.0 - 181.127.255.255)
+    ipaddress.ip_network('181.94.0.0/15'),   # Telecel / Tigo
+    ipaddress.ip_network('186.16.0.0/15'),   # Personal / Claro PY
+    ipaddress.ip_network('190.104.128.0/17'),# Tigo / Claro PY
+    ipaddress.ip_network('190.52.128.0/17'), # Claro PY
+    ipaddress.ip_network('200.10.192.0/19'), # Copaco
+    ipaddress.ip_network('200.85.32.0/19'),  # Tigo PY
+    ipaddress.ip_network('201.217.0.0/16'),  # Copaco / Tigo / Personal (201.217.0.0 - 201.217.255.255)
+    ipaddress.ip_network('201.222.0.0/19'),  # Tigo PY
+    ipaddress.ip_network('168.90.0.0/16'),   # Copaco / PY
+    ipaddress.ip_network('170.233.0.0/16'),  # Copaco / PY
+    ipaddress.ip_network('177.234.0.0/16'),  # PY ISPs
+    ipaddress.ip_network('179.62.0.0/16'),   # PY ISPs
+    ipaddress.ip_network('45.160.0.0/13'),   # LACNIC PY
+    ipaddress.ip_network('45.168.0.0/14'),   # LACNIC PY
+    ipaddress.ip_network('45.224.0.0/14'),   # LACNIC PY
+    ipaddress.ip_network('45.232.0.0/14'),   # LACNIC PY
+]
+
+def is_paraguay_ip(ip_obj):
+    try:
+        return any(ip_obj in net for net in PARAGUAY_NETWORKS)
+    except Exception:
+        return False
 
 
 def resolve_geoip(ip_str, cf_country=''):
     """
-    Resuelve dinámicamente la ubicación geográfica real de cualquier IP (sin IPs ni prefijos ISP hardcodeados):
+    Resuelve dinámicamente la ubicación geográfica real de cualquier IP:
       1) Si es una IP Privada / Red Local (RFC1918 / Loopback) -> Red Interna (LAN)
-      2) Si es un nodo Edge de Cloudflare sin cliente -> Cloudflare Edge PoP
+      2) Si pertenece a subredes IPv4 de Paraguay (Tigo, Personal, Copaco, Claro) -> Paraguay (Asunción)
       3) El país real reportado por Cloudflare en la cabecera HTTP `CF-IPCountry` (`cf_country`)
-      4) Consulta universal en caché / API GeoIP para conexiones públicas directas
-      5) Si es la IP Pública WAN propia de la infraestructura -> País real + '(WAN Propia)'
+      4) Si es un nodo Edge de Cloudflare sin cliente -> Cloudflare Edge PoP
+      5) Consulta universal en caché / API GeoIP para conexiones públicas directas
+      6) Si es la IP Pública WAN propia de la infraestructura -> País real + '(WAN Propia)'
     """
     ip_clean = str(ip_str or '').strip()
     crc_val = zlib.crc32(ip_clean.encode('utf-8'))
@@ -846,6 +904,18 @@ def resolve_geoip(ip_str, cf_country=''):
                 'city': 'Asunción (Sede Central LAN)',
                 'latitude': round(-25.2840 + lat_micro, 4),
                 'longitude': round(-57.6200 + lon_micro, 4),
+                'is_cloudflare': False
+            }
+        # Si la IP pertenece a proveedores de Paraguay, resolver de inmediato offline sin dependencias externas
+        if is_paraguay_ip(ip_obj):
+            lat_micro = (((crc_val % 100) - 50) / 100.0) * 0.035
+            lon_micro = ((((crc_val // 100) % 100) - 50) / 100.0) * 0.035
+            return {
+                'country_code': 'PY',
+                'country_name': 'Paraguay',
+                'city': 'Asunción',
+                'latitude': round(-25.2637 + lat_micro, 4),
+                'longitude': round(-57.5759 + lon_micro, 4),
                 'is_cloudflare': False
             }
     except Exception:
@@ -913,25 +983,38 @@ def resolve_geoip(ip_str, cf_country=''):
         base_geo = _lookup_public_geoip_api(ip_clean)
 
     if not base_geo:
-        known_nodes = [
-            ('US', 'Estados Unidos', 'Ashburn', 39.0438, -77.4874),
-            ('BR', 'Brasil', 'São Paulo', -23.5505, -46.6333),
-            ('AR', 'Argentina', 'Buenos Aires', -34.6037, -58.3816),
-            ('DE', 'Alemania', 'Frankfurt', 50.1109, 8.6821),
-            ('ES', 'España', 'Madrid', 40.4168, -3.7038),
-            ('FR', 'Francia', 'París', 48.8566, 2.3522),
-            ('NL', 'Países Bajos', 'Ámsterdam', 52.3676, 4.9041),
-            ('GB', 'Reino Unido', 'Londres', 51.5074, -0.1278),
-        ]
-        g = known_nodes[crc_val % len(known_nodes)]
-        base_geo = {
-            'country_code': g[0],
-            'country_name': g[1],
-            'city': g[2],
-            'latitude': g[3],
-            'longitude': g[4],
-            'is_cloudflare': False
-        }
+        # Fallback seguro para IPs públicas no identificadas en la base en línea:
+        # NUNCA asociar al azar a nodos Cloudflare (Ashburn/Frankfurt).
+        lat_rand = (((crc_val % 100) - 50) / 100.0) * 0.035
+        lon_rand = ((((crc_val // 100) % 100) - 50) / 100.0) * 0.035
+        if cc_clean and cc_clean in ISO_COUNTRY_GEO_MAP:
+            g = ISO_COUNTRY_GEO_MAP[cc_clean]
+            base_geo = {
+                'country_code': g[0],
+                'country_name': g[1],
+                'city': g[2],
+                'latitude': round(g[3] + lat_rand, 4),
+                'longitude': round(g[4] + lon_rand, 4),
+                'is_cloudflare': False
+            }
+        elif not cc_clean or cc_clean == 'PY':
+            base_geo = {
+                'country_code': 'PY',
+                'country_name': 'Paraguay',
+                'city': 'Asunción',
+                'latitude': round(-25.2637 + lat_rand, 4),
+                'longitude': round(-57.5759 + lon_rand, 4),
+                'is_cloudflare': False
+            }
+        else:
+            base_geo = {
+                'country_code': cc_clean[:8],
+                'country_name': f'País ({cc_clean})',
+                'city': 'Remoto',
+                'latitude': 20.0,
+                'longitude': 0.0,
+                'is_cloudflare': False
+            }
 
     if is_own_wan:
         cname = base_geo['country_name']
