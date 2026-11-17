@@ -269,7 +269,7 @@ class TacticalWorldMap {
 
     const coords = this.geoToCanvas(lat, lon);
     const isDirect = (!isCloudflare && !isLoc);
-    const color = isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (isCloudflare ? '#f6821f' : '#f87171'));
+    const color = isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (probe ? '#f6821f' : (isDirect ? '#f87171' : '#00e5ff')));
 
     if (this.pulses.length >= 35) {
       this.pulses.shift();
@@ -290,7 +290,7 @@ class TacticalWorldMap {
     const vec = this.getTargetNodeCoords(coords.x, coords.y, nodeName);
     const realClient = realClientIp || (!isCloudflare ? clientIp : '');
     const primaryLabelIp = realClient || clientIp || 'IP';
-    const cfNodeTag = isCloudflare ? ' (☁️CF)' : '';
+    const cfNodeTag = (isCloudflare && !realClientIp) ? ' (☁️ Sonda CF)' : (isCloudflare ? ' (☁️ CF)' : '');
     const prefix = isThreat ? '🚨 ' : (isLoc ? '🏢 ' : '🎯 ');
     const tag = `${prefix}${primaryLabelIp}${cfNodeTag}`;
     this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, isThreat, tag, isCloudflare, isLoc, probe);
@@ -352,16 +352,17 @@ class TacticalWorldMap {
 
     const isLoc = this.isItemLocal(pt);
     const isDirect = (!pt.isCloudflare && !isLoc);
+    const isPrb = Boolean(pt.isProbe) || (pt.isCloudflare && !pt.realClientIp);
     const coords = this.geoToCanvas(pt.lat, pt.lon);
     const vec = this.getTargetNodeCoords(coords.x, coords.y, pt.nodeName || pt.node_name || '');
-    const color = pt.isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (pt.isCloudflare ? '#f6821f' : '#f87171'));
+    const color = pt.isThreat ? '#ff2a5f' : (isLoc ? '#c084fc' : (isPrb ? '#f6821f' : (isDirect ? '#f87171' : '#00e5ff')));
     const realClient = pt.realClientIp || (!pt.isCloudflare ? pt.ip : '');
     const primaryLabelIp = realClient || pt.ip || 'TRAFICO';
-    const cfNodeTag = pt.isCloudflare ? ' (☁️CF)' : '';
+    const cfNodeTag = (pt.isCloudflare && !pt.realClientIp) ? ' (☁️ Sonda CF)' : (pt.isCloudflare ? ' (☁️ CF)' : '');
     const prefix = pt.isThreat ? '🚨 ' : (isLoc ? '🏢 ' : '🎯 ');
     const label = `${prefix}${primaryLabelIp}${cfNodeTag}`;
 
-    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, pt.isThreat, label, pt.isCloudflare, isLoc, pt.isProbe);
+    this.spawnTrajectoryArrow(vec.startX, vec.startY, vec.endX, vec.endY, color, pt.isThreat, label, pt.isCloudflare, isLoc, isPrb);
     if (this.pulses.length < 25) {
       this.pulses.push({
         x: vec.startX,
@@ -751,7 +752,8 @@ class TacticalWorldMap {
     for (let i = 0; i < this.points.length; i++) {
       const pt = this.points[i];
       const isLoc = this.isItemLocal(pt);
-      const isPrb = Boolean(pt.isProbe);
+      const isPrb = Boolean(pt.isProbe) || (pt.isCloudflare && !pt.realClientIp);
+      const isDirect = (!pt.isCloudflare && !isLoc);
       if (isLoc && !this.showLocal) continue;
       if (!isLoc && !this.showExternal) continue;
       if (isPrb && !this.showProbes) continue;
@@ -759,7 +761,7 @@ class TacticalWorldMap {
       const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
       const color = pt.isThreat
         ? '#ff2a5f'
-        : (isLoc ? '#c084fc' : (pt.isCloudflare ? '#f6821f' : '#00e5ff'));
+        : (isLoc ? '#c084fc' : (isPrb ? '#f6821f' : (isDirect ? '#f87171' : '#00e5ff')));
 
       ctx.save();
       ctx.beginPath();
@@ -769,9 +771,9 @@ class TacticalWorldMap {
 
       ctx.beginPath();
       ctx.arc(x, y, pt.isThreat ? 7.5 : 6.0, 0, Math.PI * 2);
-      ctx.strokeStyle = pt.isCloudflare ? '#f6821f' : (isLoc ? '#c084fc' : color);
+      ctx.strokeStyle = isPrb ? '#f6821f' : (isLoc ? '#c084fc' : color);
       ctx.globalAlpha = pt.isThreat ? 0.55 : 0.35;
-      ctx.lineWidth = (pt.isCloudflare || isLoc) ? 1.5 : 1.0;
+      ctx.lineWidth = (isPrb || isLoc) ? 1.5 : 1.0;
       ctx.stroke();
       ctx.restore();
     }
@@ -954,8 +956,10 @@ class TacticalWorldMap {
         const boxX = Math.min(this.width - boxW - 6, Math.max(6, hp.screenX + 12));
         const boxY = Math.max(6, hp.screenY - 26);
 
+        const isHpPrb = Boolean(hp.isProbe) || (hp.isCloudflare && !hp.realClientIp);
+        const isHpDirect = (!hp.isCloudflare && !hp.isLocal);
         ctx.fillStyle = 'rgba(8, 13, 25, 0.94)';
-        ctx.strokeStyle = hp.isThreat ? '#ff2a5f' : (hp.isLocal ? '#c084fc' : (hp.isCloudflare ? '#f6821f' : '#f87171'));
+        ctx.strokeStyle = hp.isThreat ? '#ff2a5f' : (hp.isLocal ? '#c084fc' : (isHpPrb ? '#f6821f' : (isHpDirect ? '#f87171' : '#00e5ff')));
         ctx.lineWidth = 1.2;
         ctx.fillRect(boxX, boxY, boxW, 22);
         ctx.strokeRect(boxX, boxY, boxW, 22);
@@ -1288,12 +1292,13 @@ class TacticalParaguayMap {
     };
   }
 
-  isParaguayEvent(lat, lon, countryCode, countryName, isLocal, isProbe) {
+  isParaguayEvent(lat, lon, countryCode, countryName, isLocal, isProbe, cityName = '') {
     if (isProbe) return false;
     if (isLocal) return true;
     const cc = String(countryCode || '').toUpperCase().trim();
     const cn = String(countryName || '').toLowerCase().trim();
-    if (cc === 'PY' || cc === 'LAN' || cn.includes('paraguay') || cn.includes('asunción') || cn.includes('asuncion') || cn.includes('local')) {
+    const city = String(cityName || '').toLowerCase().trim();
+    if (cc === 'PY' || cc === 'LAN' || cn.includes('paraguay') || cn.includes('asunción') || cn.includes('asuncion') || cn.includes('local') || city.includes('asunción') || city.includes('asuncion')) {
       return true;
     }
     if (lat >= -27.8 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2) {
@@ -1329,7 +1334,7 @@ class TacticalParaguayMap {
         const lon = parseFloat(p.longitude) || 0;
         const isLoc = Boolean(p.is_local) || this.isLocalIp(p.real_client_ip || p.client_ip);
         const isPrb = Boolean(p.is_probe) || (Boolean(p.is_cloudflare) && !p.real_client_ip);
-        if (!this.isParaguayEvent(lat, lon, p.country_code, p.country_name, isLoc, isPrb)) {
+        if (!this.isParaguayEvent(lat, lon, p.country_code, p.country_name, isLoc, isPrb, p.city)) {
           continue;
         }
         const mainIp = p.real_client_ip || p.client_ip || '';
@@ -1369,7 +1374,7 @@ class TacticalParaguayMap {
 
   addLivePulse(lat, lon, isThreat = false, clientIp = '', isCloudflare = false, realClientIp = '', isLocal = false, isProbe = false, nodeName = '', countryCode = '', countryName = '', cityName = '') {
     const isLoc = Boolean(isLocal) || this.isLocalIp(realClientIp || clientIp);
-    if (!this.isParaguayEvent(lat, lon, countryCode, countryName, isLoc, isProbe)) {
+    if (!this.isParaguayEvent(lat, lon, countryCode, countryName, isLoc, isProbe, cityName)) {
       return;
     }
     if (isLoc && !this.showLocal) return;

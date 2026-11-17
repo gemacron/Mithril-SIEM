@@ -203,10 +203,10 @@ def api_map_data(request):
         meta = extract_log_ip_meta(p['client_ip'], p.pop('raw_headers', {}))
         ua = p.pop('user_agent', '') or ''
         method = p.pop('http_method', '') or ''
-        eff_ip = meta['real_client_ip'] if (not meta['is_cloudflare'] and meta['real_client_ip']) else p['client_ip']
-        conn_ip = meta['cloudflare_ip'] if (meta['is_cloudflare'] and meta['cloudflare_ip']) else eff_ip
-        real_ip_val = meta['real_client_ip'] or (eff_ip if not is_cloudflare_ip(eff_ip) else '')
-        target_geo_ip = real_ip_val or conn_ip
+        real_ip_clean = meta.get('real_client_ip') or (p['client_ip'] if not is_cloudflare_ip(p['client_ip']) else '')
+        eff_ip = real_ip_clean or p['client_ip']
+        conn_ip = meta.get('cloudflare_ip') or (p['client_ip'] if meta.get('is_cloudflare') else eff_ip)
+        target_geo_ip = real_ip_clean or conn_ip
 
         re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
         p['latitude'] = re_geo['latitude']
@@ -215,18 +215,18 @@ def api_map_data(request):
         p['country_name'] = re_geo['country_name']
         p['city'] = re_geo.get('city') or p.get('city', '')
 
-        p['is_threat'] = (p['client_ip'] in threat_ips) or (real_ip_val in threat_ips) or (p['status_code'] >= 400)
-        p['client_ip'] = real_ip_val or conn_ip
+        p['is_threat'] = (p['client_ip'] in threat_ips) or (real_ip_clean in threat_ips) or (p['status_code'] >= 400)
+        p['client_ip'] = real_ip_clean or conn_ip
         p['connection_ip'] = conn_ip
         p['is_cloudflare'] = meta['is_cloudflare']
         p['cloudflare_ip'] = meta['cloudflare_ip']
-        p['real_client_ip'] = real_ip_val
+        p['real_client_ip'] = real_ip_clean
         is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(target_geo_ip)
         p['is_own_public_ip'] = is_own_pub
-        p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(real_ip_val or (conn_ip if not meta['is_cloudflare'] else ''))
+        p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(real_ip_clean or (conn_ip if not meta['is_cloudflare'] else ''))
         p['is_direct_public_ip'] = meta.get('is_direct_public_ip', (not p['is_cloudflare'] and not p['is_local'] and not is_own_pub and bool(target_geo_ip)))
         p['is_probe'] = bool(
-            (meta['is_cloudflare'] and not real_ip_val)
+            (meta['is_cloudflare'] and not real_ip_clean)
             or 'Cloudflare-Traffic-Manager' in ua
             or 'TLS SNI' in ua
             or method == 'HTTPS'
@@ -288,17 +288,20 @@ def api_live_stats(request):
             re_geo = resolve_geoip(log.client_ip)
             lat, lon = re_geo['latitude'], re_geo['longitude']
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
-        eff_ip = meta['real_client_ip'] if (not meta['is_cloudflare'] and meta['real_client_ip']) else log.client_ip
-        conn_ip = meta['cloudflare_ip'] if (meta['is_cloudflare'] and meta['cloudflare_ip']) else eff_ip
-        real_ip_val = meta['real_client_ip'] or (eff_ip if not is_cloudflare_ip(eff_ip) else '')
-        is_loc = meta.get('is_local_ip', False) or is_private_local_ip(eff_ip if not meta['is_cloudflare'] else real_ip_val)
-        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(real_ip_val or eff_ip)
+        real_ip_clean = meta.get('real_client_ip') or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
+        eff_ip = real_ip_clean or log.client_ip
+        conn_ip = meta.get('cloudflare_ip') or (log.client_ip if meta.get('is_cloudflare') else eff_ip)
+        target_geo_ip = real_ip_clean or conn_ip
+        is_loc = meta.get('is_local_ip', False) or is_private_local_ip(real_ip_clean or (conn_ip if not meta['is_cloudflare'] else ''))
+        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(target_geo_ip)
         c_code = 'LAN' if is_loc else log.country_code
         c_name = 'Red Interna (LAN)' if is_loc else (log.country_name or log.country_code or 'Remoto')
-        if not is_loc and (is_own_pub or meta.get('cf_country')):
-            re_geo = resolve_geoip(real_ip_val or eff_ip, cf_country=meta.get('cf_country', ''))
+        if not is_loc and (is_own_pub or meta.get('cf_country') or real_ip_clean):
+            re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
             c_code = re_geo['country_code']
             c_name = re_geo['country_name']
+            if lat is not None and abs(lat - (-34.6037)) < 0.01 and abs(lon - (-58.3816)) < 0.01:
+                lat, lon = re_geo['latitude'], re_geo['longitude']
         is_benign = _is_benign_app_sync(log.uri, log.status_code)
         raw_threat = bool(log.raw_headers.get('is_threat')) if isinstance(log.raw_headers, dict) else False
         recent_logs_data.append({
@@ -316,7 +319,7 @@ def api_live_stats(request):
             'is_threat': (not is_benign) and (raw_threat or (log.status_code >= 400)),
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
-            'real_client_ip': real_ip_val,
+            'real_client_ip': real_ip_clean,
             'is_local_ip': is_loc,
             'is_own_public_ip': is_own_pub,
             'is_direct_public_ip': meta.get('is_direct_public_ip', (not meta['is_cloudflare'] and not is_loc and not is_own_pub)),
@@ -480,15 +483,16 @@ def api_live_feed_logs(request):
     logs_data = []
     for log in page_logs:
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
-        eff_ip = meta['real_client_ip'] if (not meta['is_cloudflare'] and meta['real_client_ip']) else log.client_ip
-        conn_ip = meta['cloudflare_ip'] if (meta['is_cloudflare'] and meta['cloudflare_ip']) else eff_ip
-        real_ip_val = meta['real_client_ip'] or (eff_ip if not is_cloudflare_ip(eff_ip) else '')
-        is_loc = meta.get('is_local_ip', False) or is_private_local_ip(eff_ip if not meta['is_cloudflare'] else real_ip_val)
-        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(real_ip_val or eff_ip)
+        real_ip_clean = meta.get('real_client_ip') or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
+        eff_ip = real_ip_clean or log.client_ip
+        conn_ip = meta.get('cloudflare_ip') or (log.client_ip if meta.get('is_cloudflare') else eff_ip)
+        target_geo_ip = real_ip_clean or conn_ip
+        is_loc = meta.get('is_local_ip', False) or is_private_local_ip(real_ip_clean or (conn_ip if not meta['is_cloudflare'] else ''))
+        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(target_geo_ip)
         c_code = 'LAN' if is_loc else log.country_code
         c_name = 'Red Interna (LAN)' if is_loc else (log.country_name or log.country_code or 'Remoto')
-        if not is_loc and (is_own_pub or meta.get('cf_country')):
-            re_geo = resolve_geoip(real_ip_val or eff_ip, cf_country=meta.get('cf_country', ''))
+        if not is_loc and (is_own_pub or meta.get('cf_country') or real_ip_clean):
+            re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
             c_code = re_geo['country_code']
             c_name = re_geo['country_name']
         is_benign = _is_benign_app_sync(log.uri, log.status_code)
@@ -506,7 +510,7 @@ def api_live_feed_logs(request):
             'is_threat': (not is_benign) and (raw_threat or (log.status_code >= 400)),
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
-            'real_client_ip': real_ip_val,
+            'real_client_ip': real_ip_clean,
             'is_local_ip': is_loc,
             'is_own_public_ip': is_own_pub,
             'is_direct_public_ip': meta.get('is_direct_public_ip', (not meta['is_cloudflare'] and not is_loc and not is_own_pub)),

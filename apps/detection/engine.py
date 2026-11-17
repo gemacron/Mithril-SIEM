@@ -835,27 +835,6 @@ def resolve_geoip(ip_str, cf_country=''):
     crc_val = zlib.crc32(ip_clean.encode('utf-8'))
     is_own_wan = is_own_public_wan_ip(ip_clean)
 
-    is_cf = is_cloudflare_ip(ip_clean)
-    if is_cf and not is_own_wan:
-        cf_pops = [
-            ('CF-US', 'Cloudflare Edge (US-East)', 'Ashburn PoP', 39.0438, -77.4874),
-            ('CF-US', 'Cloudflare Edge (US-West)', 'San Francisco PoP', 37.7749, -122.4194),
-            ('CF-EU', 'Cloudflare Edge (EU-Central)', 'Frankfurt PoP', 50.1109, 8.6821),
-            ('CF-GB', 'Cloudflare Edge (UK)', 'London PoP', 51.5074, -0.1278),
-            ('CF-BR', 'Cloudflare Edge (LATAM)', 'São Paulo PoP', -23.5505, -46.6333),
-            ('CF-ES', 'Cloudflare Edge (EU-South)', 'Madrid PoP', 40.4168, -3.7038),
-            ('CF-SG', 'Cloudflare Edge (APAC)', 'Singapore PoP', 1.3521, 103.8198),
-        ]
-        pop = cf_pops[crc_val % len(cf_pops)]
-        return {
-            'country_code': pop[0],
-            'country_name': pop[1],
-            'city': pop[2],
-            'latitude': pop[3],
-            'longitude': pop[4],
-            'is_cloudflare': True
-        }
-
     try:
         ip_obj = ipaddress.ip_address(ip_clean)
         if ip_obj.is_private or ip_obj.is_loopback:
@@ -877,9 +856,31 @@ def resolve_geoip(ip_str, cf_country=''):
     if not cc_clean and is_own_wan:
         cc_clean = _OWN_INFRA_STATE.get('public_wan_country', '')
 
+    is_cf = is_cloudflare_ip(ip_clean)
+    # Si es una IP de nodo Cloudflare y NO tenemos un país real de cliente válido (ej: sonda de tráfico CDN pura):
+    if is_cf and not is_own_wan and (not cc_clean or cc_clean in ('XX', 'T1', '-')):
+        cf_pops = [
+            ('CF-US', 'Cloudflare Edge (US-East)', 'Ashburn PoP', 39.0438, -77.4874),
+            ('CF-US', 'Cloudflare Edge (US-West)', 'San Francisco PoP', 37.7749, -122.4194),
+            ('CF-EU', 'Cloudflare Edge (EU-Central)', 'Frankfurt PoP', 50.1109, 8.6821),
+            ('CF-GB', 'Cloudflare Edge (UK)', 'London PoP', 51.5074, -0.1278),
+            ('CF-BR', 'Cloudflare Edge (LATAM)', 'São Paulo PoP', -23.5505, -46.6333),
+            ('CF-ES', 'Cloudflare Edge (EU-South)', 'Madrid PoP', 40.4168, -3.7038),
+            ('CF-SG', 'Cloudflare Edge (APAC)', 'Singapore PoP', 1.3521, 103.8198),
+        ]
+        pop = cf_pops[crc_val % len(cf_pops)]
+        return {
+            'country_code': pop[0],
+            'country_name': pop[1],
+            'city': pop[2],
+            'latitude': pop[3],
+            'longitude': pop[4],
+            'is_cloudflare': True
+        }
+
     base_geo = None
     # Si es una IP pública real (especialmente de Paraguay o sin país previo), consultar GeoIP real cacheado para obtener su ciudad exacta
-    if not is_own_wan and (not cc_clean or cc_clean == 'PY'):
+    if not is_own_wan and not is_cf and (not cc_clean or cc_clean == 'PY'):
         base_geo = _lookup_public_geoip_api(ip_clean)
 
     if not base_geo and cc_clean and cc_clean not in ('XX', 'T1', '-'):
@@ -894,7 +895,7 @@ def resolve_geoip(ip_str, cf_country=''):
                 'city': g[2],
                 'latitude': round(g[3] + lat_jitter, 4),
                 'longitude': round(g[4] + lon_jitter, 4),
-                'is_cloudflare': False
+                'is_cloudflare': is_cf
             }
         else:
             base_geo = {
