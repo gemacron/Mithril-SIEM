@@ -976,9 +976,57 @@ class TacticalWorldMap {
 }
 
 /**
+ * Diccionario geográfico de alta precisión de Departamentos, Municipios y Ciudades de Paraguay.
+ * Permite anclar peticiones reales a su localidad exacta dentro del territorio nacional.
+ */
+const PY_MUNICIPALITIES = {
+  // Gran Asunción / Departamento Central (Área Metropolitana)
+  'asuncion': { lat: -25.2820, lon: -57.6350, name: 'Asunción' },
+  'san lorenzo': { lat: -25.3440, lon: -57.5080, name: 'San Lorenzo' },
+  'luque': { lat: -25.2667, lon: -57.4850, name: 'Luque' },
+  'lambare': { lat: -25.3460, lon: -57.6060, name: 'Lambaré' },
+  'fernando de la mora': { lat: -25.3210, lon: -57.5520, name: 'Fdo. de la Mora' },
+  'fdo. de la mora': { lat: -25.3210, lon: -57.5520, name: 'Fdo. de la Mora' },
+  'fdo de la mora': { lat: -25.3210, lon: -57.5520, name: 'Fdo. de la Mora' },
+  'capiata': { lat: -25.3550, lon: -57.4450, name: 'Capiatá' },
+  'nemby': { lat: -25.3950, lon: -57.5440, name: 'Ñemby' },
+  'mariano roque alonso': { lat: -25.2080, lon: -57.5320, name: 'M. R. Alonso' },
+  'roque alonso': { lat: -25.2080, lon: -57.5320, name: 'M. R. Alonso' },
+  'limpio': { lat: -25.1660, lon: -57.4850, name: 'Limpio' },
+  'villa elisa': { lat: -25.3780, lon: -57.5890, name: 'Villa Elisa' },
+  'ita': { lat: -25.5000, lon: -57.3600, name: 'Itá' },
+  'itaugua': { lat: -25.3850, lon: -57.3330, name: 'Itauguá' },
+  'san antonio': { lat: -25.4240, lon: -57.5480, name: 'San Antonio' },
+  'ypane': { lat: -25.4670, lon: -57.5330, name: 'Ypané' },
+  'villeta': { lat: -25.5120, lon: -57.5620, name: 'Villeta' },
+  'aregua': { lat: -25.3120, lon: -57.3850, name: 'Areguá' },
+  'ypacarai': { lat: -25.4050, lon: -57.2880, name: 'Ypacaraí' },
+
+  // Región Oriental & Ciudades Principales
+  'ciudad del este': { lat: -25.5097, lon: -54.6111, name: 'Ciudad del Este' },
+  'cde': { lat: -25.5097, lon: -54.6111, name: 'Ciudad del Este' },
+  'hernandarias': { lat: -25.4120, lon: -54.6360, name: 'Hernandarias' },
+  'presidente franco': { lat: -25.5600, lon: -54.6140, name: 'Pte. Franco' },
+  'encarnacion': { lat: -27.3306, lon: -55.8667, name: 'Encarnación' },
+  'cambyreta': { lat: -27.3000, lon: -55.8500, name: 'Cambyretá' },
+  'coronel oviedo': { lat: -25.4444, lon: -56.4406, name: 'Cnel. Oviedo' },
+  'cnel. oviedo': { lat: -25.4444, lon: -56.4406, name: 'Cnel. Oviedo' },
+  'caaguazu': { lat: -25.4600, lon: -56.0100, name: 'Caaguazú' },
+  'villarrica': { lat: -25.7806, lon: -56.4486, name: 'Villarrica' },
+  'concepcion': { lat: -23.4064, lon: -57.4344, name: 'Concepción' },
+  'pedro juan caballero': { lat: -22.5472, lon: -55.7333, name: 'P. J. Caballero' },
+  'pilar': { lat: -26.8681, lon: -58.2953, name: 'Pilar' },
+  'caacupe': { lat: -25.3861, lon: -57.1408, name: 'Caacupé' },
+  'paraguari': { lat: -25.6200, lon: -57.1500, name: 'Paraguarí' },
+  'salto del guaira': { lat: -24.0625, lon: -54.3069, name: 'Salto del Guairá' },
+  'filadelfia': { lat: -22.3500, lon: -60.0333, name: 'Filadelfia' }
+};
+
+/**
  * MITHRIL SIEM - 2D Tactical Paraguay Map (Exclusivo para Tráfico Nacional de Paraguay y LAN)
+ * - Vista ampliada por defecto en Gran Asunción y Región Oriental (2.4x)
  * - Soporta Zoom interactivo (1x a 18x con rueda del ratón o botones) y Paneo (Click & Drag)
- * - Modo de enfoque directo en Gran Asunción / Departamento Central (🎯 Capital)
+ * - Anclaje a municipios exactos mediante diccionario PY_MUNICIPALITIES
  * - Marcadores de origen explícitos (◎ + Etiqueta 📍 Zona/Ciudad) anclados geográficamente
  */
 class TacticalParaguayMap {
@@ -998,12 +1046,13 @@ class TacticalParaguayMap {
       maxLon: -53.8,
     };
 
-    // Estado de cámara interactiva (Zoom & Pan)
-    this.zoom = 1.0;
+    // Estado de cámara interactiva (inicia con enfoque táctico en Gran Asunción)
+    this.zoom = 2.4;
     this.panX = 0;
     this.panY = 0;
     this.isDragging = false;
     this.dragStart = { x: 0, y: 0 };
+    this.hasInitialFocus = false;
 
     this.points = [];
     this.pulses = [];
@@ -1127,10 +1176,14 @@ class TacticalParaguayMap {
     }
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
-        this.zoom = 1.0;
-        this.panX = 0;
-        this.panY = 0;
-        this.renderStaticBackground();
+        if (this.zoom > 1.3) {
+          this.zoom = 1.0;
+          this.panX = 0;
+          this.panY = 0;
+          this.renderStaticBackground();
+        } else {
+          this.focusOnGeo(-25.305, -57.545, 2.4);
+        }
       });
     }
   }
@@ -1186,7 +1239,13 @@ class TacticalParaguayMap {
     this.bgCanvas.height = Math.floor(this.height * dpr);
     this.bgCtx.setTransform(1, 0, 0, 1, 0, 0);
     this.bgCtx.scale(dpr, dpr);
-    this.renderStaticBackground();
+
+    if (!this.hasInitialFocus) {
+      this.hasInitialFocus = true;
+      this.focusOnGeo(-25.305, -57.545, 2.4);
+    } else {
+      this.renderStaticBackground();
+    }
   }
 
   getBaseProjection() {
@@ -1261,18 +1320,34 @@ class TacticalParaguayMap {
     }
 
     // Para IPs públicas de Paraguay (WAN):
+    let rawCity = String(cityName || '').trim().toLowerCase();
+    const normalizedCity = rawCity.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    // 1. Si la localidad coincide con el diccionario de municipios / ciudades de Paraguay
+    if (normalizedCity && PY_MUNICIPALITIES[normalizedCity]) {
+      const m = PY_MUNICIPALITIES[normalizedCity];
+      const jitterLat = (((h >> 4) % 100) - 50) * 0.00030;
+      const jitterLon = (((h >> 10) % 100) - 50) * 0.00030;
+      return {
+        lat: m.lat + jitterLat,
+        lon: m.lon + jitterLon,
+        zoneName: m.name
+      };
+    }
+
+    // 2. Coordenadas provistas dentro del territorio de Paraguay
     const inPyBounds = (lat >= -27.8 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2);
     let targetLat = lat;
     let targetLon = lon;
     let name = cityName ? String(cityName).trim() : '';
 
     if (!inPyBounds || (!lat && !lon)) {
-      // Coordenadas base en Asunción / Gran Asunción para IPs de PY sin coordenadas específicas
-      const jitterLat = (((h >> 4) % 100) - 50) * 0.00035;
-      const jitterLon = (((h >> 10) % 100) - 50) * 0.00035;
+      // Coordenadas base en Gran Asunción para IPs de PY sin coordenadas específicas
+      const jitterLat = (((h >> 4) % 100) - 50) * 0.00045;
+      const jitterLon = (((h >> 10) % 100) - 50) * 0.00045;
       targetLat = -25.2637 + jitterLat;
       targetLon = -57.5759 + jitterLon;
-      name = name || 'Asunción';
+      name = name || 'Gran Asunción';
     }
 
     // Separación visual del nodo Proxy en Asunción (-25.2820, -57.6350) para que el vector de la flecha sea visible
@@ -1298,7 +1373,8 @@ class TacticalParaguayMap {
     const cc = String(countryCode || '').toUpperCase().trim();
     const cn = String(countryName || '').toLowerCase().trim();
     const city = String(cityName || '').toLowerCase().trim();
-    if (cc === 'PY' || cc === 'LAN' || cn.includes('paraguay') || cn.includes('asunción') || cn.includes('asuncion') || cn.includes('local') || city.includes('asunción') || city.includes('asuncion')) {
+    const cityNorm = city.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (cc === 'PY' || cc === 'LAN' || cn.includes('paraguay') || cn.includes('asunción') || cn.includes('asuncion') || cn.includes('local') || city.includes('asunción') || city.includes('asuncion') || (cityNorm && PY_MUNICIPALITIES[cityNorm])) {
       return true;
     }
     if (lat >= -27.8 && lat <= -19.2 && lon >= -62.7 && lon <= -54.2) {
@@ -1592,21 +1668,23 @@ class TacticalParaguayMap {
       { name: 'Pedro Juan Caballero', lat: -22.5472, lon: -55.7333, minZoom: 1.0 },
       { name: 'Concepción', lat: -23.4064, lon: -57.4344, minZoom: 1.0 },
       { name: 'Cnel. Oviedo', lat: -25.4444, lon: -56.4406, minZoom: 1.0 },
-      { name: 'Villarrica', lat: -25.7806, lon: -56.4486, minZoom: 1.4 },
+      { name: 'Villarrica', lat: -25.7806, lon: -56.4486, minZoom: 1.2 },
       { name: 'Pilar', lat: -26.8681, lon: -58.2953, minZoom: 1.0 },
       { name: 'Filadelfia (Chaco)', lat: -22.3500, lon: -60.0333, minZoom: 1.0 },
-      { name: 'Caacupé', lat: -25.3861, lon: -57.1408, minZoom: 1.8 },
-      // Sub-zonas de Gran Asunción / Central visibles al acercar el zoom
+      { name: 'Caacupé', lat: -25.3861, lon: -57.1408, minZoom: 1.4 },
+      // Sub-zonas de Gran Asunción / Central visibles en zoom táctico
+      { name: 'San Lorenzo', lat: -25.3440, lon: -57.5080, minZoom: 1.4 },
+      { name: 'Luque', lat: -25.2667, lon: -57.4850, minZoom: 1.4 },
+      { name: 'Lambaré', lat: -25.3460, lon: -57.6060, minZoom: 1.5 },
+      { name: 'Fdo. de la Mora', lat: -25.3210, lon: -57.5520, minZoom: 1.5 },
+      { name: 'Capiatá', lat: -25.3550, lon: -57.4450, minZoom: 1.5 },
+      { name: 'Ñemby', lat: -25.3950, lon: -57.5440, minZoom: 1.6 },
+      { name: 'M. R. Alonso', lat: -25.2080, lon: -57.5320, minZoom: 1.6 },
+      { name: 'Limpio', lat: -25.1660, lon: -57.4850, minZoom: 1.6 },
+      { name: 'Villa Elisa', lat: -25.3780, lon: -57.5890, minZoom: 1.8 },
+      { name: 'Itauguá', lat: -25.3850, lon: -57.3330, minZoom: 1.8 },
       { name: 'Villa Morra', lat: -25.2940, lon: -57.5800, minZoom: 2.2 },
-      { name: 'Sajonia', lat: -25.2760, lon: -57.6620, minZoom: 2.5 },
-      { name: 'Lambaré', lat: -25.3460, lon: -57.6060, minZoom: 2.0 },
-      { name: 'Fdo. de la Mora', lat: -25.3210, lon: -57.5520, minZoom: 2.2 },
-      { name: 'San Lorenzo', lat: -25.3440, lon: -57.5080, minZoom: 1.8 },
-      { name: 'Luque', lat: -25.2667, lon: -57.4850, minZoom: 1.8 },
-      { name: 'M. R. Alonso', lat: -25.2080, lon: -57.5320, minZoom: 2.2 },
-      { name: 'Limpio', lat: -25.1660, lon: -57.4850, minZoom: 2.2 },
-      { name: 'Capiatá', lat: -25.3550, lon: -57.4450, minZoom: 2.0 },
-      { name: 'Ñemby', lat: -25.3950, lon: -57.5440, minZoom: 2.2 },
+      { name: 'Sajonia', lat: -25.2760, lon: -57.6620, minZoom: 2.2 },
     ];
 
     ctx.save();
@@ -1659,8 +1737,8 @@ class TacticalParaguayMap {
       ctx.shadowBlur = p.isThreat ? 10 : 6;
       ctx.fill();
 
-      // Mostrar etiqueta de origen junto al punto para amenazas o al acercar el zoom
-      if ((p.isThreat || this.zoom >= 1.8 || labelsDrawn < 4) && labelsDrawn < 10) {
+      // Mostrar etiqueta de origen junto al punto para amenazas o al acercar el zoom táctico
+      if ((p.isThreat || this.zoom >= 1.4 || labelsDrawn < 6) && labelsDrawn < 20) {
         labelsDrawn += 1;
         const mainIp = p.realClientIp || p.ip || '';
         const pinText = `📍 ${p.zoneName || 'PY'}: ${mainIp}`;

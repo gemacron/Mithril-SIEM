@@ -772,15 +772,83 @@ def normalize_inspection_payload(raw_text):
         return str(raw_text)
 
 
+# Integración de Base de Datos GeoIP Offline MaxMind (GeoLite2-City.mmdb) para precisión de ciudad en 0 ms
+_MAXMIND_READER = None
+_MAXMIND_CHECKED = False
+
+def _get_maxmind_reader():
+    global _MAXMIND_READER, _MAXMIND_CHECKED
+    if _MAXMIND_CHECKED:
+        return _MAXMIND_READER
+    _MAXMIND_CHECKED = True
+    try:
+        import maxminddb
+        from django.conf import settings
+        possible_paths = [
+            os.getenv('MAXMIND_DB_PATH', ''),
+            '/etc/mithril/GeoLite2-City.mmdb',
+            '/var/lib/mithril/GeoLite2-City.mmdb',
+            os.path.join(str(settings.BASE_DIR), 'GeoLite2-City.mmdb'),
+            os.path.join(str(settings.BASE_DIR), 'data', 'GeoLite2-City.mmdb'),
+            os.path.join(str(settings.BASE_DIR), 'GeoIP2-City.mmdb'),
+        ]
+        for p in possible_paths:
+            if p and os.path.isfile(p):
+                _MAXMIND_READER = maxminddb.open_database(p)
+                break
+    except Exception:
+        _MAXMIND_READER = None
+    return _MAXMIND_READER
+
+def _lookup_maxmind(ip_str):
+    reader = _get_maxmind_reader()
+    if not reader:
+        return None
+    try:
+        rec = reader.get(ip_str)
+        if not rec or not isinstance(rec, dict):
+            return None
+        country = rec.get('country', {})
+        cc = str(country.get('iso_code', '')).upper()
+        if not cc:
+            return None
+        cname = country.get('names', {}).get('es') or country.get('names', {}).get('en') or cc
+        city_rec = rec.get('city', {})
+        city = city_rec.get('names', {}).get('es') or city_rec.get('names', {}).get('en') or ('Asunción' if cc == 'PY' else 'Remoto')
+        location = rec.get('location', {})
+        lat = float(location.get('latitude') or 0.0)
+        lon = float(location.get('longitude') or 0.0)
+        if not lat and not lon:
+            return None
+        return {
+            'country_code': cc,
+            'country_name': cname,
+            'city': city,
+            'latitude': lat,
+            'longitude': lon,
+            'is_cloudflare': False
+        }
+    except Exception:
+        return None
+
+
 def _lookup_public_geoip_api(ip_clean):
     """
     Consulta universal GeoIP en línea con caché en RAM y Redis para IPs públicas directas
     (cuando no viene cabecera CF-IPCountry), válido para cualquier país o proveedor del mundo.
+    Prioriza MaxMind offline si el archivo de base de datos está presente.
     """
     if not ip_clean or is_private_local_ip(ip_clean) or is_cloudflare_ip(ip_clean):
         return None
     if ip_clean in _GEOIP_MEM_CACHE:
         return _GEOIP_MEM_CACHE[ip_clean]
+
+    # Comprobar MaxMind primero (0.05 ms, sin límites de peticiones)
+    mm_res = _lookup_maxmind(ip_clean)
+    if mm_res:
+        _GEOIP_MEM_CACHE[ip_clean] = mm_res
+        return mm_res
+
     cache_key = f"mithril:geoip:v1:{ip_clean}"
     try:
         cached = cache.get(cache_key)
@@ -906,7 +974,12 @@ def resolve_geoip(ip_str, cf_country=''):
                 'longitude': round(-57.6200 + lon_micro, 4),
                 'is_cloudflare': False
             }
-        # Si la IP pertenece a proveedores de Paraguay, resolver de inmediato offline sin dependencias externas
+        # 1. Intentar resolución local offline con MaxMind si está disponible (precisión de ciudad en 0 ms)
+        mm_res = _lookup_maxmind(ip_clean)
+        if mm_res:
+            return mm_res
+
+        # 2. Si la IP pertenece a proveedores de Paraguay, resolver de inmediato offline sin dependencias externas
         if is_paraguay_ip(ip_obj):
             lat_micro = (((crc_val % 100) - 50) / 100.0) * 0.035
             lon_micro = ((((crc_val // 100) % 100) - 50) / 100.0) * 0.035

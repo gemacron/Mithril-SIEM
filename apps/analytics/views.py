@@ -154,6 +154,7 @@ def api_map_data(request):
         .exclude(latitude__isnull=True)
         .exclude(http_method='HTTPS')
         .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
+        .exclude(country_code__startswith='CF-')
         .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'city', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
         .order_by('-id')[:70]
@@ -164,6 +165,7 @@ def api_map_data(request):
         .filter(
             Q(http_method='HTTPS')
             | Q(user_agent__icontains='Cloudflare-Traffic-Manager')
+            | Q(country_code__startswith='CF-')
             | (Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         )
         .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'city', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
