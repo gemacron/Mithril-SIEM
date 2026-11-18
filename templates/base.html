@@ -131,6 +131,27 @@
           <div style="font-size: 0.75rem; font-weight: 700; color: var(--neon-cyan); margin-bottom: 0.5rem;">📋 CABECERAS HTTP REGISTRADAS (HEADERS)</div>
           <pre id="logInspHeadersJson" style="margin: 0; padding: 0.65rem 0.85rem; background: #050811; border: 1px solid var(--border-dim); border-radius: 4px; color: #cbd5e1; font-family: var(--font-mono); font-size: 0.73rem; max-height: 140px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;"></pre>
         </div>
+
+        <!-- 4. Acción Táctica de Bloqueo Directo -->
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border-dim);">
+          <span style="font-size: 0.76rem; color: var(--text-dim);">
+            Acción directa de mitigación sobre la IP del cliente en todos los proxies conectados:
+          </span>
+          <form id="logInspDirectBanForm" method="POST" action="{% url 'mitigation:manual_ban_ip' %}" style="display: inline-flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
+            <input type="hidden" name="csrfmiddlewaretoken" value="{{ csrf_token }}">
+            <input type="hidden" id="logInspBanTargetIp" name="client_ip" value="">
+            <input type="hidden" id="logInspBanLogId" name="log_id" value="">
+            <select name="duration_hours" class="form-input" style="padding: 0.35rem 0.6rem; font-size: 0.78rem; width: auto;">
+              <option value="24">Bloquear 24 Horas</option>
+              <option value="1">Bloquear 1 Hora</option>
+              <option value="168">Bloquear 7 Días</option>
+              <option value="0">Bloquear Permanente</option>
+            </select>
+            <button type="submit" id="logInspBanSubmitBtn" class="btn btn-crimson" style="padding: 0.4rem 0.95rem;">
+              🛑 Bloquear IP Ahora
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   </div>
@@ -504,6 +525,31 @@
           if (cfBadge) {
             cfBadge.style.display = l.is_cloudflare ? 'inline-block' : 'none';
             if (l.cloudflare_ip) cfBadge.title = 'Nodo Cloudflare: ' + l.cloudflare_ip;
+          }
+
+          const targetBanIp = (s && s.target_ban_ip) ? s.target_ban_ip : (l.real_client_ip || (!l.is_cloudflare ? l.client_ip : ''));
+          const banIpInput = document.getElementById('logInspBanTargetIp');
+          const banLogIdInput = document.getElementById('logInspBanLogId');
+          const banBtn = document.getElementById('logInspBanSubmitBtn');
+          if (banIpInput) banIpInput.value = targetBanIp || '';
+          if (banLogIdInput) banLogIdInput.value = l.id || '';
+          if (banBtn) {
+            if (!targetBanIp || (s && s.is_protected)) {
+              banBtn.disabled = true;
+              banBtn.style.opacity = '0.5';
+              banBtn.style.cursor = 'not-allowed';
+              banBtn.textContent = '🛡️ IP Protegida (Inmune)';
+            } else if (s && s.reputation_status === 'BANNED') {
+              banBtn.disabled = false;
+              banBtn.style.opacity = '1';
+              banBtn.style.cursor = 'pointer';
+              banBtn.textContent = '🛑 Actualizar Bloqueo (' + targetBanIp + ')';
+            } else {
+              banBtn.disabled = false;
+              banBtn.style.opacity = '1';
+              banBtn.style.cursor = 'pointer';
+              banBtn.textContent = '🛑 Bloquear IP (' + targetBanIp + ')';
+            }
           }
 
           // Evaluación de seguridad y auditoría

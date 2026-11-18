@@ -19,18 +19,63 @@ from apps.mitigation.models import IpReputation, BanCandidate, ActiveBan
 from apps.notifications.services import send_telegram_alert
 
 # Caché en memoria de reglas activas y expresiones regulares precompiladas (TTL 5s)
-_RULES_CACHE = {'ts': 0.0, 'rules': []}
+_RULES_CACHE = {'ts': 0.0, 'rules': [], 'calibrated': False}
 # Cooldown por (client_ip, rule_code) para evitar saturar PostgreSQL ante ráfagas DoS/Scanners
 _EVENT_COOLDOWN_CACHE = {}
 # Control de cadencia de WebSocket por ventana de 1s (permite micro-batches completos en orden cronológico sin descartar los más nuevos)
 _WS_LAST_BROADCAST = {'window_ts': 0.0, 'count': 0}
+# Control de cadencia para sincronización retroactiva de candidatos a bloqueo
+_LAST_CANDIDATE_SYNC = {'ts': 0.0}
+
+ENHANCED_ENV_SCAN_REGEX = (
+    r'(\.env|\.git/|/\.git|\.aws/|\.ssh/|\.docker/|wp-config|wp-login\.php|wp-admin|xmlrpc\.php|'
+    r'phpmyadmin|pma/|myadmin|adminer|phpinfo|\.sql(\.gz|\.bz2|\.zip)?$|\.bak$|\.old$|\.swp$|'
+    r'\.htaccess|/actuator|/server-status|vendor/phpunit|eval-stdin\.php|boaform|cgi-bin|'
+    r'nmaplowercheck|/sdk|/evox/about|/HNAP1|/GponForm|/shell|cmd\.php|cmd\.jsp|owa/auth|autodiscover|/solr/)'
+)
 
 def invalidate_rules_cache():
     _RULES_CACHE['ts'] = 0.0
 
+def _calibrate_security_rules_once():
+    if _RULES_CACHE.get('calibrated'):
+        return
+    _RULES_CACHE['calibrated'] = True
+    try:
+        for r in SecurityRule.objects.all():
+            updated_fields = []
+            if r.code == 'R-ENV-SCAN' and 'wp-login' not in (r.pattern_regex or ''):
+                r.pattern_regex = ENHANCED_ENV_SCAN_REGEX
+                updated_fields.append('pattern_regex')
+            if r.code in ('R-ENV-SCAN', 'R-SQLI-URL', 'R-PATH-TRAVERSAL', 'R-XSS-PAYLOAD', 'R-RCE-CMD', 'R-SSRF-METADATA', 'R-BAD-USER-AGENT', 'R-HTTP-FLOOD-DOS') and r.risk_points < 80:
+                r.risk_points = 80
+                updated_fields.append('risk_points')
+            elif r.code == 'R-SCAN-404-BRUTE':
+                if r.threshold_count > 4:
+                    r.threshold_count = 4
+                    updated_fields.append('threshold_count')
+                if r.risk_points < 80:
+                    r.risk_points = 80
+                    updated_fields.append('risk_points')
+            elif r.code == 'R-AUTH-BRUTE-401':
+                if r.threshold_count > 3:
+                    r.threshold_count = 3
+                    updated_fields.append('threshold_count')
+                if r.risk_points < 80:
+                    r.risk_points = 80
+                    updated_fields.append('risk_points')
+            elif r.code == 'R-DIRECT-IP-ACCESS' and r.risk_points < 80:
+                r.risk_points = 80
+                updated_fields.append('risk_points')
+            if updated_fields:
+                r.save(update_fields=updated_fields)
+    except Exception:
+        pass
+
 def get_cached_active_rules():
     now_mono = time.monotonic()
     if (now_mono - _RULES_CACHE['ts']) > 5.0 or not _RULES_CACHE['rules']:
+        _calibrate_security_rules_once()
         rules_list = list(SecurityRule.objects.filter(is_active=True))
         for r in rules_list:
             if r.pattern_regex:
@@ -1111,9 +1156,10 @@ def resolve_geoip(ip_str, cf_country=''):
 def _is_benign_app_sync(uri_str, status_code):
     """
     Identifica llamadas de sincronización en segundo plano legítimas de Nextcloud / WebDAV
-    para evitar falsos positivos de ráfaga o 404/412 de concurrencia contra usuarios legítimos.
+    y recursos estáticos inofensivos de navegadores (favicon, robots, fuentes, sourcemaps)
+    para evitar falsos positivos contra usuarios legítimos.
     """
-    u = str(uri_str or '').lower()
+    u = str(uri_str or '').lower().split('?')[0].strip()
     if status_code == 404 and '/ocs/v2.php/apps/text/public/workspace' in u:
         return True
     if status_code in (200, 204, 207, 304, 412) and any(p in u for p in (
@@ -1127,7 +1173,207 @@ def _is_benign_app_sync(uri_str, status_code):
         '/cron.php',
     )):
         return True
+    if status_code == 404 and (
+        u in ('/favicon.ico', '/robots.txt', '/sitemap.xml', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png')
+        or u.endswith(('.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.woff', '.woff2', '.ttf', '.eot', '.css.map', '.js.map'))
+    ):
+        return True
     return False
+
+
+def ensure_ban_candidate_for_ip(target_ip, reputation=None, last_event=None, reason_override='', is_cf=False, cf_node_ip='', country_name='', node_name=''):
+    """
+    Garantiza que toda IP atacante que dispare una amenaza en el SIEM tenga su correspondiente
+    registro activo en Candidatos a Bloqueo (status='PENDING'), salvo que ya esté bloqueada
+    activamente en ActiveBan o sea infraestructura protegida / Cloudflare Edge.
+    """
+    ip_clean = str(target_ip or '').strip()
+    if not ip_clean or is_cloudflare_ip(ip_clean) or is_own_infrastructure_ip(ip_clean):
+        return None
+
+    if ActiveBan.objects.filter(client_ip=ip_clean, is_active=True).exists():
+        if reputation and reputation.status != 'BANNED':
+            reputation.status = 'BANNED'
+            reputation.save(update_fields=['status'])
+        return None
+
+    if not reputation:
+        reputation, _ = IpReputation.objects.get_or_create(
+            client_ip=ip_clean,
+            defaults={'status': 'PENDING_BAN', 'current_risk_score': 85, 'total_violations': 1}
+        )
+    if reputation.status == 'WHITELISTED':
+        return None
+
+    eff_score = max(int(reputation.current_risk_score or 0), 80)
+    if reputation.current_risk_score < eff_score or reputation.status != 'PENDING_BAN':
+        reputation.current_risk_score = eff_score
+        reputation.status = 'PENDING_BAN'
+        reputation.save(update_fields=['current_risk_score', 'status'])
+
+    if reason_override:
+        reason_text = reason_override
+    else:
+        violations_cnt = max(1, int(reputation.total_violations or 1))
+        reason_text = f"Puntaje de riesgo {eff_score}/100 alcanzado. Disparó {violations_cnt} infracción(es)."
+        if last_event and last_event.rule:
+            reason_text += f" Regla: {last_event.rule.name}."
+        elif last_event and last_event.matched_payload:
+            reason_text += f" Evidencia: {last_event.matched_payload[:100]}."
+        if is_cf and cf_node_ip:
+            reason_text += f" (Vía Cloudflare Edge: {cf_node_ip})"
+
+    candidate, created = BanCandidate.objects.get_or_create(
+        client_ip=ip_clean,
+        status='PENDING',
+        defaults={
+            'accumulated_score': eff_score,
+            'suggested_reason': reason_text,
+            'trigger_event': last_event,
+        }
+    )
+    if not created:
+        update_f = []
+        if eff_score > (candidate.accumulated_score or 0):
+            candidate.accumulated_score = eff_score
+            update_f.append('accumulated_score')
+        if reason_text and candidate.suggested_reason != reason_text:
+            candidate.suggested_reason = reason_text
+            update_f.append('suggested_reason')
+        if last_event and candidate.trigger_event_id != last_event.id:
+            candidate.trigger_event = last_event
+            update_f.append('trigger_event')
+        if update_f:
+            candidate.save(update_fields=update_f)
+    else:
+        cf_line = f"Conexión vía Cloudflare Node: {cf_node_ip}\n" if (is_cf and cf_node_ip) else ""
+        send_telegram_alert(
+            title="🚨 Nuevo Candidato a Bloqueo Detectado",
+            message=(
+                f"IP Cliente: {ip_clean} ({country_name or 'Desconocido'})\n"
+                f"{cf_line}"
+                f"Score de Riesgo: {eff_score}/100\n"
+                f"Proxy: {node_name or 'N/A'}\n"
+                f"Motivo: {reason_text}\n"
+                f"Estado: Esperando aprobación del operador en Mithril SIEM."
+            )
+        )
+    return candidate
+
+
+def sync_unbanned_threats_to_candidates(force=False):
+    """
+    Sincroniza retroactivamente todas las amenazas detectadas en las últimas 24 horas
+    con la cola de Candidatos a Bloqueo (PENDING), asegurando consistencia 1 a 1 entre
+    los vectores rojos de ataque mostrados en los mapas y la lista de posibles bloqueos.
+    """
+    now_mono = time.monotonic()
+    if not force and (now_mono - _LAST_CANDIDATE_SYNC['ts']) < 8.0:
+        return
+    _LAST_CANDIDATE_SYNC['ts'] = now_mono
+
+    try:
+        since = timezone.now() - timedelta(hours=24)
+        active_ban_ips = set(ActiveBan.objects.filter(is_active=True).values_list('client_ip', flat=True))
+        pending_cand_ips = set(BanCandidate.objects.filter(status='PENDING').values_list('client_ip', flat=True))
+        whitelisted_ips = set(IpReputation.objects.filter(status='WHITELISTED').values_list('client_ip', flat=True))
+
+        # 1. Revisar todos los SecurityEvents recientes
+        recent_events = list(
+            SecurityEvent.objects.filter(created_at__gte=since)
+            .select_related('rule', 'node')
+            .order_by('-created_at')[:250]
+        )
+        seen_ips = set()
+        for ev in recent_events:
+            ev_details = ev.details if isinstance(ev.details, dict) else {}
+            meta = extract_log_ip_meta(ev.client_ip, ev_details)
+            target_ip = meta.get('real_client_ip') or (ev.client_ip if not is_cloudflare_ip(ev.client_ip) else '')
+            if not target_ip or target_ip in seen_ips:
+                continue
+            seen_ips.add(target_ip)
+
+            if target_ip in active_ban_ips or target_ip in pending_cand_ips or target_ip in whitelisted_ips:
+                continue
+            if is_cloudflare_ip(target_ip) or is_own_infrastructure_ip(target_ip):
+                continue
+
+            # Respetar si el operador descartó manualmente a esta IP DESPUÉS de su último evento de ataque
+            if BanCandidate.objects.filter(client_ip=target_ip, status='DISMISSED', reviewed_at__gte=ev.created_at).exists():
+                continue
+
+            rep = IpReputation.objects.filter(client_ip=target_ip).first()
+            ensure_ban_candidate_for_ip(
+                target_ip=target_ip,
+                reputation=rep,
+                last_event=ev,
+                is_cf=meta.get('is_cloudflare', False),
+                cf_node_ip=meta.get('cloudflare_ip', ''),
+                country_name=ev_details.get('country_name', ''),
+                node_name=ev.node.name if ev.node else ev_details.get('node', ''),
+            )
+            pending_cand_ips.add(target_ip)
+
+        # 2. Revisar logs marcados con is_threat=True en raw_headers que no tenían SecurityEvent previo
+        threat_logs = list(
+            TrafficLog.objects.filter(created_at__gte=since, raw_headers__is_threat=True)
+            .select_related('node')
+            .order_by('-id')[:120]
+        )
+        scanner_rule = SecurityRule.objects.filter(code='R-ENV-SCAN').first() or SecurityRule.objects.filter(is_active=True).first()
+        for tlog in threat_logs:
+            meta = extract_log_ip_meta(tlog.client_ip, tlog.raw_headers)
+            target_ip = meta.get('real_client_ip') or (tlog.client_ip if not is_cloudflare_ip(tlog.client_ip) else '')
+            if not target_ip or target_ip in seen_ips:
+                continue
+            seen_ips.add(target_ip)
+            if target_ip in active_ban_ips or target_ip in pending_cand_ips or target_ip in whitelisted_ips:
+                continue
+            if is_cloudflare_ip(target_ip) or is_own_infrastructure_ip(target_ip):
+                continue
+            if _is_benign_app_sync(tlog.uri, tlog.status_code):
+                continue
+            if BanCandidate.objects.filter(client_ip=target_ip, status='DISMISSED', reviewed_at__gte=tlog.created_at).exists():
+                continue
+
+            ev = SecurityEvent.objects.filter(client_ip=target_ip).order_by('-created_at').first()
+            if not ev:
+                ev = SecurityEvent.objects.create(
+                    node=tlog.node,
+                    rule=scanner_rule,
+                    client_ip=target_ip,
+                    severity='HIGH',
+                    matched_payload=f"Petición hostil HTTP {tlog.status_code} en {tlog.uri}",
+                    details={
+                        'log_id': tlog.id,
+                        'node': tlog.node.name if tlog.node else 'Direct',
+                        'http_method': tlog.http_method,
+                        'uri': tlog.uri,
+                        'query_params': tlog.query_params,
+                        'status_code': tlog.status_code,
+                        'user_agent': tlog.user_agent,
+                        'country_code': tlog.country_code,
+                        'country_name': tlog.country_name,
+                        'city': tlog.city,
+                        'is_cloudflare': meta.get('is_cloudflare', False),
+                        'cloudflare_ip': meta.get('cloudflare_ip', ''),
+                        'real_client_ip': target_ip,
+                        'headers': tlog.raw_headers or {},
+                    }
+                )
+            rep = IpReputation.objects.filter(client_ip=target_ip).first()
+            ensure_ban_candidate_for_ip(
+                target_ip=target_ip,
+                reputation=rep,
+                last_event=ev,
+                is_cf=meta.get('is_cloudflare', False),
+                cf_node_ip=meta.get('cloudflare_ip', ''),
+                country_name=tlog.country_name,
+                node_name=tlog.node.name if tlog.node else 'Direct',
+            )
+            pending_cand_ips.add(target_ip)
+    except Exception:
+        pass
 
 
 def process_incoming_log(data, node=None):
@@ -1306,40 +1552,43 @@ def process_incoming_log(data, node=None):
         # A. Reglas de Fuerza Bruta de Autenticación (401/403)
         elif rule.code == 'R-AUTH-BRUTE-401':
             if log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(normalized_uri)):
-                matched_any_rule = True
-                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
-                    recent_auth_fails = TrafficLog.objects.filter(
-                        client_ip=target_client_ip,
-                        status_code__in=[401, 403],
-                        created_at__gte=window_start
-                    ).count()
-                    if recent_auth_fails >= rule.threshold_count:
+                recent_auth_fails = TrafficLog.objects.filter(
+                    client_ip=target_client_ip,
+                    status_code__in=[401, 403],
+                    created_at__gte=window_start
+                ).count()
+                eff_threshold = min(rule.threshold_count, 3) if not is_local else rule.threshold_count
+                if recent_auth_fails >= eff_threshold or (not is_local and log.status_code in (401, 403)):
+                    matched_any_rule = True
+                    if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=2.0):
                         event = SecurityEvent.objects.create(
                             node=node,
                             rule=rule,
                             client_ip=target_client_ip,
                             severity='HIGH',
-                            matched_payload=f"{recent_auth_fails} respuestas {log.status_code} en {log.uri} ({rule.threshold_seconds}s)",
+                            matched_payload=f"{recent_auth_fails} respuesta(s) HTTP {log.status_code} en {log.uri}",
                             details={**base_req_details, 'count_auth_fails': recent_auth_fails}
                         )
                         triggered_events.append(event)
-                        risk_to_add += rule.risk_points
+                        risk_to_add += max(rule.risk_points, 80)
 
         # B. Detección Heurística de Frecuencia 404 (Enumeración de archivos / Scanners)
         elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
             if log.status_code == 404 and not is_benign_sync:
-                matched_any_rule = True
-                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
-                    recent_404_count = (
-                        TrafficLog.objects.filter(
-                            client_ip=target_client_ip,
-                            status_code=404,
-                            created_at__gte=window_start
-                        )
-                        .exclude(uri__icontains='/ocs/v2.php/apps/text/public/workspace')
-                        .count()
+                recent_404_count = (
+                    TrafficLog.objects.filter(
+                        client_ip=target_client_ip,
+                        status_code=404,
+                        created_at__gte=window_start
                     )
-                    if recent_404_count >= rule.threshold_count:
+                    .exclude(uri__icontains='/ocs/v2.php/apps/text/public/workspace')
+                    .exclude(uri__in=['/favicon.ico', '/robots.txt', '/sitemap.xml'])
+                    .count()
+                )
+                eff_404_threshold = min(rule.threshold_count, 3) if not is_local else min(rule.threshold_count, 5)
+                if recent_404_count >= eff_404_threshold:
+                    matched_any_rule = True
+                    if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=2.0):
                         event = SecurityEvent.objects.create(
                             node=node,
                             rule=rule,
@@ -1349,7 +1598,7 @@ def process_incoming_log(data, node=None):
                             details={**base_req_details, 'count_404': recent_404_count}
                         )
                         triggered_events.append(event)
-                        risk_to_add += rule.risk_points
+                        risk_to_add += max(rule.risk_points, 80)
 
         # C. Detección Heurística de Ráfaga / Flood DoS por IP (Rate Limit sin regex)
         elif not rule.pattern_regex and rule.category == 'RATE_LIMIT':
@@ -1375,7 +1624,7 @@ def process_incoming_log(data, node=None):
                         details={**base_req_details, 'request_count': recent_req_count, 'window_seconds': rule.threshold_seconds}
                     )
                     triggered_events.append(event)
-                    risk_to_add += rule.risk_points
+                    risk_to_add += max(rule.risk_points, 80)
 
         # D. Reglas basadas en Expresión Regular (con soporte de umbral threshold_count >= 1)
         elif compiled_rx:
@@ -1383,7 +1632,7 @@ def process_incoming_log(data, node=None):
             if match:
                 matched_any_rule = True
                 matched_text = match.group(0)
-                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=2.5):
+                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=2.0):
                     should_trigger = True
 
                     if rule.threshold_count > 1:
@@ -1414,73 +1663,53 @@ def process_incoming_log(data, node=None):
                             details={**base_req_details, 'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
                         )
                         triggered_events.append(event)
-                        risk_to_add += rule.risk_points
+                        risk_to_add += max(rule.risk_points, 80)
 
-    # 4. Actualizar puntaje de riesgo de la IP DEL CLIENTE
-    if risk_to_add > 0:
-        reputation.current_risk_score = min(100, reputation.current_risk_score + risk_to_add)
-        reputation.total_violations += len(triggered_events)
+    # Si es una petición externa con error HTTP anómalo (>= 400, no estático/benigno) que aún no disparó regla específica,
+    # registrarla como evento de escaneo/sonda hostil para que SIEMPRE aparezca en Candidatos a Bloqueo si se muestra como ataque
+    if not is_local and not is_benign_sync and log.status_code >= 400 and not triggered_events and not matched_any_rule:
+        matched_any_rule = True
+        if not _is_in_event_cooldown(target_client_ip, 'R-HTTP-ANOMALY', cooldown_sec=3.0):
+            fallback_rule = next((r for r in active_rules if r.code in ('R-SCAN-404-BRUTE', 'R-ENV-SCAN')), active_rules[0] if active_rules else None)
+            event = SecurityEvent.objects.create(
+                node=node,
+                rule=fallback_rule,
+                client_ip=target_client_ip,
+                severity='HIGH' if log.status_code in (401, 403, 405, 500) else 'MEDIUM',
+                matched_payload=f"Sondeo HTTP {log.status_code} sobre {log.http_method} {log.uri}",
+                details=base_req_details
+            )
+            triggered_events.append(event)
+            risk_to_add += 80
+
+    # 4. Actualizar puntaje de riesgo de la IP DEL CLIENTE y garantizar Candidato a Bloqueo (1 a 1 con el Mapa)
+    if risk_to_add > 0 or matched_any_rule or len(triggered_events) > 0:
+        reputation.current_risk_score = min(100, max(80, reputation.current_risk_score + max(risk_to_add, 80)))
+        reputation.total_violations = max(1, reputation.total_violations + max(1, len(triggered_events)))
         reputation.last_seen_at = now
         reputation.last_evaluated_at = now
-
-        if reputation.current_risk_score >= 80 and reputation.status != 'BANNED':
+        if reputation.status != 'BANNED':
             reputation.status = 'PENDING_BAN'
-        elif reputation.current_risk_score >= 40 and reputation.status == 'MONITORED':
-            reputation.status = 'SUSPICIOUS'
-
         reputation.save()
 
-        # 5. Generar Candidato a Bloqueo para la IP del CLIENTE
-        if reputation.current_risk_score >= 80:
-            if is_cloudflare_ip(target_client_ip) or is_own_infrastructure_ip(target_client_ip):
-                # Los nodos CDN de Cloudflare y la propia IP WAN/LAN de la infraestructura tienen inmunidad absoluta
-                pass
-            else:
-                last_event = triggered_events[0] if triggered_events else None
-                reason_text = f"Puntaje de riesgo {reputation.current_risk_score}/100 alcanzado. Disparó {reputation.total_violations} infracciones."
-                if last_event and last_event.rule:
-                    reason_text += f" Última infracción: {last_event.rule.name}."
-                if is_cf and cf_node_ip:
-                    reason_text += f" (Petición recibida a través de Cloudflare Edge: {cf_node_ip})"
+        last_event = triggered_events[0] if triggered_events else SecurityEvent.objects.filter(client_ip=target_client_ip).order_by('-created_at').first()
+        ensure_ban_candidate_for_ip(
+            target_ip=target_client_ip,
+            reputation=reputation,
+            last_event=last_event,
+            is_cf=is_cf,
+            cf_node_ip=cf_node_ip,
+            country_name=geo.get('country_name', ''),
+            node_name=node.name if node else 'Direct',
+        )
 
-                candidate, created = BanCandidate.objects.get_or_create(
-                    client_ip=target_client_ip,
-                    status='PENDING',
-                    defaults={
-                        'accumulated_score': reputation.current_risk_score,
-                        'suggested_reason': reason_text,
-                        'trigger_event': last_event
-                    }
-                )
-                if not created:
-                    candidate.accumulated_score = reputation.current_risk_score
-                    candidate.suggested_reason = reason_text
-                    if last_event:
-                        candidate.trigger_event = last_event
-                    candidate.save(update_fields=['accumulated_score', 'suggested_reason', 'trigger_event'])
-
-                # Notificar vía Telegram de forma asíncrona (no bloqueante) si es un candidato nuevo
-                if created:
-                    cf_line = f"Conexión vía Cloudflare Node: {cf_node_ip}\n" if (is_cf and cf_node_ip) else ""
-                    send_telegram_alert(
-                        title="🚨 Nuevo Candidato a Bloqueo Detectado",
-                        message=(
-                            f"IP Cliente: {target_client_ip} ({geo['country_name']})\n"
-                            f"{cf_line}"
-                            f"Score de Riesgo: {reputation.current_risk_score}/100\n"
-                            f"Proxy: {node.name if node else 'N/A'}\n"
-                            f"Motivo: {reason_text}\n"
-                            f"Estado: Esperando aprobación del operador en Mithril SIEM."
-                        )
-                    )
-
-    # 6. Emitir evento en vivo por WebSockets al SOC
+    # 6. Emitir evento en vivo por WebSockets al SOC (100% consistente con Candidatos a Bloqueo)
     is_threat = (not is_benign_sync) and (
         len(triggered_events) > 0
         or matched_any_rule
-        or (log.status_code >= 400)
+        or reputation.status in ('PENDING_BAN', 'BANNED')
     )
-    if (len(triggered_events) > 0 or matched_any_rule) and not is_benign_sync:
+    if is_threat:
         incoming_headers['is_threat'] = True
         log.raw_headers = incoming_headers
         log.save(update_fields=['raw_headers'])

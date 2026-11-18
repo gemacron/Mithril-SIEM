@@ -287,7 +287,7 @@
         </div>
         <a href="{% url 'mitigation:candidates' %}" class="btn btn-dim" style="padding: 0.2rem 0.5rem; font-size: 0.75rem;">Ver Todos</a>
       </div>
-      <div class="panel-body" id="candidatesContainer" style="padding: 0.75rem;">
+      <div class="panel-body" id="candidatesContainer" style="padding: 0.75rem; max-height: 460px; overflow-y: auto;">
         {% if candidates %}
           <div style="display: flex; flex-direction: column; gap: 0.75rem;">
             {% for c in candidates %}
@@ -390,6 +390,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{% static 'js/mithril-map.js' %}?v=20261116c"></script>
-<script src="{% static 'js/mithril-live.js' %}?v=20261116c"></script>
+<script src="{% static 'js/mithril-map.js' %}?v=20261118a"></script>
+<script src="{% static 'js/mithril-live.js' %}?v=20261118a"></script>
 {% endblock %}

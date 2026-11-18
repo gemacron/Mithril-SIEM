@@ -753,6 +753,13 @@ document.addEventListener('DOMContentLoaded', () => {
     addKpiDelta(kpiTotalLogs, logsDelta);
     addKpiDelta(kpiThreats, threatsDelta);
 
+    if (threatsDelta > 0) {
+      setTimeout(() => fetchLiveStats(), 500);
+      if (window.mithrilMap && typeof window.mithrilMap.fetchData === 'function') {
+        setTimeout(() => window.mithrilMap.fetchData(), 750);
+      }
+    }
+
     if (tableBody && currentPage === 1 && filteredMatchedDelta > 0) {
       enforceNewestFirstDomOrder();
       if (tableBody.parentElement && tableBody.parentElement.scrollTop < 120) {

@@ -15,7 +15,10 @@ from apps.detection.engine import (
     get_cloudflare_sync_status,
     is_private_local_ip,
     is_own_public_wan_ip,
+    is_own_infrastructure_ip,
     _is_benign_app_sync,
+    ensure_ban_candidate_for_ip,
+    sync_unbanned_threats_to_candidates,
 )
 
 def _enrich_candidate_cf(c):
@@ -45,17 +48,18 @@ def dashboard_view(request):
     for n in nodes:
         n.check_health()
 
-    candidates = list(BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule')[:5])
-    for c in candidates:
-        _enrich_candidate_cf(c)
-    recent_events = SecurityEvent.objects.select_related('rule', 'node').order_by('-id')[:8]
-
     now = timezone.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     since_24h = now - timedelta(hours=24)
 
-    # Expirar bloqueos vencidos automáticamente
+    # Expirar bloqueos vencidos automáticamente y sincronizar amenazas con Candidatos a Bloqueo
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=now).update(is_active=False)
+    sync_unbanned_threats_to_candidates()
+
+    candidates = list(BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule')[:15])
+    for c in candidates:
+        _enrich_candidate_cf(c)
+    recent_events = SecurityEvent.objects.select_related('rule', 'node').order_by('-id')[:8]
 
     recent_logs = list(
         TrafficLog.objects.select_related('node')
@@ -133,10 +137,12 @@ def dashboard_view(request):
 def api_map_data(request):
     """
     Retorna datos agregados de países y coordenadas de peticiones sospechosas
-    para el mapa táctico 2D
+    para el mapa táctico 2D, garantizando consistencia 1 a 1 con Candidatos a Bloqueo.
     """
     now = timezone.now()
     since = now - timedelta(hours=24)
+
+    sync_unbanned_threats_to_candidates()
 
     # Top países con eventos de seguridad y tráfico real
     country_stats = (
@@ -148,7 +154,28 @@ def api_map_data(request):
         .order_by('-total')[:15]
     )
 
-    # Priorizar peticiones con IP real de cliente para que las sondas no desplacen a los clientes reales del mapa
+    pending_candidates = list(BanCandidate.objects.filter(status='PENDING'))
+    candidate_id_map = {c.client_ip: c.id for c in pending_candidates}
+    candidate_ips = set(candidate_id_map.keys())
+    active_ban_ips = set(ActiveBan.objects.filter(is_active=True).values_list('client_ip', flat=True))
+    dismissed_map = {
+        c.client_ip: c.reviewed_at
+        for c in BanCandidate.objects.filter(status='DISMISSED', reviewed_at__isnull=False)
+    }
+
+    fields_list = (
+        'id', 'latitude', 'longitude', 'country_code', 'country_name', 'city',
+        'client_ip', 'status_code', 'uri', 'raw_headers', 'user_agent', 'http_method', 'node__name', 'created_at'
+    )
+
+    # Priorizar peticiones de candidatos activos / amenazas confirmadas + clientes reales
+    threat_points = list(
+        TrafficLog.objects.filter(created_at__gte=since)
+        .exclude(http_method='HTTPS')
+        .filter(Q(client_ip__in=(candidate_ips | active_ban_ips)) | Q(raw_headers__is_threat=True))
+        .values(*fields_list)
+        .order_by('-id')[:45]
+    )
     real_client_points = list(
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(latitude__isnull=True)
@@ -156,7 +183,7 @@ def api_map_data(request):
         .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
         .exclude(country_code__startswith='CF-')
         .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'city', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .values(*fields_list)
         .order_by('-id')[:70]
     )
     probe_points = list(
@@ -168,7 +195,7 @@ def api_map_data(request):
             | Q(country_code__startswith='CF-')
             | (Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         )
-        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'city', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .values(*fields_list)
         .order_by('-id')[:20]
     )
     py_points = list(
@@ -181,12 +208,12 @@ def api_map_data(request):
             | Q(raw_headers__is_local_ip=True)
             | Q(raw_headers__is_own_public_ip=True)
         )
-        .values('id', 'latitude', 'longitude', 'country_code', 'country_name', 'city', 'client_ip', 'status_code', 'raw_headers', 'user_agent', 'http_method', 'node__name')
+        .values(*fields_list)
         .order_by('-id')[:45]
     )
     seen_ids = set()
     raw_points = []
-    for item in (real_client_points + py_points + probe_points):
+    for item in (threat_points + real_client_points + py_points + probe_points):
         if item['id'] not in seen_ids:
             seen_ids.add(item['id'])
             raw_points.append(item)
@@ -195,14 +222,16 @@ def api_map_data(request):
         SecurityEvent.objects.filter(client_ip__in=point_ips, created_at__gte=since)
         .values_list('client_ip', flat=True).distinct()
     ) if point_ips else set()
-    candidate_ips = set(
-        BanCandidate.objects.filter(status='PENDING').values_list('client_ip', flat=True)
-    )
     threat_ips.update(candidate_ips)
+    threat_ips.update(active_ban_ips)
 
     recent_points = []
     for p in raw_points:
-        meta = extract_log_ip_meta(p['client_ip'], p.pop('raw_headers', {}))
+        raw_hdrs = p.pop('raw_headers', {}) or {}
+        raw_is_threat = bool(raw_hdrs.get('is_threat')) if isinstance(raw_hdrs, dict) else False
+        uri_val = p.pop('uri', '/') or '/'
+        created_at_val = p.pop('created_at', None)
+        meta = extract_log_ip_meta(p['client_ip'], raw_hdrs)
         ua = p.pop('user_agent', '') or ''
         method = p.pop('http_method', '') or ''
         real_ip_clean = meta.get('real_client_ip') or (p['client_ip'] if not is_cloudflare_ip(p['client_ip']) else '')
@@ -217,22 +246,60 @@ def api_map_data(request):
         p['country_name'] = re_geo['country_name']
         p['city'] = re_geo.get('city') or p.get('city', '')
 
-        p['is_threat'] = (p['client_ip'] in threat_ips) or (real_ip_clean in threat_ips) or (p['status_code'] >= 400)
-        p['client_ip'] = real_ip_clean or conn_ip
-        p['connection_ip'] = conn_ip
-        p['is_cloudflare'] = meta['is_cloudflare']
-        p['cloudflare_ip'] = meta['cloudflare_ip']
-        p['real_client_ip'] = real_ip_clean
-        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(target_geo_ip)
-        p['is_own_public_ip'] = is_own_pub
-        p['is_local'] = meta.get('is_local_ip', False) or is_private_local_ip(real_ip_clean or (conn_ip if not meta['is_cloudflare'] else ''))
-        p['is_direct_public_ip'] = meta.get('is_direct_public_ip', (not p['is_cloudflare'] and not p['is_local'] and not is_own_pub and bool(target_geo_ip)))
-        p['is_probe'] = bool(
+        is_own_pub = meta.get('is_own_public_ip', False) or is_own_public_wan_ip(target_geo_ip) or is_own_infrastructure_ip(target_geo_ip)
+        is_loc = meta.get('is_local_ip', False) or is_private_local_ip(real_ip_clean or (conn_ip if not meta['is_cloudflare'] else ''))
+        is_benign = _is_benign_app_sync(uri_val, p['status_code'])
+        is_probe_flag = bool(
             (meta['is_cloudflare'] and not real_ip_clean)
             or 'Cloudflare-Traffic-Manager' in ua
             or 'TLS SNI' in ua
             or method == 'HTTPS'
         )
+
+        # Determinar si es amenaza real (y si fue descartada manualmente como falso positivo después del evento)
+        dismissed_ts = dismissed_map.get(target_geo_ip)
+        was_dismissed_after = bool(dismissed_ts and created_at_val and dismissed_ts >= created_at_val and target_geo_ip not in candidate_ips and target_geo_ip not in active_ban_ips)
+
+        is_real_threat = (
+            not is_own_pub
+            and not is_benign
+            and not is_probe_flag
+            and not was_dismissed_after
+            and (
+                (p['client_ip'] in threat_ips)
+                or (real_ip_clean in threat_ips)
+                or raw_is_threat
+                or (not is_loc and p['status_code'] >= 400)
+            )
+        )
+
+        # Si el punto se marca como amenaza en el mapa y aún no está bloqueado ni en Candidatos, crearlo de inmediato
+        if is_real_threat and target_geo_ip not in candidate_id_map and target_geo_ip not in active_ban_ips:
+            if not is_cloudflare_ip(target_geo_ip) and not is_own_infrastructure_ip(target_geo_ip):
+                cand_obj = ensure_ban_candidate_for_ip(
+                    target_ip=target_geo_ip,
+                    reason_override=f"Actividad hostil detectada en el Mapa Táctico ({method} {uri_val} -> HTTP {p['status_code']}).",
+                    is_cf=meta['is_cloudflare'],
+                    cf_node_ip=meta['cloudflare_ip'],
+                    country_name=p['country_name'],
+                    node_name=p.get('node__name') or 'Direct',
+                )
+                if cand_obj:
+                    candidate_id_map[target_geo_ip] = cand_obj.id
+                    candidate_ips.add(target_geo_ip)
+
+        p['is_threat'] = is_real_threat
+        p['log_id'] = p['id']
+        p['candidate_id'] = candidate_id_map.get(target_geo_ip, 0)
+        p['client_ip'] = real_ip_clean or conn_ip
+        p['connection_ip'] = conn_ip
+        p['is_cloudflare'] = meta['is_cloudflare']
+        p['cloudflare_ip'] = meta['cloudflare_ip']
+        p['real_client_ip'] = real_ip_clean
+        p['is_own_public_ip'] = is_own_pub
+        p['is_local'] = is_loc
+        p['is_direct_public_ip'] = meta.get('is_direct_public_ip', (not p['is_cloudflare'] and not p['is_local'] and not is_own_pub and bool(target_geo_ip)))
+        p['is_probe'] = is_probe_flag
         p['node_name'] = p.pop('node__name', '') or ''
         recent_points.append(p)
 
@@ -270,6 +337,7 @@ def api_live_stats(request):
     since_24h = now - timedelta(hours=24)
 
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=now).update(is_active=False)
+    sync_unbanned_threats_to_candidates()
 
     total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
     threats_today = SecurityEvent.objects.filter(created_at__gte=today_start).count()
@@ -318,7 +386,7 @@ def api_live_stats(request):
             'latitude': lat,
             'longitude': lon,
             'node': log.node.name if log.node else 'Direct',
-            'is_threat': (not is_benign) and (raw_threat or (log.status_code >= 400)),
+            'is_threat': (not is_benign) and (not is_own_pub) and (raw_threat or (target_geo_ip in threat_ips) or (not is_loc and log.status_code >= 400)),
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': real_ip_clean,
@@ -345,7 +413,7 @@ def api_live_stats(request):
     ]
 
     candidates_data = []
-    for c in BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule').order_by('-created_at')[:5]:
+    for c in BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule').order_by('-created_at')[:15]:
         ev = c.trigger_event
         ev_details = ev.details if (ev and isinstance(ev.details, dict)) else {}
         c_meta = _enrich_candidate_cf(c)

@@ -37,6 +37,15 @@ class TacticalWorldMap {
     window.addEventListener('resize', () => this.resize());
 
     this.canvas.addEventListener('mousemove', (e) => this.handleMouseMove(e), { passive: true });
+    this.canvas.addEventListener('click', () => {
+      if (this.hoverPoint) {
+        if (this.hoverPoint.candidateId && typeof openCandidateInspectModal === 'function') {
+          openCandidateInspectModal(this.hoverPoint.candidateId);
+        } else if (this.hoverPoint.logId && typeof openLogInspectModal === 'function') {
+          openLogInspectModal(this.hoverPoint.logId);
+        }
+      }
+    });
     this.canvas.addEventListener('mouseleave', () => {
       this.mouse.active = false;
       this.hoverPoint = null;
@@ -403,13 +412,15 @@ class TacticalWorldMap {
           const incoming = data.points.map(p => ({
             lat: parseFloat(p.latitude) || 0,
             lon: parseFloat(p.longitude) || 0,
+            logId: p.log_id || p.id || 0,
+            candidateId: p.candidate_id || 0,
             ip: p.client_ip || '',
             realClientIp: p.real_client_ip || '',
             country: p.country_name || '',
             countryCode: p.country_code || '',
             city: p.city || '',
             nodeName: p.node_name || '',
-            isThreat: Boolean(p.is_threat) || (p.status_code >= 400),
+            isThreat: Boolean(p.is_threat),
             isCloudflare: Boolean(p.is_cloudflare),
             isLocal: Boolean(p.is_local) || this.isLocalIp(p.real_client_ip || p.client_ip),
             isProbe: Boolean(p.is_probe) || (Boolean(p.is_cloudflare) && !p.real_client_ip),
@@ -1123,24 +1134,40 @@ class TacticalParaguayMap {
       this.zoomAt(mx, my, factor);
     }, { passive: false });
 
-    // Arrastrar (Pan) con clic izquierdo
+    // Arrastrar (Pan) con clic izquierdo y clic directo sobre puntos para inspeccionar/bloquear
+    this.dragMoved = false;
     this.canvas.addEventListener('mousedown', (e) => {
       if (e.button !== 0) return;
       this.isDragging = true;
+      this.dragMoved = false;
       this.dragStart.x = e.clientX - this.panX;
       this.dragStart.y = e.clientY - this.panY;
+      this.dragClientStart = { x: e.clientX, y: e.clientY };
       this.canvas.style.cursor = 'grabbing';
     });
 
     window.addEventListener('mouseup', () => {
       if (this.isDragging) {
         this.isDragging = false;
-        if (this.canvas) this.canvas.style.cursor = 'grab';
+        if (this.canvas) this.canvas.style.cursor = this.hoverPoint ? 'pointer' : 'grab';
+      }
+    });
+
+    this.canvas.addEventListener('click', () => {
+      if (!this.dragMoved && this.hoverPoint) {
+        if (this.hoverPoint.candidateId && typeof openCandidateInspectModal === 'function') {
+          openCandidateInspectModal(this.hoverPoint.candidateId);
+        } else if (this.hoverPoint.logId && typeof openLogInspectModal === 'function') {
+          openLogInspectModal(this.hoverPoint.logId);
+        }
       }
     });
 
     this.canvas.addEventListener('mousemove', (e) => {
       if (this.isDragging) {
+        if (this.dragClientStart && Math.hypot(e.clientX - this.dragClientStart.x, e.clientY - this.dragClientStart.y) > 4) {
+          this.dragMoved = true;
+        }
         this.panX = e.clientX - this.dragStart.x;
         this.panY = e.clientY - this.dragStart.y;
         this.clampPan();
@@ -1415,12 +1442,13 @@ class TacticalParaguayMap {
         }
         const mainIp = p.real_client_ip || p.client_ip || '';
         const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLoc, p.city || '');
-        const isThr = Boolean(p.is_threat) || (p.status_code >= 400);
+        const isThr = Boolean(p.is_threat);
         if (seenIps.has(mainIp)) {
           const ex = pyPoints.find(item => (item.realClientIp || item.ip) === mainIp);
           if (ex && isThr) {
             ex.isThreat = true;
             ex.status_code = p.status_code || 403;
+            if (p.candidate_id) ex.candidateId = p.candidate_id;
           }
           continue;
         }
@@ -1428,6 +1456,8 @@ class TacticalParaguayMap {
         pyPoints.push({
           lat: resolved.lat,
           lon: resolved.lon,
+          logId: p.log_id || p.id || 0,
+          candidateId: p.candidate_id || 0,
           zoneName: resolved.zoneName,
           ip: p.client_ip || '',
           realClientIp: p.real_client_ip || '',

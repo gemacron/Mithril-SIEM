@@ -44,12 +44,12 @@ class Command(BaseCommand):
             {
                 'code': 'R-ENV-SCAN',
                 'name': 'Escaneo de Archivos Sensibles, Backups y Config (.env / .git / wp-config)',
-                'description': 'Intento de acceso a archivos críticos (.env, .git, backups .sql/.bak, phpinfo, wp-config, actuator)',
+                'description': 'Intento de acceso a archivos críticos (.env, .git, backups .sql/.bak, phpinfo, wp-admin, phpmyadmin, actuator)',
                 'category': 'SCANNER',
-                'pattern_regex': r'(\.env|\.git/|\.aws/|\.ssh/|\.docker/|wp-config\.php|phpinfo|\.sql(\.gz|\.bz2|\.zip)?$|\.bak$|\.htaccess|/actuator/env|/server-status)',
+                'pattern_regex': r'(\.env|\.git/|/\.git|\.aws/|\.ssh/|\.docker/|wp-config|wp-login\.php|wp-admin|xmlrpc\.php|phpmyadmin|pma/|myadmin|adminer|phpinfo|\.sql(\.gz|\.bz2|\.zip)?$|\.bak$|\.old$|\.swp$|\.htaccess|/actuator|/server-status|vendor/phpunit|eval-stdin\.php|boaform|cgi-bin|nmaplowercheck|/sdk|/evox/about|/HNAP1|/GponForm|/shell|cmd\.php|cmd\.jsp|owa/auth|autodiscover|/solr/)',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
-                'risk_points': 55,
+                'risk_points': 80,
             },
             {
                 'code': 'R-SQLI-URL',
@@ -59,7 +59,7 @@ class Command(BaseCommand):
                 'pattern_regex': r'(union\s+(all\s+)?select|or\s+[\'"]?1[\'"]?\s*=\s*[\'"]?1|waitfor\s+delay|benchmark\s*\(|pg_sleep|\bsleep\s*\(\d+|information_schema|extractvalue\s*\(|concat\s*\(.*select)',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
-                'risk_points': 55,
+                'risk_points': 85,
             },
             {
                 'code': 'R-PATH-TRAVERSAL',
@@ -69,7 +69,7 @@ class Command(BaseCommand):
                 'pattern_regex': r'(\.\./|\.\.\\|/etc/passwd|/etc/shadow|/proc/self/|win\.ini|boot\.ini|windows/system32)',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
-                'risk_points': 60,
+                'risk_points': 85,
             },
             {
                 'code': 'R-XSS-PAYLOAD',
@@ -79,7 +79,7 @@ class Command(BaseCommand):
                 'pattern_regex': r'(<script|javascript:|onerror\s*=|onload\s*=|<svg[^>]*onload|alert\s*\(|document\.cookie|eval\s*\()',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
-                'risk_points': 50,
+                'risk_points': 80,
             },
             {
                 'code': 'R-RCE-CMD',
@@ -89,7 +89,7 @@ class Command(BaseCommand):
                 'pattern_regex': r'(\$\{jndi:|;\s*(cat|ls|whoami|id|wget|curl|bash|sh|nc|python|perl)\b|\|\s*(bash|sh|nc|wget|curl)\b|`(whoami|id|uname)|\(\)\s*\{\s*:;\s*\})',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
-                'risk_points': 80,
+                'risk_points': 95,
             },
             {
                 'code': 'R-SSRF-METADATA',
@@ -99,7 +99,7 @@ class Command(BaseCommand):
                 'pattern_regex': r'(169\.254\.169\.254|metadata\.google\.internal|file://|gopher://|dict://|ldap://127\.)',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
-                'risk_points': 70,
+                'risk_points': 85,
             },
             {
                 'code': 'R-BAD-USER-AGENT',
@@ -109,7 +109,7 @@ class Command(BaseCommand):
                 'pattern_regex': r'(sqlmap|nikto|dirbuster|gobuster|masscan|zgrab|nmap|acunetix|nuclei|wfuzz|ffuf|nessus|openvas|hydra|burpsuite)',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
-                'risk_points': 45,
+                'risk_points': 80,
             },
             {
                 'code': 'R-SCAN-404-BRUTE',
@@ -117,9 +117,9 @@ class Command(BaseCommand):
                 'description': 'Acumulación anómala de respuestas 404 Not Found desde una misma IP en corto lapso de tiempo',
                 'category': 'SCANNER',
                 'pattern_regex': '',
-                'threshold_count': 15,
+                'threshold_count': 4,
                 'threshold_seconds': 60,
-                'risk_points': 40,
+                'risk_points': 80,
             },
             {
                 'code': 'R-AUTH-BRUTE-401',
@@ -127,9 +127,9 @@ class Command(BaseCommand):
                 'description': 'Múltiples respuestas 401 Unauthorized o 403 Forbidden en endpoints de acceso o API',
                 'category': 'RATE_LIMIT',
                 'pattern_regex': r'(login|auth|admin|signin|token|session|api|wp-login|xmlrpc)',
-                'threshold_count': 6,
+                'threshold_count': 3,
                 'threshold_seconds': 60,
-                'risk_points': 45,
+                'risk_points': 80,
             },
             {
                 'code': 'R-HTTP-FLOOD-DOS',
@@ -139,7 +139,7 @@ class Command(BaseCommand):
                 'pattern_regex': '',
                 'threshold_count': 120,
                 'threshold_seconds': 60,
-                'risk_points': 60,
+                'risk_points': 80,
             },
         ]
 
@@ -149,11 +149,12 @@ class Command(BaseCommand):
             if r_created:
                 created_rules_count += 1
             else:
-                # Actualizar expresión regular mejorada manteniendo el estado activo/inactivo del operador
                 obj.name = r_data['name']
                 obj.description = r_data['description']
                 obj.pattern_regex = r_data['pattern_regex']
-                obj.save(update_fields=['name', 'description', 'pattern_regex'])
+                obj.threshold_count = min(obj.threshold_count, r_data['threshold_count'])
+                obj.risk_points = max(obj.risk_points, r_data['risk_points'])
+                obj.save(update_fields=['name', 'description', 'pattern_regex', 'threshold_count', 'risk_points'])
 
         self.stdout.write(self.style.SUCCESS(
             f"✅ Reglas de seguridad configuradas ({created_rules_count} nuevas)."

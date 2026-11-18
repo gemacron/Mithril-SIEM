@@ -16,6 +16,7 @@ from apps.detection.engine import (
     is_own_infrastructure_ip,
     is_own_public_wan_ip,
     resolve_geoip,
+    sync_unbanned_threats_to_candidates,
 )
 from apps.reports.models import AuditTrail
 from apps.notifications.services import send_telegram_alert
@@ -165,6 +166,7 @@ def _resolve_candidate_cf_info(c):
 
 @login_required
 def candidates_list_view(request):
+    sync_unbanned_threats_to_candidates(force=True)
     candidates = list(BanCandidate.objects.filter(status='PENDING').select_related('trigger_event', 'trigger_event__rule', 'trigger_event__node'))
     for c in candidates:
         _resolve_candidate_cf_info(c)
@@ -395,6 +397,117 @@ def dismiss_candidate_view(request, candidate_id):
     messages.info(request, f"Candidato {candidate.client_ip} descartado.")
     referer = request.META.get('HTTP_REFERER')
     return redirect(referer) if referer else redirect('mitigation:candidates')
+
+@login_required
+def manual_ban_ip_view(request):
+    """
+    Permite al operador bloquear directamente cualquier IP atacante desde el modal de
+    inspección del Live Feed o desde el Mapa Táctico 2D, aplicando las mismas reglas de
+    inmunidad para Cloudflare y la propia infraestructura.
+    """
+    if request.method != 'POST':
+        return redirect('mitigation:active_bans')
+
+    ip_str = (request.POST.get('client_ip') or request.POST.get('target_ip') or '').strip()
+    log_id = request.POST.get('log_id', '').strip()
+    reason = (request.POST.get('reason') or '').strip()
+
+    if log_id and log_id.isdigit():
+        log_obj = TrafficLog.objects.filter(id=int(log_id)).first()
+        if log_obj:
+            meta = extract_log_ip_meta(log_obj.client_ip, log_obj.raw_headers)
+            real_ip = meta.get('real_client_ip') or (log_obj.client_ip if not is_cloudflare_ip(log_obj.client_ip) else '')
+            if real_ip:
+                ip_str = real_ip
+            if not reason:
+                reason = f"Bloqueo directo por operador desde inspección de petición #{log_obj.id} ({log_obj.http_method} {log_obj.uri} -> HTTP {log_obj.status_code})."
+
+    if not ip_str:
+        msg = "No se especificó una dirección IP válida para bloquear."
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return JsonResponse({'status': 'error', 'message': msg}, status=400)
+        messages.error(request, msg)
+        return redirect(request.META.get('HTTP_REFERER') or 'mitigation:active_bans')
+
+    if is_cloudflare_ip(ip_str):
+        msg = f"La IP {ip_str} pertenece a los rangos oficiales de Cloudflare y está estrictamente protegida contra bloqueos."
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return JsonResponse({'status': 'error', 'message': msg}, status=400)
+        messages.error(request, msg)
+        return redirect(request.META.get('HTTP_REFERER') or 'mitigation:active_bans')
+
+    if is_own_infrastructure_ip(ip_str):
+        msg = f"La IP {ip_str} pertenece a su propia infraestructura (WAN / Balanceador / SIEM) y tiene inmunidad total contra bloqueos."
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return JsonResponse({'status': 'error', 'message': msg}, status=400)
+        messages.error(request, msg)
+        return redirect(request.META.get('HTTP_REFERER') or 'mitigation:active_bans')
+
+    try:
+        duration_hours = int(request.POST.get('duration_hours', 24))
+    except ValueError:
+        duration_hours = 24
+    expires_at = timezone.now() + timedelta(hours=duration_hours) if duration_hours > 0 else None
+
+    if not reason:
+        reason = f"Bloqueo táctico manual ejecutado por operador ({request.user.username})."
+
+    ban, _ = ActiveBan.objects.update_or_create(
+        client_ip=ip_str,
+        defaults={
+            'reason': reason,
+            'approved_by': request.user,
+            'banned_at': timezone.now(),
+            'expires_at': expires_at,
+            'is_active': True,
+            'revoked_at': None,
+            'revoked_by': None,
+        }
+    )
+
+    BanCandidate.objects.filter(client_ip=ip_str, status='PENDING').update(
+        status='APPROVED',
+        reviewed_by=request.user,
+        reviewed_at=timezone.now(),
+    )
+    IpReputation.objects.update_or_create(
+        client_ip=ip_str,
+        defaults={'status': 'BANNED', 'current_risk_score': 100}
+    )
+
+    active_nodes = ProxyNode.objects.all()
+    for node in active_nodes:
+        NodeBanSync.objects.update_or_create(
+            ban=ban,
+            node=node,
+            defaults={'is_synced': False}
+        )
+
+    AuditTrail.objects.create(
+        user=request.user,
+        action='MANUAL_BAN_IP',
+        target=f"IP: {ip_str}",
+        details={'duration_hours': duration_hours, 'reason': reason, 'log_id': log_id},
+        ip_address=request.META.get('REMOTE_ADDR')
+    )
+
+    send_telegram_alert(
+        title="🛑 Bloqueo Directo de IP Ejecutado",
+        message=(
+            f"IP: {ip_str}\n"
+            f"Operador: {request.user.username}\n"
+            f"Duración: {'Permanente' if not expires_at else f'{duration_hours} horas'}\n"
+            f"Motivo: {reason}\n"
+            f"Sincronizando bloqueo en {active_nodes.count()} proxies Nginx..."
+        )
+    )
+
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return JsonResponse({'status': 'ok', 'action': 'banned', 'client_ip': ip_str})
+
+    messages.success(request, f"IP {ip_str} bloqueada exitosamente en todos los proxies.")
+    referer = request.META.get('HTTP_REFERER')
+    return redirect(referer) if referer else redirect('mitigation:active_bans')
 
 @login_required
 def active_bans_list_view(request):

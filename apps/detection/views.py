@@ -7,7 +7,15 @@ from django.http import JsonResponse
 from django.contrib import messages
 from datetime import timedelta
 from .models import SecurityRule, TrafficLog, SecurityEvent
-from .engine import process_incoming_log, invalidate_rules_cache, sync_cloudflare_ips, get_cloudflare_sync_status, extract_log_ip_meta
+from .engine import (
+    process_incoming_log,
+    invalidate_rules_cache,
+    sync_cloudflare_ips,
+    get_cloudflare_sync_status,
+    extract_log_ip_meta,
+    is_cloudflare_ip,
+    is_own_infrastructure_ip,
+)
 from apps.mitigation.models import IpReputation
 from apps.nodes.models import ProxyNode
 from apps.reports.models import AuditTrail
@@ -219,16 +227,23 @@ def log_inspect_api_view(request, log_id):
 
     events_data = [{
         'id': ev.id,
-        'rule_code': ev.rule.code,
-        'rule_name': ev.rule.name,
+        'rule_code': ev.rule.code if ev.rule else 'HEURÍSTICA',
+        'rule_name': ev.rule.name if ev.rule else 'Detección Heurística / Sondeo',
         'severity': ev.severity,
         'matched_payload': ev.matched_payload,
-        'category': ev.rule.get_category_display() if hasattr(ev.rule, 'get_category_display') else ev.rule.category,
+        'category': (ev.rule.get_category_display() if hasattr(ev.rule, 'get_category_display') else ev.rule.category) if ev.rule else 'Anomalía',
     } for ev in events]
 
     headers = log.raw_headers if isinstance(log.raw_headers, dict) else {}
     connection_ip = headers.get('connection_ip') or log.client_ip
     real_ip = meta['real_client_ip'] or (log.client_ip if not meta['is_cloudflare'] else '')
+    target_ban_ip = real_ip or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
+    is_protected = bool(
+        not target_ban_ip
+        or is_cloudflare_ip(target_ban_ip)
+        or is_own_infrastructure_ip(target_ban_ip)
+        or (reputation and reputation.status == 'WHITELISTED')
+    )
 
     full_path = f"{log.uri}?{log.query_params}" if log.query_params else log.uri
     raw_lines = [f"{log.http_method} {full_path} HTTP/1.1"]
@@ -273,10 +288,12 @@ def log_inspect_api_view(request, log_id):
             'raw_http': "\n".join(raw_lines),
         },
         'security': {
-            'is_threat': len(events_data) > 0 or log.status_code >= 400,
+            'is_threat': len(events_data) > 0 or bool(headers.get('is_threat')) or log.status_code >= 400,
             'risk_score': reputation.current_risk_score if reputation else 0,
             'reputation_status': reputation.status if reputation else 'MONITORED',
             'total_violations': reputation.total_violations if reputation else 0,
+            'target_ban_ip': target_ban_ip,
+            'is_protected': is_protected,
             'events': events_data,
         }
     })
