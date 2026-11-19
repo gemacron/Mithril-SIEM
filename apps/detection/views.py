@@ -149,10 +149,14 @@ def rule_delete_view(request, rule_id):
 @csrf_exempt
 def api_ingest(request):
     """
-    Ingestión de logs de tráfico desde proxies Nginx (Vector / Fluent Bit / Python Agent)
+    Ingestión estrictamente autenticada de logs de tráfico desde proxies Nginx registrados.
+    Rechaza cualquier paquete proveniente de nodos eliminados, no registrados o con token inválido.
     """
     if request.method != 'POST':
         return JsonResponse({'error': 'POST required'}, status=405)
+
+    if not ProxyNode.objects.exists():
+        return JsonResponse({'error': 'No hay proxies registrados en Mithril SIEM. Ingesta rechazada.'}, status=403)
 
     auth_header = request.META.get('HTTP_AUTHORIZATION', '')
     header_node = None
@@ -162,10 +166,8 @@ def api_ingest(request):
 
     if not header_node:
         node_ip = request.META.get('HTTP_X_NODE_IP') or request.META.get('REMOTE_ADDR')
-        if node_ip:
+        if node_ip and node_ip not in ('127.0.0.1', '::1'):
             header_node = ProxyNode.objects.filter(ip_address=node_ip).first()
-
-    single_fallback_node = ProxyNode.objects.first() if ProxyNode.objects.count() == 1 else None
 
     try:
         body = json.loads(request.body.decode('utf-8'))
@@ -175,6 +177,7 @@ def api_ingest(request):
     # Si es una lista de logs (batch) o un solo log
     logs_data = body if isinstance(body, list) else [body]
     processed_count = 0
+    rejected_count = 0
     touched_nodes = {}
 
     for item in logs_data:
@@ -182,18 +185,23 @@ def api_ingest(request):
             target_node = None
             item_key = str(item.get('node_api_key') or '').strip().strip('"').strip("'")
             if item_key:
+                # Si el agente envía node_api_key, DEBE coincidir estrictamente con un nodo activo registrado
                 target_node = ProxyNode.objects.filter(api_key=item_key).first()
-            if not target_node:
+            else:
+                # Respaldo solo para syslog nativo sin agente: verificar IP exacta de nodo registrado o Bearer token
                 item_ips = item.get('node_ips')
                 if isinstance(item_ips, list) and item_ips:
                     target_node = ProxyNode.objects.filter(ip_address__in=item_ips).first()
-            if not target_node and item.get('node_ip'):
-                target_node = ProxyNode.objects.filter(ip_address=item['node_ip']).first()
-            if not target_node:
-                target_node = header_node or single_fallback_node
+                if not target_node and item.get('node_ip'):
+                    target_node = ProxyNode.objects.filter(ip_address=item['node_ip']).first()
+                if not target_node:
+                    target_node = header_node
 
-            if target_node:
-                touched_nodes[target_node.id] = target_node
+            if not target_node or not target_node.is_monitoring_enabled:
+                rejected_count += 1
+                continue
+
+            touched_nodes[target_node.id] = target_node
             process_incoming_log(item, node=target_node)
             processed_count += 1
         except Exception as e:
@@ -202,9 +210,17 @@ def api_ingest(request):
     for n in touched_nodes.values():
         n.update_heartbeat()
 
+    if processed_count == 0 and rejected_count > 0:
+        return JsonResponse({
+            'status': 'rejected',
+            'error': 'Nodo proxy no registrado, deshabilitado o con NODE_API_KEY inválido.',
+            'rejected_records': rejected_count
+        }, status=403)
+
     return JsonResponse({
         'status': 'ok',
-        'processed_records': processed_count
+        'processed_records': processed_count,
+        'rejected_records': rejected_count,
     })
 
 @login_required
