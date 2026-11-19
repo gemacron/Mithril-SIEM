@@ -433,12 +433,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const isLoc = isEventLocal(event);
     const isProbe = isEventProbe(event);
     const isDir = Boolean(event.is_direct_public_ip) || (!event.is_cloudflare && !isLoc && !event.is_own_public_ip);
+    const canalBadge = event.is_cloudflare
+      ? `<span style="background: rgba(243, 128, 32, 0.16); color: #f6821f; border: 1px solid rgba(243, 128, 32, 0.5); font-size: 0.66rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono); white-space: nowrap;" title="Tráfico recibido a través de Cloudflare">☁️ Vía Cloudflare</span>`
+      : (isLoc
+          ? `<span style="background: rgba(192, 132, 252, 0.14); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.45); font-size: 0.66rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono); white-space: nowrap;">🏢 Red Local (LAN)</span>`
+          : `<span style="background: rgba(239, 68, 68, 0.16); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.5); font-size: 0.66rem; font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 4px; font-family: var(--font-mono); white-space: nowrap;" title="Conexión directa a la IP pública del proxy">⚡ Directo (Sin CF)</span>`);
 
     return `
-      <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-is-direct="${isDir ? 'true' : 'false'}" data-is-probe="${isProbe ? 'true' : 'false'}" data-client-ip="${event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" style="cursor: pointer;" onclick="if (typeof openLogInspectModal === 'function') openLogInspectModal(${event.id || 0})" title="Haz clic para verificar los detalles técnicos de esta petición">
+      <tr data-log-id="${event.id || ''}" data-is-local="${isLoc ? 'true' : 'false'}" data-is-direct="${isDir ? 'true' : 'false'}" data-is-probe="${isProbe ? 'true' : 'false'}" data-client-ip="${event.real_client_ip || event.client_ip || ''}" data-real-ip="${event.real_client_ip || ''}" style="cursor: pointer;" onclick="if (typeof openLogInspectModal === 'function') openLogInspectModal(${event.id || 0})" title="Haz clic para verificar los detalles técnicos de esta petición">
         <td><span class="${badgeClass}">${badgeText}</span></td>
         <td><strong>${event.timestamp || ''}</strong></td>
-        <td><code>${event.client_ip || ''}</code>${cfBadgeHtml(event.is_cloudflare, false, '', event.cloudflare_ip)}</td>
+        <td>${canalBadge}</td>
         <td>${realClientIpCellHtml(event)}</td>
         <td>${countryDisplay}</td>
         <td style="max-width: 450px; word-break: break-all;"><span style="color: var(--neon-cyan); font-weight: 600;">${event.method || 'GET'}</span> <code style="word-break: break-all; white-space: pre-wrap; font-size: 0.74rem; color: #e2e8f0;">${uriDisplay}</code></td>

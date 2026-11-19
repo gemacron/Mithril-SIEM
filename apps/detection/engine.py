@@ -690,13 +690,12 @@ def resolve_cloudflare_and_real_ip(data):
 
     if is_cf:
         # Petición a través de Cloudflare:
-        # El cliente real DEBE venir de CF-Connecting-IP, True-Client-IP o del cliente original en X-Forwarded-For.
+        # El cliente real DEBE venir de CF-Connecting-IP, True-Client-IP, X-Forwarded-For o X-Real-IP (si no es IP de Cloudflare).
         if _is_valid_ip(cf_header_ip) and not is_cloudflare_ip(cf_header_ip):
             real_client_ip = cf_header_ip
         else:
-            # Buscar en X-Forwarded-For la IP del cliente que no sea de Cloudflare
-            for cand in xff_ips:
-                if not is_cloudflare_ip(cand):
+            for cand in [*xff_ips, x_real_ip]:
+                if _is_valid_ip(cand) and not is_cloudflare_ip(cand):
                     real_client_ip = cand
                     break
 
@@ -1395,13 +1394,15 @@ def process_incoming_log(data, node=None):
     http_method_val = str(data.get('http_method', 'GET')).upper()
     ua_val = str(data.get('user_agent', '') or '')
 
-    # Ignorar paquetes pre-handshake TLS SNI de capa 4 sin desencriptar provenientes de Cloudflare
-    # (ya que 100ms después Nginx desencripta el paquete y entrega la petición HTTP real con CF-Connecting-IP)
-    if (http_method_val == 'HTTPS' or ua_val.startswith('TLS SNI')) and is_cf and not real_client_ip:
+    # Descartar por completo cualquier paquete/sonda proveniente únicamente de un nodo Edge de Cloudflare
+    # que NO contenga la IP real del cliente (no interesa la ubicación ni la IP del nodo de Cloudflare).
+    if is_cf and not real_client_ip:
         return None
 
     # La IP real del cliente que realiza la petición (detrás de Cloudflare, por LAN local, o directo a IP pública):
     target_client_ip = real_client_ip if real_client_ip else raw_conn_ip
+    if is_cloudflare_ip(target_client_ip):
+        return None
 
     cf_country_hdr = ip_meta.get('cf_country', '')
     geo = resolve_geoip(target_client_ip, cf_country=cf_country_hdr)

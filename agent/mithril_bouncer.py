@@ -728,7 +728,7 @@ def kernel_network_mirror_worker():
                 # 2. Extraer la IP Real del Cliente (externa detrás de Cloudflare, directa a IP pública, o LAN local)
                 real_origin_ip = ""
                 if is_via_cloudflare:
-                    for cand in [cf_connecting_ip, *xff_parts]:
+                    for cand in [cf_connecting_ip, *xff_parts, x_real_ip]:
                         if cand and not is_cf_ip(cand) and not is_own_balancer_ip(cand):
                             real_origin_ip = cand
                             break
@@ -738,6 +738,10 @@ def kernel_network_mirror_worker():
                         if cand and not is_cf_ip(cand) and not is_own_balancer_ip(cand):
                             real_origin_ip = cand
                             break
+
+                # Descartar sondas/paquetes internos de Cloudflare que no traen IP real del cliente
+                if is_via_cloudflare and not real_origin_ip:
+                    continue
 
                 edge_ip = cf_node_ip if is_via_cloudflare else (real_origin_ip or src_ip)
                 real_ip = real_origin_ip
@@ -813,8 +817,10 @@ def kernel_network_mirror_worker():
                     msg = f"<190>nginx: {event_json}".encode("utf-8", errors="ignore")
                     udp_sock.sendto(msg[:60000], (target_host, SYSLOG_PORT))
 
-            # 3. Handshake TLS ClientHello en puerto 443 (para sitios HTTPS estáticos o sin proxy_pass HTTP)
+            # 3. Handshake TLS ClientHello en puerto 443 (solo clientes directos que no sean nodos Cloudflare)
             elif dst_port == 443 and payload[0] == 0x16:
+                if is_cf_ip(src_ip):
+                    continue
                 sni = extract_tls_sni(payload)
                 if sni and (now - recent_client_activity.get(src_ip, 0)) > 2.5:
                     recent_client_activity[src_ip] = now

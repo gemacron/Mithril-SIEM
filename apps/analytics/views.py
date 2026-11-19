@@ -184,23 +184,12 @@ def api_map_data(request):
         .exclude(country_code__startswith='CF-')
         .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         .values(*fields_list)
-        .order_by('-id')[:70]
-    )
-    probe_points = list(
-        TrafficLog.objects.filter(created_at__gte=since)
-        .exclude(latitude__isnull=True)
-        .filter(
-            Q(http_method='HTTPS')
-            | Q(user_agent__icontains='Cloudflare-Traffic-Manager')
-            | Q(country_code__startswith='CF-')
-            | (Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-        )
-        .values(*fields_list)
-        .order_by('-id')[:20]
+        .order_by('-id')[:80]
     )
     py_points = list(
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(http_method='HTTPS')
+        .exclude(country_code__startswith='CF-')
         .filter(
             Q(country_code__in=['PY', 'LAN'])
             | Q(country_name__icontains='Paraguay')
@@ -213,7 +202,7 @@ def api_map_data(request):
     )
     seen_ids = set()
     raw_points = []
-    for item in (threat_points + real_client_points + py_points + probe_points):
+    for item in (threat_points + real_client_points + py_points):
         if item['id'] not in seen_ids:
             seen_ids.add(item['id'])
             raw_points.append(item)
@@ -238,6 +227,10 @@ def api_map_data(request):
         eff_ip = real_ip_clean or p['client_ip']
         conn_ip = meta.get('cloudflare_ip') or (p['client_ip'] if meta.get('is_cloudflare') else eff_ip)
         target_geo_ip = real_ip_clean or conn_ip
+
+        # Jamás graficar IPs de nodos Cloudflare Edge ni sus ubicaciones PoP: solo clientes reales
+        if is_cloudflare_ip(target_geo_ip) or (meta['is_cloudflare'] and not real_ip_clean):
+            continue
 
         re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
         p['latitude'] = re_geo['latitude']
@@ -344,7 +337,14 @@ def api_live_stats(request):
     pending_bans = BanCandidate.objects.filter(status='PENDING').count()
     active_bans = ActiveBan.objects.filter(is_active=True).count()
 
-    recent_logs_qs = list(TrafficLog.objects.select_related('node').order_by('-id')[:25])
+    recent_logs_qs = list(
+        TrafficLog.objects.select_related('node')
+        .exclude(http_method='HTTPS')
+        .exclude(country_code__startswith='CF-')
+        .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
+        .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
+        .order_by('-id')[:25]
+    )
     recent_ips = {log.client_ip for log in recent_logs_qs}
     threat_ips = set(
         SecurityEvent.objects.filter(client_ip__in=recent_ips, created_at__gte=since_24h)
@@ -359,6 +359,8 @@ def api_live_stats(request):
             lat, lon = re_geo['latitude'], re_geo['longitude']
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
         real_ip_clean = meta.get('real_client_ip') or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
+        if not real_ip_clean and (meta['is_cloudflare'] or is_cloudflare_ip(log.client_ip)):
+            continue
         eff_ip = real_ip_clean or log.client_ip
         conn_ip = meta.get('cloudflare_ip') or (log.client_ip if meta.get('is_cloudflare') else eff_ip)
         target_geo_ip = real_ip_clean or conn_ip
@@ -377,7 +379,8 @@ def api_live_stats(request):
         recent_logs_data.append({
             'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
-            'client_ip': conn_ip,
+            'client_ip': eff_ip,
+            'connection_ip': conn_ip,
             'method': log.http_method,
             'uri': log.uri,
             'status_code': log.status_code,
@@ -488,14 +491,14 @@ def api_live_feed_logs(request):
             .exclude(raw_headers__is_local_ip=True)
         )
 
-    # 2. Filtro independiente de Sondas de Cloudflare / Handshakes TLS sin IP de cliente final
-    if hide_probes:
-        qs = (
-            qs.exclude(http_method='HTTPS')
-            .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
-            .exclude(user_agent__icontains='TLS SNI')
-            .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-        )
+    # 2. Excluir siempre sondas de Cloudflare / Handshakes TLS sin IP de cliente final
+    qs = (
+        qs.exclude(http_method='HTTPS')
+        .exclude(country_code__startswith='CF-')
+        .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
+        .exclude(user_agent__icontains='TLS SNI')
+        .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
+    )
 
     # 3. Filtro por Método HTTP
     if method_filter and method_filter != 'ALL':
@@ -554,6 +557,8 @@ def api_live_feed_logs(request):
     for log in page_logs:
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
         real_ip_clean = meta.get('real_client_ip') or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
+        if not real_ip_clean and (meta['is_cloudflare'] or is_cloudflare_ip(log.client_ip)):
+            continue
         eff_ip = real_ip_clean or log.client_ip
         conn_ip = meta.get('cloudflare_ip') or (log.client_ip if meta.get('is_cloudflare') else eff_ip)
         target_geo_ip = real_ip_clean or conn_ip
@@ -570,14 +575,15 @@ def api_live_feed_logs(request):
         logs_data.append({
             'id': log.id,
             'timestamp': log.created_at.strftime('%H:%M:%S'),
-            'client_ip': conn_ip,
+            'client_ip': eff_ip,
+            'connection_ip': conn_ip,
             'method': log.http_method,
             'uri': log.uri,
             'status_code': log.status_code,
             'country_code': c_code,
             'country_name': c_name,
             'node': log.node.name if log.node else 'Direct',
-            'is_threat': (not is_benign) and (raw_threat or (log.status_code >= 400)),
+            'is_threat': (not is_benign) and (not is_own_pub) and (raw_threat or (not is_loc and log.status_code >= 400)),
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': real_ip_clean,
