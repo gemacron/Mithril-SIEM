@@ -51,15 +51,15 @@ def _calibrate_security_rules_once():
                 r.risk_points = 80
                 updated_fields.append('risk_points')
             elif r.code == 'R-SCAN-404-BRUTE':
-                if r.threshold_count > 4:
-                    r.threshold_count = 4
+                if r.threshold_count < 8 or r.threshold_count > 12:
+                    r.threshold_count = 8
                     updated_fields.append('threshold_count')
                 if r.risk_points < 80:
                     r.risk_points = 80
                     updated_fields.append('risk_points')
             elif r.code == 'R-AUTH-BRUTE-401':
-                if r.threshold_count > 3:
-                    r.threshold_count = 3
+                if r.threshold_count < 5 or r.threshold_count > 8:
+                    r.threshold_count = 5
                     updated_fields.append('threshold_count')
                 if r.risk_points < 80:
                     r.risk_points = 80
@@ -1524,25 +1524,27 @@ def process_incoming_log(data, node=None):
         compiled_rx = getattr(rule, '_compiled_regex', None)
         window_start = now - timedelta(seconds=max(1, rule.threshold_seconds))
 
-        # E. Detección de Acceso Directo por IP Pública (Bypass Cloudflare / Reconocimiento de Origen)
+        # E. Detección de Escaneo Directo por IP Pública (Host es IP cruda o vacío, evadiendo Cloudflare/DNS)
         if rule.code == 'R-DIRECT-IP-ACCESS':
-            if is_direct and not is_cf and not is_own_infra:
+            host_header = str(incoming_headers.get('host') or incoming_headers.get('Host') or data.get('host') or '').strip()
+            host_only = host_header.split(':')[0].strip('[]')
+            is_raw_ip_host = (not host_only) or _is_valid_ip(host_only)
+            if is_direct and not is_cf and not is_own_infra and is_raw_ip_host:
                 matched_any_rule = True
                 if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=10.0):
-                    host_header = str(incoming_headers.get('host') or incoming_headers.get('Host') or data.get('host') or '').strip()
-                    matched_msg = f"Acceso directo a IP Pública sin Cloudflare (Host: {host_header or 'IP'}, URI: {log.uri})"
+                    matched_msg = f"Escaneo directo a IP Pública sin dominio/Cloudflare (Host: {host_header or 'IP'}, URI: {log.uri})"
                     event = SecurityEvent.objects.create(
                         node=node,
                         rule=rule,
                         client_ip=target_client_ip,
-                        severity='MEDIUM',
+                        severity='HIGH',
                         matched_payload=matched_msg,
                         details={**base_req_details, 'host': host_header, 'direct_bypass': True}
                     )
                     triggered_events.append(event)
-                    risk_to_add += rule.risk_points
+                    risk_to_add += max(rule.risk_points, 80)
 
-        # A. Reglas de Fuerza Bruta de Autenticación (401/403)
+        # A. Reglas de Fuerza Bruta de Autenticación (401/403 repetidos >= umbral)
         elif rule.code == 'R-AUTH-BRUTE-401':
             if log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(normalized_uri)):
                 recent_auth_fails = TrafficLog.objects.filter(
@@ -1550,22 +1552,21 @@ def process_incoming_log(data, node=None):
                     status_code__in=[401, 403],
                     created_at__gte=window_start
                 ).count()
-                eff_threshold = min(rule.threshold_count, 3) if not is_local else rule.threshold_count
-                if recent_auth_fails >= eff_threshold or (not is_local and log.status_code in (401, 403)):
+                if recent_auth_fails >= max(3, rule.threshold_count):
                     matched_any_rule = True
-                    if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=2.0):
+                    if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
                         event = SecurityEvent.objects.create(
                             node=node,
                             rule=rule,
                             client_ip=target_client_ip,
                             severity='HIGH',
-                            matched_payload=f"{recent_auth_fails} respuesta(s) HTTP {log.status_code} en {log.uri}",
+                            matched_payload=f"Fuerza bruta: {recent_auth_fails} respuestas HTTP {log.status_code} en {rule.threshold_seconds}s ({log.uri})",
                             details={**base_req_details, 'count_auth_fails': recent_auth_fails}
                         )
                         triggered_events.append(event)
                         risk_to_add += max(rule.risk_points, 80)
 
-        # B. Detección Heurística de Frecuencia 404 (Enumeración de archivos / Scanners)
+        # B. Detección Heurística de Frecuencia 404 (Enumeración de directorios / Scanners >= umbral)
         elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
             if log.status_code == 404 and not is_benign_sync:
                 recent_404_count = (
@@ -1578,16 +1579,15 @@ def process_incoming_log(data, node=None):
                     .exclude(uri__in=['/favicon.ico', '/robots.txt', '/sitemap.xml'])
                     .count()
                 )
-                eff_404_threshold = min(rule.threshold_count, 3) if not is_local else min(rule.threshold_count, 5)
-                if recent_404_count >= eff_404_threshold:
+                if recent_404_count >= max(5, rule.threshold_count):
                     matched_any_rule = True
-                    if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=2.0):
+                    if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
                         event = SecurityEvent.objects.create(
                             node=node,
                             rule=rule,
                             client_ip=target_client_ip,
                             severity='HIGH',
-                            matched_payload=f"{recent_404_count} errores 404 en {rule.threshold_seconds}s ({log.uri})",
+                            matched_payload=f"Escaneo de rutas: {recent_404_count} errores 404 en {rule.threshold_seconds}s ({log.uri})",
                             details={**base_req_details, 'count_404': recent_404_count}
                         )
                         triggered_events.append(event)
@@ -1658,24 +1658,7 @@ def process_incoming_log(data, node=None):
                         triggered_events.append(event)
                         risk_to_add += max(rule.risk_points, 80)
 
-    # Si es una petición externa con error HTTP anómalo (>= 400, no estático/benigno) que aún no disparó regla específica,
-    # registrarla como evento de escaneo/sonda hostil para que SIEMPRE aparezca en Candidatos a Bloqueo si se muestra como ataque
-    if not is_local and not is_benign_sync and log.status_code >= 400 and not triggered_events and not matched_any_rule:
-        matched_any_rule = True
-        if not _is_in_event_cooldown(target_client_ip, 'R-HTTP-ANOMALY', cooldown_sec=3.0):
-            fallback_rule = next((r for r in active_rules if r.code in ('R-SCAN-404-BRUTE', 'R-ENV-SCAN')), active_rules[0] if active_rules else None)
-            event = SecurityEvent.objects.create(
-                node=node,
-                rule=fallback_rule,
-                client_ip=target_client_ip,
-                severity='HIGH' if log.status_code in (401, 403, 405, 500) else 'MEDIUM',
-                matched_payload=f"Sondeo HTTP {log.status_code} sobre {log.http_method} {log.uri}",
-                details=base_req_details
-            )
-            triggered_events.append(event)
-            risk_to_add += 80
-
-    # 4. Actualizar puntaje de riesgo de la IP DEL CLIENTE y garantizar Candidato a Bloqueo (1 a 1 con el Mapa)
+    # 4. Actualizar puntaje de riesgo de la IP DEL CLIENTE y garantizar Candidato a Bloqueo (solo para ataques reales confirmados)
     if risk_to_add > 0 or matched_any_rule or len(triggered_events) > 0:
         reputation.current_risk_score = min(100, max(80, reputation.current_risk_score + max(risk_to_add, 80)))
         reputation.total_violations = max(1, reputation.total_violations + max(1, len(triggered_events)))

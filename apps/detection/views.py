@@ -288,7 +288,7 @@ def log_inspect_api_view(request, log_id):
             'raw_http': "\n".join(raw_lines),
         },
         'security': {
-            'is_threat': len(events_data) > 0 or bool(headers.get('is_threat')) or log.status_code >= 400,
+            'is_threat': len(events_data) > 0 or bool(headers.get('is_threat')),
             'risk_score': reputation.current_risk_score if reputation else 0,
             'reputation_status': reputation.status if reputation else 'MONITORED',
             'total_violations': reputation.total_violations if reputation else 0,

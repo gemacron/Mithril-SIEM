@@ -94,7 +94,7 @@ def dashboard_view(request):
             log.client_ip = meta['real_client_ip']
         is_benign = _is_benign_app_sync(log.uri, log.status_code)
         raw_threat = bool(log.raw_headers.get('is_threat')) if isinstance(log.raw_headers, dict) else False
-        log.is_threat = (not is_benign) and (raw_threat or (log.status_code >= 400))
+        log.is_threat = (not is_benign) and (raw_threat or (log.client_ip in threat_ips))
         log.is_cloudflare = meta['is_cloudflare']
         log.cloudflare_ip = meta['cloudflare_ip']
         log.connection_ip = meta['cloudflare_ip'] if (meta['is_cloudflare'] and meta['cloudflare_ip']) else log.client_ip
@@ -262,7 +262,6 @@ def api_map_data(request):
                 (p['client_ip'] in threat_ips)
                 or (real_ip_clean in threat_ips)
                 or raw_is_threat
-                or (not is_loc and p['status_code'] >= 400)
             )
         )
 
@@ -390,7 +389,7 @@ def api_live_stats(request):
             'latitude': lat,
             'longitude': lon,
             'node': log.node.name if log.node else 'Direct',
-            'is_threat': (not is_benign) and (not is_own_pub) and (raw_threat or (target_geo_ip in threat_ips) or (not is_loc and log.status_code >= 400)),
+            'is_threat': (not is_benign) and (not is_own_pub) and (raw_threat or (target_geo_ip in threat_ips)),
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': real_ip_clean,
@@ -584,7 +583,7 @@ def api_live_feed_logs(request):
             'country_code': c_code,
             'country_name': c_name,
             'node': log.node.name if log.node else 'Direct',
-            'is_threat': (not is_benign) and (not is_own_pub) and (raw_threat or (not is_loc and log.status_code >= 400)),
+            'is_threat': (not is_benign) and (not is_own_pub) and raw_threat,
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': real_ip_clean,
