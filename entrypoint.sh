@@ -38,6 +38,9 @@ python manage.py init_mithril_system
 echo "Recolectando estáticos..."
 python manage.py collectstatic --noinput
 
+# Asegurar directorio de datos para la base offline GeoIP City (.mmdb)
+mkdir -p /app/data
+
 echo "=========================================="
 echo "🚀 MITHRIL SIEM LISTO. ARRANCANDO SERVIDOR."
 echo "=========================================="

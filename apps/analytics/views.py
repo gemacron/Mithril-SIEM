@@ -294,7 +294,8 @@ def api_map_data(request):
         p['is_direct_public_ip'] = meta.get('is_direct_public_ip', (not p['is_cloudflare'] and not p['is_local'] and not is_own_pub and bool(target_geo_ip)))
         p['is_probe'] = is_probe_flag
         p['node_name'] = p.pop('node__name', '') or ''
-        recent_points.append(p)
+        if p['latitude'] != 0.0 or p['longitude'] != 0.0:
+            recent_points.append(p)
 
     proxy_nodes = []
     for idx, n in enumerate(ProxyNode.objects.all()):

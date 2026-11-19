@@ -819,30 +819,90 @@ def normalize_inspection_payload(raw_text):
 # Integración de Base de Datos GeoIP Offline MaxMind (GeoLite2-City.mmdb) para precisión de ciudad en 0 ms
 _MAXMIND_READER = None
 _MAXMIND_CHECKED = False
+_MAXMIND_DOWNLOADING = False
+_MAXMIND_LOCK = threading.Lock()
+_GEOIP_FAIL_CACHE = {}
+
+def _download_mmdb_worker(dest_path):
+    """Descarga en segundo plano una base de datos GeoIP City offline (.mmdb) gratuita y sin límites."""
+    global _MAXMIND_READER, _MAXMIND_DOWNLOADING
+    import gzip
+    import shutil
+    now_dt = timezone.now()
+    prev_dt = (now_dt.replace(day=1) - timedelta(days=1))
+    candidate_urls = [
+        ("https://github.com/P3TERX/GeoLite.mmdb/raw/download/GeoLite2-City.mmdb", False),
+        (f"https://download.db-ip.com/free/dbip-city-lite-{now_dt.strftime('%Y-%m')}.mmdb.gz", True),
+        (f"https://download.db-ip.com/free/dbip-city-lite-{prev_dt.strftime('%Y-%m')}.mmdb.gz", True),
+    ]
+    tmp_path = dest_path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        for url, is_gz in candidate_urls:
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mithril-SIEM/2.2'})
+                with urllib.request.urlopen(req, timeout=25.0) as resp:
+                    if is_gz:
+                        with gzip.GzipFile(fileobj=resp) as gz_in, open(tmp_path, 'wb') as out_f:
+                            shutil.copyfileobj(gz_in, out_f)
+                    else:
+                        with open(tmp_path, 'wb') as out_f:
+                            shutil.copyfileobj(resp, out_f)
+                if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 5_000_000:
+                    os.replace(tmp_path, dest_path)
+                    import maxminddb
+                    reader = maxminddb.open_database(dest_path)
+                    with _MAXMIND_LOCK:
+                        _MAXMIND_READER = reader
+                    _GEOIP_MEM_CACHE.clear()
+                    print(f"✅ [GEOIP] Base de datos offline MMDB descargada y cargada: {dest_path}")
+                    break
+            except Exception:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    finally:
+        with _MAXMIND_LOCK:
+            _MAXMIND_DOWNLOADING = False
+
 
 def _get_maxmind_reader():
-    global _MAXMIND_READER, _MAXMIND_CHECKED
+    global _MAXMIND_READER, _MAXMIND_CHECKED, _MAXMIND_DOWNLOADING
+    if _MAXMIND_READER is not None:
+        return _MAXMIND_READER
     if _MAXMIND_CHECKED:
         return _MAXMIND_READER
-    _MAXMIND_CHECKED = True
-    try:
-        import maxminddb
-        from django.conf import settings
-        possible_paths = [
-            os.getenv('MAXMIND_DB_PATH', ''),
-            '/etc/mithril/GeoLite2-City.mmdb',
-            '/var/lib/mithril/GeoLite2-City.mmdb',
-            os.path.join(str(settings.BASE_DIR), 'GeoLite2-City.mmdb'),
-            os.path.join(str(settings.BASE_DIR), 'data', 'GeoLite2-City.mmdb'),
-            os.path.join(str(settings.BASE_DIR), 'GeoIP2-City.mmdb'),
-        ]
-        for p in possible_paths:
-            if p and os.path.isfile(p):
-                _MAXMIND_READER = maxminddb.open_database(p)
-                break
-    except Exception:
-        _MAXMIND_READER = None
+    with _MAXMIND_LOCK:
+        if _MAXMIND_READER is not None:
+            return _MAXMIND_READER
+        _MAXMIND_CHECKED = True
+        try:
+            import maxminddb
+            from django.conf import settings
+            default_dest = os.path.join(str(settings.BASE_DIR), 'data', 'GeoLite2-City.mmdb')
+            possible_paths = [
+                os.getenv('MAXMIND_DB_PATH', ''),
+                default_dest,
+                '/etc/mithril/GeoLite2-City.mmdb',
+                '/var/lib/mithril/GeoLite2-City.mmdb',
+                os.path.join(str(settings.BASE_DIR), 'GeoLite2-City.mmdb'),
+                os.path.join(str(settings.BASE_DIR), 'GeoIP2-City.mmdb'),
+            ]
+            for p in possible_paths:
+                if p and os.path.isfile(p) and os.path.getsize(p) > 1_000_000:
+                    _MAXMIND_READER = maxminddb.open_database(p)
+                    return _MAXMIND_READER
+            if not _MAXMIND_DOWNLOADING:
+                _MAXMIND_DOWNLOADING = True
+                threading.Thread(target=_download_mmdb_worker, args=(default_dest,), daemon=True).start()
+        except Exception:
+            _MAXMIND_READER = None
     return _MAXMIND_READER
+
 
 def _lookup_maxmind(ip_str):
     reader = _get_maxmind_reader()
@@ -852,24 +912,38 @@ def _lookup_maxmind(ip_str):
         rec = reader.get(ip_str)
         if not rec or not isinstance(rec, dict):
             return None
-        country = rec.get('country', {})
-        cc = str(country.get('iso_code', '')).upper()
+        country = rec.get('country') or rec.get('registered_country') or {}
+        cc = str(country.get('iso_code', '')).strip().upper()
         if not cc:
             return None
-        cname = country.get('names', {}).get('es') or country.get('names', {}).get('en') or cc
-        city_rec = rec.get('city', {})
-        city = city_rec.get('names', {}).get('es') or city_rec.get('names', {}).get('en') or ('Asunción' if cc == 'PY' else 'Remoto')
-        location = rec.get('location', {})
+        cname = (
+            country.get('names', {}).get('es')
+            or country.get('names', {}).get('en')
+            or ISO_COUNTRY_GEO_MAP.get(cc, (cc, cc, 'Remoto', 0.0, 0.0))[1]
+        )
+        city_rec = rec.get('city') or {}
+        subdivs = rec.get('subdivisions') or []
+        subdiv_name = ''
+        if subdivs and isinstance(subdivs, list) and isinstance(subdivs[0], dict):
+            subdiv_name = subdivs[0].get('names', {}).get('es') or subdivs[0].get('names', {}).get('en') or ''
+        city = (
+            city_rec.get('names', {}).get('es')
+            or city_rec.get('names', {}).get('en')
+            or subdiv_name
+            or ISO_COUNTRY_GEO_MAP.get(cc, (cc, cname, 'Remoto', 0.0, 0.0))[2]
+        )
+        location = rec.get('location') or {}
         lat = float(location.get('latitude') or 0.0)
         lon = float(location.get('longitude') or 0.0)
-        if not lat and not lon:
-            return None
+        if not lat and not lon and cc in ISO_COUNTRY_GEO_MAP:
+            lat = ISO_COUNTRY_GEO_MAP[cc][3]
+            lon = ISO_COUNTRY_GEO_MAP[cc][4]
         return {
             'country_code': cc,
             'country_name': cname,
             'city': city,
-            'latitude': lat,
-            'longitude': lon,
+            'latitude': round(lat, 4),
+            'longitude': round(lon, 4),
             'is_cloudflare': False
         }
     except Exception:
@@ -878,128 +952,102 @@ def _lookup_maxmind(ip_str):
 
 def _lookup_public_geoip_api(ip_clean):
     """
-    Consulta universal GeoIP en línea con caché en RAM y Redis para IPs públicas directas
-    (cuando no viene cabecera CF-IPCountry), válido para cualquier país o proveedor del mundo.
-    Prioriza MaxMind offline si el archivo de base de datos está presente.
+    Consulta universal GeoIP con prioridad a la base offline MMDB (0.05 ms, sin límites),
+    respaldo en caché RAM/Redis y fallback en línea HTTPS (ipwho.is -> ip-api.com -> freeipapi.com).
     """
     if not ip_clean or is_private_local_ip(ip_clean) or is_cloudflare_ip(ip_clean):
         return None
-    if ip_clean in _GEOIP_MEM_CACHE:
-        return _GEOIP_MEM_CACHE[ip_clean]
 
-    # Comprobar MaxMind primero (0.05 ms, sin límites de peticiones)
+    # 1. Base de datos offline MaxMind / DB-IP City (instantánea y 100% real)
     mm_res = _lookup_maxmind(ip_clean)
     if mm_res:
         _GEOIP_MEM_CACHE[ip_clean] = mm_res
         return mm_res
 
-    cache_key = f"mithril:geoip:v1:{ip_clean}"
+    if ip_clean in _GEOIP_MEM_CACHE:
+        return _GEOIP_MEM_CACHE[ip_clean]
+
+    cache_key = f"mithril:geoip:v2:{ip_clean}"
     try:
         cached = cache.get(cache_key)
-        if isinstance(cached, dict) and cached.get('country_code'):
+        if isinstance(cached, dict) and cached.get('country_code') and cached.get('country_code') != 'XX':
             _GEOIP_MEM_CACHE[ip_clean] = cached
             return cached
     except Exception:
         pass
 
+    # Evitar reintentos repetidos si las APIs externas acaban de fallar para esta IP
+    now_mono = time.monotonic()
+    if (now_mono - _GEOIP_FAIL_CACHE.get(ip_clean, 0.0)) < 180.0:
+        return None
+
+    def _save_geo_result(cc, cname, city, lat, lon):
+        cc_u = str(cc).strip().upper()[:8]
+        res = {
+            'country_code': cc_u,
+            'country_name': str(cname or ISO_COUNTRY_GEO_MAP.get(cc_u, (cc_u, cc_u, 'Remoto', 0.0, 0.0))[1]),
+            'city': str(city or 'Remoto'),
+            'latitude': round(float(lat or 0.0), 4),
+            'longitude': round(float(lon or 0.0), 4),
+            'is_cloudflare': False,
+        }
+        if len(_GEOIP_MEM_CACHE) > 4000:
+            _GEOIP_MEM_CACHE.clear()
+        _GEOIP_MEM_CACHE[ip_clean] = res
+        try:
+            cache.set(cache_key, res, timeout=86400)
+        except Exception:
+            pass
+        return res
+
+    # 2. API primaria HTTPS sin límite estricto de 45 req/min: ipwho.is
     try:
-        url = f"http://ip-api.com/json/{ip_clean}?fields=status,countryCode,country,city,lat,lon&lang=es"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mithril-SIEM/2.1'}, method='GET')
+        req = urllib.request.Request(f"https://ipwho.is/{ip_clean}", headers={'User-Agent': 'Mithril-SIEM/2.2'}, method='GET')
         with urllib.request.urlopen(req, timeout=2.0) as resp:
-            payload = json.loads(resp.read().decode('utf-8', errors='ignore'))
-        if payload.get('status') == 'success' and payload.get('countryCode'):
-            cc = str(payload['countryCode']).strip().upper()[:8]
-            cname = str(payload.get('country') or ISO_COUNTRY_GEO_MAP.get(cc, (cc, cc, 'Remoto', 0.0, 0.0))[1])
-            city = str(payload.get('city') or 'Remoto')
-            lat = float(payload.get('lat') or 0.0)
-            lon = float(payload.get('lon') or 0.0)
-            res = {
-                'country_code': cc,
-                'country_name': cname,
-                'city': city,
-                'latitude': lat,
-                'longitude': lon,
-                'is_cloudflare': False,
-            }
-            if len(_GEOIP_MEM_CACHE) > 4000:
-                _GEOIP_MEM_CACHE.clear()
-            _GEOIP_MEM_CACHE[ip_clean] = res
-            try:
-                cache.set(cache_key, res, timeout=86400)
-            except Exception:
-                pass
-            return res
+            p = json.loads(resp.read().decode('utf-8', errors='ignore'))
+        if p.get('success') and p.get('country_code'):
+            return _save_geo_result(p['country_code'], p.get('country'), p.get('city') or p.get('region'), p.get('latitude'), p.get('longitude'))
     except Exception:
         pass
 
-    # Fallback secundario si ip-api.com excede el límite de 45 req/min
+    # 3. API secundaria: ip-api.com
     try:
-        url2 = f"http://ipwho.is/{ip_clean}"
-        req2 = urllib.request.Request(url2, headers={'User-Agent': 'Mithril-SIEM/2.1'}, method='GET')
+        req2 = urllib.request.Request(
+            f"http://ip-api.com/json/{ip_clean}?fields=status,countryCode,country,city,lat,lon&lang=es",
+            headers={'User-Agent': 'Mithril-SIEM/2.2'},
+            method='GET'
+        )
         with urllib.request.urlopen(req2, timeout=2.0) as resp2:
             p2 = json.loads(resp2.read().decode('utf-8', errors='ignore'))
-        if p2.get('success') and p2.get('country_code'):
-            cc = str(p2['country_code']).strip().upper()[:8]
-            cname = str(p2.get('country') or ISO_COUNTRY_GEO_MAP.get(cc, (cc, cc, 'Remoto', 0.0, 0.0))[1])
-            city = str(p2.get('city') or 'Remoto')
-            lat = float(p2.get('latitude') or 0.0)
-            lon = float(p2.get('longitude') or 0.0)
-            res = {
-                'country_code': cc,
-                'country_name': cname,
-                'city': city,
-                'latitude': lat,
-                'longitude': lon,
-                'is_cloudflare': False,
-            }
-            _GEOIP_MEM_CACHE[ip_clean] = res
-            try:
-                cache.set(cache_key, res, timeout=86400)
-            except Exception:
-                pass
-            return res
+        if p2.get('status') == 'success' and p2.get('countryCode'):
+            return _save_geo_result(p2['countryCode'], p2.get('country'), p2.get('city'), p2.get('lat'), p2.get('lon'))
     except Exception:
         pass
-    return None
 
-
-# Subredes IPv4 asignadas por LACNIC a los principales proveedores de Paraguay (Tigo, Personal, Copaco, Claro, etc.)
-PARAGUAY_NETWORKS = [
-    ipaddress.ip_network('181.120.0.0/13'),  # Personal / Tigo (181.120.0.0 - 181.127.255.255)
-    ipaddress.ip_network('181.94.0.0/15'),   # Telecel / Tigo
-    ipaddress.ip_network('186.16.0.0/15'),   # Personal / Claro PY
-    ipaddress.ip_network('190.104.128.0/17'),# Tigo / Claro PY
-    ipaddress.ip_network('190.52.128.0/17'), # Claro PY
-    ipaddress.ip_network('200.10.192.0/19'), # Copaco
-    ipaddress.ip_network('200.85.32.0/19'),  # Tigo PY
-    ipaddress.ip_network('201.217.0.0/16'),  # Copaco / Tigo / Personal (201.217.0.0 - 201.217.255.255)
-    ipaddress.ip_network('201.222.0.0/19'),  # Tigo PY
-    ipaddress.ip_network('168.90.0.0/16'),   # Copaco / PY
-    ipaddress.ip_network('170.233.0.0/16'),  # Copaco / PY
-    ipaddress.ip_network('177.234.0.0/16'),  # PY ISPs
-    ipaddress.ip_network('179.62.0.0/16'),   # PY ISPs
-    ipaddress.ip_network('45.160.0.0/13'),   # LACNIC PY
-    ipaddress.ip_network('45.168.0.0/14'),   # LACNIC PY
-    ipaddress.ip_network('45.224.0.0/14'),   # LACNIC PY
-    ipaddress.ip_network('45.232.0.0/14'),   # LACNIC PY
-]
-
-def is_paraguay_ip(ip_obj):
+    # 4. API terciaria HTTPS: freeipapi.com
     try:
-        return any(ip_obj in net for net in PARAGUAY_NETWORKS)
+        req3 = urllib.request.Request(f"https://freeipapi.com/api/json/{ip_clean}", headers={'User-Agent': 'Mithril-SIEM/2.2'}, method='GET')
+        with urllib.request.urlopen(req3, timeout=2.0) as resp3:
+            p3 = json.loads(resp3.read().decode('utf-8', errors='ignore'))
+        if p3.get('countryCode') and p3.get('countryCode') != '-':
+            return _save_geo_result(p3['countryCode'], p3.get('countryName'), p3.get('cityName') or p3.get('regionName'), p3.get('latitude'), p3.get('longitude'))
     except Exception:
-        return False
+        pass
+
+    if len(_GEOIP_FAIL_CACHE) > 2000:
+        _GEOIP_FAIL_CACHE.clear()
+    _GEOIP_FAIL_CACHE[ip_clean] = now_mono
+    return None
 
 
 def resolve_geoip(ip_str, cf_country=''):
     """
-    Resuelve dinámicamente la ubicación geográfica real de cualquier IP:
-      1) Si es una IP Privada / Red Local (RFC1918 / Loopback) -> Red Interna (LAN)
-      2) Si pertenece a subredes IPv4 de Paraguay (Tigo, Personal, Copaco, Claro) -> Paraguay (Asunción)
-      3) El país real reportado por Cloudflare en la cabecera HTTP `CF-IPCountry` (`cf_country`)
-      4) Si es un nodo Edge de Cloudflare sin cliente -> Cloudflare Edge PoP
-      5) Consulta universal en caché / API GeoIP para conexiones públicas directas
-      6) Si es la IP Pública WAN propia de la infraestructura -> País real + '(WAN Propia)'
+    Resuelve la ubicación geográfica REAL y exacta de cualquier IP:
+      1) IP Privada / Red Local (RFC1918 / Loopback) -> Asunción (Sede Central LAN)
+      2) Base de datos offline MaxMind / DB-IP City (.mmdb) -> País, Ciudad y Coordenadas reales en 0.05 ms
+      3) API GeoIP en línea con caché RAM + Redis (ipwho.is / ip-api.com / freeipapi.com)
+      4) Cabecera HTTP `CF-IPCountry` real reportada por Cloudflare (solo si no hay MMDB/API disponible)
+      5) Si no se pudo resolver, retorna Desconocido ('XX') — JAMÁS inventa un país ni fuerza Paraguay.
     """
     ip_clean = str(ip_str or '').strip()
     crc_val = zlib.crc32(ip_clean.encode('utf-8'))
@@ -1018,58 +1066,30 @@ def resolve_geoip(ip_str, cf_country=''):
                 'longitude': round(-57.6200 + lon_micro, 4),
                 'is_cloudflare': False
             }
-        # 1. Intentar resolución local offline con MaxMind si está disponible (precisión de ciudad en 0 ms)
-        mm_res = _lookup_maxmind(ip_clean)
-        if mm_res:
-            return mm_res
-
-        # 2. Si la IP pertenece a proveedores de Paraguay, resolver de inmediato offline sin dependencias externas
-        if is_paraguay_ip(ip_obj):
-            lat_micro = (((crc_val % 100) - 50) / 100.0) * 0.035
-            lon_micro = ((((crc_val // 100) % 100) - 50) / 100.0) * 0.035
-            return {
-                'country_code': 'PY',
-                'country_name': 'Paraguay',
-                'city': 'Asunción',
-                'latitude': round(-25.2637 + lat_micro, 4),
-                'longitude': round(-57.5759 + lon_micro, 4),
-                'is_cloudflare': False
-            }
     except Exception:
         pass
 
-    # Determinar el país base (desde CF-IPCountry, país WAN autodescubierto, o GeoIP API universal)
     cc_clean = str(cf_country or '').strip().upper()
     if not cc_clean and is_own_wan:
         cc_clean = _OWN_INFRA_STATE.get('public_wan_country', '')
 
     is_cf = is_cloudflare_ip(ip_clean)
-    # Si es una IP de nodo Cloudflare y NO tenemos un país real de cliente válido (ej: sonda de tráfico CDN pura):
     if is_cf and not is_own_wan and (not cc_clean or cc_clean in ('XX', 'T1', '-')):
-        cf_pops = [
-            ('CF-US', 'Cloudflare Edge (US-East)', 'Ashburn PoP', 39.0438, -77.4874),
-            ('CF-US', 'Cloudflare Edge (US-West)', 'San Francisco PoP', 37.7749, -122.4194),
-            ('CF-EU', 'Cloudflare Edge (EU-Central)', 'Frankfurt PoP', 50.1109, 8.6821),
-            ('CF-GB', 'Cloudflare Edge (UK)', 'London PoP', 51.5074, -0.1278),
-            ('CF-BR', 'Cloudflare Edge (LATAM)', 'São Paulo PoP', -23.5505, -46.6333),
-            ('CF-ES', 'Cloudflare Edge (EU-South)', 'Madrid PoP', 40.4168, -3.7038),
-            ('CF-SG', 'Cloudflare Edge (APAC)', 'Singapore PoP', 1.3521, 103.8198),
-        ]
-        pop = cf_pops[crc_val % len(cf_pops)]
         return {
-            'country_code': pop[0],
-            'country_name': pop[1],
-            'city': pop[2],
-            'latitude': pop[3],
-            'longitude': pop[4],
+            'country_code': 'CF',
+            'country_name': 'Cloudflare Edge',
+            'city': 'Cloudflare CDN',
+            'latitude': 0.0,
+            'longitude': 0.0,
             'is_cloudflare': True
         }
 
+    # 1 y 2. Prioridad absoluta: GeoIP real por IP (MaxMind/DB-IP offline -> Caché -> APIs HTTPS)
     base_geo = None
-    # Si es una IP pública real (especialmente de Paraguay o sin país previo), consultar GeoIP real cacheado para obtener su ciudad exacta
-    if not is_own_wan and not is_cf and (not cc_clean or cc_clean == 'PY'):
+    if not is_cf:
         base_geo = _lookup_public_geoip_api(ip_clean)
 
+    # 3. Respaldo por cabecera real CF-IPCountry si la consulta por IP no devolvió datos
     if not base_geo and cc_clean and cc_clean not in ('XX', 'T1', '-'):
         jitter_scale = 0.025 if cc_clean == 'PY' else 0.45
         lat_jitter = (((crc_val % 100) - 50) / 100.0) * jitter_scale
@@ -1082,45 +1102,6 @@ def resolve_geoip(ip_str, cf_country=''):
                 'city': g[2],
                 'latitude': round(g[3] + lat_jitter, 4),
                 'longitude': round(g[4] + lon_jitter, 4),
-                'is_cloudflare': is_cf
-            }
-        else:
-            base_geo = {
-                'country_code': cc_clean[:8],
-                'country_name': f'País ISO ({cc_clean})',
-                'city': 'Remoto',
-                'latitude': 20.0,
-                'longitude': 0.0,
-                'is_cloudflare': False
-            }
-        if ip_clean:
-            _GEOIP_MEM_CACHE[ip_clean] = base_geo
-
-    if not base_geo:
-        base_geo = _lookup_public_geoip_api(ip_clean)
-
-    if not base_geo:
-        # Fallback seguro para IPs públicas no identificadas en la base en línea:
-        # NUNCA asociar al azar a nodos Cloudflare (Ashburn/Frankfurt).
-        lat_rand = (((crc_val % 100) - 50) / 100.0) * 0.035
-        lon_rand = ((((crc_val // 100) % 100) - 50) / 100.0) * 0.035
-        if cc_clean and cc_clean in ISO_COUNTRY_GEO_MAP:
-            g = ISO_COUNTRY_GEO_MAP[cc_clean]
-            base_geo = {
-                'country_code': g[0],
-                'country_name': g[1],
-                'city': g[2],
-                'latitude': round(g[3] + lat_rand, 4),
-                'longitude': round(g[4] + lon_rand, 4),
-                'is_cloudflare': False
-            }
-        elif not cc_clean or cc_clean == 'PY':
-            base_geo = {
-                'country_code': 'PY',
-                'country_name': 'Paraguay',
-                'city': 'Asunción',
-                'latitude': round(-25.2637 + lat_rand, 4),
-                'longitude': round(-57.5759 + lon_rand, 4),
                 'is_cloudflare': False
             }
         else:
@@ -1132,6 +1113,17 @@ def resolve_geoip(ip_str, cf_country=''):
                 'longitude': 0.0,
                 'is_cloudflare': False
             }
+
+    # 4. Si realmente no se pudo geolocalizar, devolver Desconocido sin inventar Paraguay ni otro país
+    if not base_geo:
+        base_geo = {
+            'country_code': 'XX',
+            'country_name': 'Desconocido',
+            'city': 'Desconocido',
+            'latitude': 0.0,
+            'longitude': 0.0,
+            'is_cloudflare': False
+        }
 
     if is_own_wan:
         cname = base_geo['country_name']
