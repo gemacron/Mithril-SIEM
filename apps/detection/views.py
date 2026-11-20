@@ -197,7 +197,7 @@ def api_ingest(request):
                 if not target_node:
                     target_node = header_node
 
-            if not target_node or not target_node.is_monitoring_enabled:
+            if not target_node or not target_node.monitoring_enabled:
                 rejected_count += 1
                 continue
 
