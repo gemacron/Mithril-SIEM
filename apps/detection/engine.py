@@ -1385,16 +1385,22 @@ def process_incoming_log(data, node=None):
 
     http_method_val = str(data.get('http_method', 'GET')).upper()
     ua_val = str(data.get('user_agent', '') or '')
+    ua_low = ua_val.lower()
 
-    # Descartar por completo cualquier paquete/sonda proveniente únicamente de un nodo Edge de Cloudflare
-    # que NO contenga la IP real del cliente (no interesa la ubicación ni la IP del nodo de Cloudflare).
-    if is_cf and not real_client_ip:
+    # Descartar únicamente sondas internas de salud o handshakes TLS de Cloudflare sin IP de cliente real.
+    # Las peticiones HTTP reales SIEMPRE se registran e inspeccionan (protegiendo siempre la IP de Cloudflare contra bloqueos).
+    is_cf_health_probe = (
+        http_method_val == 'HTTPS'
+        or 'cloudflare-traffic-manager' in ua_low
+        or 'cloudflare-healthchecks' in ua_low
+        or 'cloudflare-ssldetector' in ua_low
+        or 'tls sni' in ua_low
+    )
+    if is_cf and not real_client_ip and is_cf_health_probe:
         return None
 
     # La IP real del cliente que realiza la petición (detrás de Cloudflare, por LAN local, o directo a IP pública):
     target_client_ip = real_client_ip if real_client_ip else raw_conn_ip
-    if is_cloudflare_ip(target_client_ip):
-        return None
 
     cf_country_hdr = ip_meta.get('cf_country', '')
     geo = resolve_geoip(target_client_ip, cf_country=cf_country_hdr)
@@ -1474,12 +1480,10 @@ def process_incoming_log(data, node=None):
         broadcast_to_soc(log, is_threat=False, reputation=reputation)
         return log
 
-    # Si la petición viene a través de Cloudflare pero no tiene cliente final
-    # (es una sonda de salud interna de Cloudflare, monitor de uptime o TLS handshake),
-    # no evaluar reglas de ataque o DoS sobre el nodo compartido de Cloudflare.
-    if is_cf and not real_client_ip:
-        broadcast_to_soc(log, is_threat=False, reputation=reputation)
-        return log
+    # Si la petición viene a través de Cloudflare pero sin cabecera de cliente final,
+    # omitimos únicamente heurísticas de volumen/frecuencia (para no penalizar un nodo compartido de Cloudflare),
+    # pero SÍ evaluamos todas las firmas de ataque (SQLi, XSS, RCE, LFI, XXE, SSTI, escáneres) para alertas 100% exactas.
+    skip_freq_heuristics = bool(is_cf and not real_client_ip)
 
     is_benign_sync = _is_benign_app_sync(log.uri, log.status_code)
 
@@ -1487,8 +1491,10 @@ def process_incoming_log(data, node=None):
     now = timezone.now()
     active_rules = get_cached_active_rules()
 
-    # Normalizar y decodificar URL/Query/User-Agent/Referer para detectar ataques codificados (%20, %2e%2e, etc.)
-    raw_combined = f"{log.uri} {log.query_params} {log.user_agent} {log.referer}"
+    # Normalizar y decodificar URL/Query/User-Agent/Referer/Host/Body para detectar ataques en GET, POST, PUT, PATCH y headers
+    body_snippet = str(incoming_headers.get('body_snippet') or '')
+    host_hdr_val = str(incoming_headers.get('host') or incoming_headers.get('Host') or '')
+    raw_combined = f"{log.uri} {log.query_params} {log.user_agent} {log.referer} {host_hdr_val} {body_snippet}"
     full_target_string = normalize_inspection_payload(raw_combined)
     normalized_uri = normalize_inspection_payload(f"{log.uri} {log.query_params}")
 
@@ -1546,7 +1552,7 @@ def process_incoming_log(data, node=None):
 
         # A. Reglas de Fuerza Bruta de Autenticación (401/403 repetidos >= umbral)
         elif rule.code == 'R-AUTH-BRUTE-401':
-            if log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(normalized_uri)):
+            if not skip_freq_heuristics and log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(normalized_uri)):
                 recent_auth_fails = TrafficLog.objects.filter(
                     client_ip=target_client_ip,
                     status_code__in=[401, 403],
@@ -1568,7 +1574,7 @@ def process_incoming_log(data, node=None):
 
         # B. Detección Heurística de Frecuencia 404 (Enumeración de directorios / Scanners >= umbral)
         elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
-            if log.status_code == 404 and not is_benign_sync:
+            if not skip_freq_heuristics and log.status_code == 404 and not is_benign_sync:
                 recent_404_count = (
                     TrafficLog.objects.filter(
                         client_ip=target_client_ip,
@@ -1595,7 +1601,7 @@ def process_incoming_log(data, node=None):
 
         # C. Detección Heurística de Ráfaga / Flood DoS por IP (Rate Limit sin regex)
         elif not rule.pattern_regex and rule.category == 'RATE_LIMIT':
-            if not is_benign_sync and not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=4.0):
+            if not skip_freq_heuristics and not is_benign_sync and not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=4.0):
                 recent_req_count = (
                     TrafficLog.objects.filter(
                         client_ip=target_client_ip,
@@ -1658,8 +1664,8 @@ def process_incoming_log(data, node=None):
                         triggered_events.append(event)
                         risk_to_add += max(rule.risk_points, 80)
 
-    # 4. Actualizar puntaje de riesgo de la IP DEL CLIENTE y garantizar Candidato a Bloqueo (solo para ataques reales confirmados)
-    if risk_to_add > 0 or matched_any_rule or len(triggered_events) > 0:
+    # 4. Actualizar puntaje de riesgo de la IP DEL CLIENTE y garantizar Candidato a Bloqueo (solo para ataques reales confirmados; nunca banear Cloudflare Edge)
+    if (risk_to_add > 0 or matched_any_rule or len(triggered_events) > 0) and not is_cloudflare_ip(target_client_ip):
         reputation.current_risk_score = min(100, max(80, reputation.current_risk_score + max(risk_to_add, 80)))
         reputation.total_violations = max(1, reputation.total_violations + max(1, len(triggered_events)))
         reputation.last_seen_at = now

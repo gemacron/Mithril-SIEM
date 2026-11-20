@@ -328,6 +328,10 @@ def run_udp_syslog_receiver():
     """Servidor UDP escuchando en 0.0.0.0:5140 para Syslog de Nginx (access_log JSON y error_log)"""
     server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+    except Exception:
+        pass
+    try:
         server.bind((BIND_HOST, UDP_PORT))
         print(f"📡 [UDP-SYSLOG] Receptor de logs activo en {BIND_HOST}:{UDP_PORT} (Access JSON + Error Log)", flush=True)
     except Exception as e:

@@ -428,8 +428,31 @@ def apply_blocklist(banned_ips):
 
 HTTP_METHODS_BYTES = (
     b"GET ", b"POST ", b"PUT ", b"DELETE ", b"HEAD ", b"OPTIONS ", b"PATCH ",
+    b"CONNECT ", b"TRACE ", b"TRACK ", b"SEARCH ", b"PURGE ",
     b"PROPFIND ", b"PROPPATCH ", b"MKCOL ", b"COPY ", b"MOVE ", b"LOCK ", b"UNLOCK ", b"REPORT "
 )
+
+_SENSITIVE_BODY_RX = re.compile(
+    r'((?:password|passwd|pwd|pass|secret|api_key|apikey|access_token|refresh_token|authorization|credit_card|cvv)["\']?\s*[:=]\s*["\']?)([^&"\'\s,}]+)',
+    re.IGNORECASE,
+)
+
+def _extract_safe_body_snippet(payload, head_end, headers_map, max_len=2048):
+    """Extrae y sanitiza hasta 2KB del cuerpo HTTP (POST/PUT/PATCH) para inspección de ataques (SQLi/XSS/RCE/XXE/SSTI)."""
+    if head_end == -1:
+        return ""
+    body_bytes = payload[head_end + 4:]
+    if not body_bytes:
+        return ""
+    ctype = headers_map.get("content-type", "").lower()
+    if any(b in ctype for b in ("image/", "video/", "audio/", "octet-stream", "pdf", "zip", "gzip")):
+        return ""
+    snippet = body_bytes[:max_len].decode("latin-1", errors="ignore")
+    # Descartar si es binario puro (muchos bytes nulos)
+    if snippet.count("\x00") > 4:
+        return ""
+    snippet = _SENSITIVE_BODY_RX.sub(r"\1[REDACTED]", snippet)
+    return snippet.strip()
 
 _CF_NETS = [
     ipaddress.ip_network(c) for c in (
@@ -437,6 +460,8 @@ _CF_NETS = [
         "141.101.64.0/18", "108.162.192.0/18", "190.93.240.0/20", "188.114.96.0/20",
         "197.234.240.0/22", "198.41.128.0/17", "162.158.0.0/15", "104.16.0.0/13",
         "104.24.0.0/14", "172.64.0.0/13", "131.0.72.0/22",
+        "2400:cb00::/32", "2606:4700::/32", "2803:f800::/32", "2405:b500::/32",
+        "2405:8100::/32", "2a06:98c0::/29", "2c0f:f248::/32",
     )
 ]
 _CF_CACHE = {}
@@ -586,10 +611,18 @@ def kernel_network_mirror_worker():
     target_host = parsed.hostname or "127.0.0.1"
     target_port = parsed.port or 9900
     udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4 * 1024 * 1024)
+    except Exception:
+        pass
 
     try:
         raw_sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(0x0003))
         raw_sock.settimeout(0.5)
+        try:
+            raw_sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+        except Exception:
+            pass
     except Exception as e:
         print(f"⚠️ [KERNEL-MIRROR] No se pudo abrir AF_PACKET ({e}).")
         return
@@ -652,20 +685,27 @@ def kernel_network_mirror_worker():
                 eth_proto = struct.unpack("!H", raw_packet[16:18])[0]
                 eth_offset = 18
 
-            if eth_proto != 0x0800:  # Solo IPv4
+            if eth_proto == 0x0800:  # IPv4
+                ver_ihl = raw_packet[eth_offset]
+                ihl = (ver_ihl & 0x0F) * 4
+                if raw_packet[eth_offset + 9] != 6:  # Solo TCP
+                    continue
+                ip_end = eth_offset + ihl
+                if len(raw_packet) < ip_end + 20:
+                    continue
+                src_ip = socket.inet_ntoa(raw_packet[eth_offset + 12 : eth_offset + 16])
+                dst_ip = socket.inet_ntoa(raw_packet[eth_offset + 16 : eth_offset + 20])
+            elif eth_proto == 0x86DD:  # IPv6
+                if len(raw_packet) < eth_offset + 60:
+                    continue
+                if raw_packet[eth_offset + 6] != 6:  # Solo TCP (Next Header = 6)
+                    continue
+                ip_end = eth_offset + 40
+                src_ip = socket.inet_ntop(socket.AF_INET6, raw_packet[eth_offset + 8 : eth_offset + 24])
+                dst_ip = socket.inet_ntop(socket.AF_INET6, raw_packet[eth_offset + 24 : eth_offset + 40])
+            else:
                 continue
 
-            ver_ihl = raw_packet[eth_offset]
-            ihl = (ver_ihl & 0x0F) * 4
-            if raw_packet[eth_offset + 9] != 6:  # Solo TCP
-                continue
-
-            ip_end = eth_offset + ihl
-            if len(raw_packet) < ip_end + 20:
-                continue
-
-            src_ip = socket.inet_ntoa(raw_packet[eth_offset + 12 : eth_offset + 16])
-            dst_ip = socket.inet_ntoa(raw_packet[eth_offset + 16 : eth_offset + 20])
             src_port, dst_port = struct.unpack("!HH", raw_packet[ip_end : ip_end + 4])
 
             # Ignorar tráfico propio hacia Mithril SIEM o SSH
@@ -739,8 +779,15 @@ def kernel_network_mirror_worker():
                             real_origin_ip = cand
                             break
 
-                # Descartar sondas/paquetes internos de Cloudflare que no traen IP real del cliente
-                if is_via_cloudflare and not real_origin_ip:
+                ua_hdr = headers_map.get("user-agent", "")
+                ua_low = ua_hdr.lower()
+                # Descartar únicamente sondas internas de salud conocidas de Cloudflare sin IP de cliente real;
+                # NUNCA descartar una petición HTTP real aunque falte la cabecera CF-Connecting-IP.
+                if is_via_cloudflare and not real_origin_ip and (
+                    "cloudflare-traffic-manager" in ua_low
+                    or "cloudflare-healthchecks" in ua_low
+                    or "cloudflare-ssldetector" in ua_low
+                ):
                     continue
 
                 edge_ip = cf_node_ip if is_via_cloudflare else (real_origin_ip or src_ip)
@@ -755,6 +802,8 @@ def kernel_network_mirror_worker():
                     uri, query_params = full_uri.split("?", 1)
                 else:
                     uri, query_params = full_uri, ""
+
+                body_snippet = _extract_safe_body_snippet(payload, head_End, headers_map) if method in ("POST", "PUT", "PATCH", "DELETE") else ""
 
                 display_uri = f"[{host_hdr}] {uri}" if host_hdr and not uri.startswith("[") else uri
                 primary_ip = (real_ip or cf_node_ip or src_ip) if not is_via_cloudflare else (cf_node_ip or real_ip or src_ip)
@@ -775,6 +824,8 @@ def kernel_network_mirror_worker():
                     "raw_src_ip": src_ip,
                     "node_public_ip": _OWN_PUBLIC_WAN_IP,
                 }
+                if body_snippet:
+                    req_headers_info["body_snippet"] = body_snippet
 
                 pending_http[(src_ip, src_port, dst_ip, dst_port)] = {
                     "ts": now,
