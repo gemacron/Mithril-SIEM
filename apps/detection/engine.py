@@ -1151,17 +1151,22 @@ def _is_benign_app_sync(uri_str, status_code):
     para evitar falsos positivos contra usuarios legítimos.
     """
     u = str(uri_str or '').lower().split('?')[0].strip()
+    if status_code == 304:
+        return True
     if status_code == 404 and '/ocs/v2.php/apps/text/public/workspace' in u:
         return True
-    if status_code in (200, 204, 207, 304, 412) and any(p in u for p in (
+    if status_code in (200, 204, 206, 207, 304, 412) and any(p in u for p in (
+        '/index.php/avatar/',
+        '/core/preview',
+        '/index.php/core/preview',
         '/index.php/apps/text/session/',
-        '/ocs/v2.php/apps/user_status/',
-        '/ocs/v2.php/apps/notifications/',
-        '/ocs/v2.php/apps/dashboard/',
+        '/ocs/v2.php/apps/',
         '/index.php/apps/files/api/v1/stats',
         '/public.php/webdav/',
         '/remote.php/dav/',
+        '/remote.php/webdav/',
         '/cron.php',
+        '/status.php',
     )):
         return True
     if status_code == 404 and (
@@ -1607,9 +1612,12 @@ def process_incoming_log(data, node=None):
                         client_ip=target_client_ip,
                         created_at__gte=window_start
                     )
+                    .exclude(status_code=304)
+                    .exclude(uri__icontains='/index.php/avatar/')
+                    .exclude(uri__icontains='/core/preview')
                     .exclude(uri__icontains='/index.php/apps/text/session/')
-                    .exclude(uri__icontains='/ocs/v2.php/apps/user_status/')
-                    .exclude(uri__icontains='/ocs/v2.php/apps/notifications/')
+                    .exclude(uri__icontains='/ocs/v2.php/apps/')
+                    .exclude(uri__icontains='/remote.php/dav/')
                     .count()
                 )
                 if recent_req_count >= rule.threshold_count:

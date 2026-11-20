@@ -157,7 +157,7 @@ class Command(BaseCommand):
                 'description': 'Volumen excesivo de peticiones HTTP desde una única IP superando el límite por minuto',
                 'category': 'RATE_LIMIT',
                 'pattern_regex': '',
-                'threshold_count': 120,
+                'threshold_count': 300,
                 'threshold_seconds': 60,
                 'risk_points': 80,
             },
@@ -172,7 +172,10 @@ class Command(BaseCommand):
                 obj.name = r_data['name']
                 obj.description = r_data['description']
                 obj.pattern_regex = r_data['pattern_regex']
-                obj.threshold_count = min(obj.threshold_count, r_data['threshold_count'])
+                if obj.code == 'R-HTTP-FLOOD-DOS':
+                    obj.threshold_count = max(obj.threshold_count, r_data['threshold_count'])
+                else:
+                    obj.threshold_count = min(obj.threshold_count, r_data['threshold_count'])
                 obj.risk_points = max(obj.risk_points, r_data['risk_points'])
                 obj.save(update_fields=['name', 'description', 'pattern_regex', 'threshold_count', 'risk_points'])
 
