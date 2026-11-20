@@ -1193,13 +1193,16 @@ class TacticalParaguayMap {
     const resetBtn = document.getElementById('pyMapResetViewBtn');
 
     if (zoomInBtn) {
-      zoomInBtn.addEventListener('click', () => this.zoomAt(this.width / 2, this.height / 2, 1.45));
+      zoomInBtn.addEventListener('click', () => this.zoomAt(this.width / 2, this.height / 2, 1.65));
     }
     if (zoomOutBtn) {
-      zoomOutBtn.addEventListener('click', () => this.zoomAt(this.width / 2, this.height / 2, 1 / 1.45));
+      zoomOutBtn.addEventListener('click', () => this.zoomAt(this.width / 2, this.height / 2, 1 / 1.65));
     }
     if (focusCapBtn) {
-      focusCapBtn.addEventListener('click', () => this.focusOnGeo(-25.305, -57.545, 5.2));
+      focusCapBtn.addEventListener('click', () => {
+        const nextZoom = this.zoom >= 12.0 && this.zoom < 32.0 ? 36.0 : 14.0;
+        this.focusOnGeo(-25.284, -57.600, nextZoom);
+      });
     }
     if (resetBtn) {
       resetBtn.addEventListener('click', () => {
@@ -1217,7 +1220,7 @@ class TacticalParaguayMap {
 
   zoomAt(cx, cy, factor) {
     const geoBefore = this.canvasToGeo(cx, cy);
-    this.zoom = Math.max(1.0, Math.min(18.0, this.zoom * factor));
+    this.zoom = Math.max(1.0, Math.min(120.0, this.zoom * factor));
     if (this.zoom <= 1.02) {
       this.zoom = 1.0;
       this.panX = 0;
@@ -1231,8 +1234,8 @@ class TacticalParaguayMap {
     this.renderStaticBackground();
   }
 
-  focusOnGeo(lat, lon, targetZoom = 5.0) {
-    this.zoom = Math.max(1.0, Math.min(18.0, targetZoom));
+  focusOnGeo(lat, lon, targetZoom = 14.0) {
+    this.zoom = Math.max(1.0, Math.min(120.0, targetZoom));
     this.panX = 0;
     this.panY = 0;
     const pos = this.geoToCanvas(lat, lon);
@@ -1612,22 +1615,32 @@ class TacticalParaguayMap {
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, w, h);
 
-    // Retícula táctica de coordenadas de Paraguay
+    // Retícula táctica adaptativa (recortada al viewport para fluidez hasta 120x)
     ctx.strokeStyle = 'rgba(0, 229, 255, 0.06)';
     ctx.lineWidth = 0.6;
     ctx.font = '8px monospace';
     ctx.fillStyle = 'rgba(100, 116, 139, 0.45)';
-    const gridStep = this.zoom >= 3.0 ? 0.25 : 2;
-    for (let lat = -27; lat <= -19; lat += gridStep) {
+    const gridStep = this.zoom >= 35.0 ? 0.01 : (this.zoom >= 12.0 ? 0.05 : (this.zoom >= 3.0 ? 0.25 : 2));
+    const gridDecimals = gridStep < 0.05 ? 2 : (gridStep < 1 ? 2 : 0);
+    const topLeft = this.canvasToGeo(0, 0);
+    const botRight = this.canvasToGeo(w, h);
+    const visMinLat = Math.max(-28.5, Math.min(topLeft.lat, botRight.lat));
+    const visMaxLat = Math.min(-18.5, Math.max(topLeft.lat, botRight.lat));
+    const visMinLon = Math.max(-63.5, Math.min(topLeft.lon, botRight.lon));
+    const visMaxLon = Math.min(-53.5, Math.max(topLeft.lon, botRight.lon));
+    const startLat = Math.floor(visMinLat / gridStep) * gridStep;
+    const startLon = Math.floor(visMinLon / gridStep) * gridStep;
+
+    for (let lat = startLat; lat <= visMaxLat + gridStep * 0.5; lat += gridStep) {
       const { y } = this.geoToCanvas(lat, this.bounds.minLon);
       if (y < 0 || y > h) continue;
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
       ctx.stroke();
-      ctx.fillText(`${lat.toFixed(gridStep < 1 ? 2 : 0)}°S`, 6, y - 3);
+      ctx.fillText(`${Math.abs(lat).toFixed(gridDecimals)}°S`, 6, y - 3);
     }
-    for (let lon = -62; lon <= -54; lon += gridStep) {
+    for (let lon = startLon; lon <= visMaxLon + gridStep * 0.5; lon += gridStep) {
       const { x } = this.geoToCanvas(this.bounds.maxLat, lon);
       if (x < 0 || x > w) continue;
       ctx.beginPath();
@@ -1715,6 +1728,23 @@ class TacticalParaguayMap {
       { name: 'Itauguá', lat: -25.3850, lon: -57.3330, minZoom: 1.8 },
       { name: 'Villa Morra', lat: -25.2940, lon: -57.5800, minZoom: 2.2 },
       { name: 'Sajonia', lat: -25.2760, lon: -57.6620, minZoom: 2.2 },
+      // Barrios de Asunción y cinturón Gran Asunción (zoom profundo >= 4x)
+      { name: 'Microcentro', lat: -25.2825, lon: -57.6355, minZoom: 4.5 },
+      { name: 'Carmelitas', lat: -25.2800, lon: -57.5680, minZoom: 4.5 },
+      { name: 'Villa Aurelia', lat: -25.3110, lon: -57.5670, minZoom: 5.0 },
+      { name: 'Trinidad', lat: -25.2580, lon: -57.5820, minZoom: 4.5 },
+      { name: 'Loma Pytá', lat: -25.2360, lon: -57.5520, minZoom: 4.5 },
+      { name: 'Botánico', lat: -25.2540, lon: -57.5690, minZoom: 5.5 },
+      { name: 'Barrio Obrero', lat: -25.3010, lon: -57.6390, minZoom: 4.5 },
+      { name: 'Mburucuyá', lat: -25.2690, lon: -57.5710, minZoom: 5.5 },
+      { name: 'Recoleta', lat: -25.2940, lon: -57.5900, minZoom: 5.0 },
+      { name: 'San Vicente', lat: -25.3150, lon: -57.6240, minZoom: 5.0 },
+      { name: 'Santa Teresa', lat: -25.2850, lon: -57.5520, minZoom: 5.0 },
+      { name: 'Ñu Guazú', lat: -25.2540, lon: -57.5260, minZoom: 4.5 },
+      { name: 'Areguá', lat: -25.3125, lon: -57.3847, minZoom: 3.5 },
+      { name: 'San Antonio', lat: -25.4200, lon: -57.5530, minZoom: 3.5 },
+      { name: 'Ypané', lat: -25.4540, lon: -57.5300, minZoom: 3.5 },
+      { name: 'Villeta', lat: -25.5120, lon: -57.5560, minZoom: 3.5 },
     ];
 
     ctx.save();
@@ -1768,7 +1798,8 @@ class TacticalParaguayMap {
       ctx.fill();
 
       // Mostrar etiqueta de origen junto al punto para amenazas o al acercar el zoom táctico
-      if ((p.isThreat || this.zoom >= 1.4 || labelsDrawn < 6) && labelsDrawn < 20) {
+      const maxLabels = this.zoom >= 6.0 ? 35 : 20;
+      if ((p.isThreat || this.zoom >= 1.4 || labelsDrawn < 6) && labelsDrawn < maxLabels) {
         labelsDrawn += 1;
         const mainIp = p.realClientIp || p.ip || '';
         const pinText = `📍 ${p.zoneName || 'PY'}: ${mainIp}`;
