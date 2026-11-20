@@ -170,6 +170,21 @@
       </div>
     </div>
 
+    <!-- Instalador Automático en 1 Línea (Recomendado) -->
+    <div class="panel" style="border-color: rgba(0, 229, 255, 0.45);">
+      <div class="panel-header" style="border-left: 3px solid var(--neon-cyan);">
+        <div class="panel-title">
+          <span>⚡</span> INSTALACIÓN AUTOMÁTICA EN 1 LÍNEA (RECOMENDADO)
+        </div>
+      </div>
+      <div class="panel-body">
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
+          Ejecuta este único comando en tu servidor proxy. Instala dependencias, configura Fail2ban (<code>Smart Hybrid Action v2</code>), descarga el agente y activa el servicio <strong>sin tocar ni recargar Nginx</strong>:
+        </p>
+        <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid rgba(0, 229, 255, 0.35); color: var(--neon-cyan); font-family: var(--font-mono); font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap;">{{ one_liner }}</pre>
+      </div>
+    </div>
+
     <!-- Generador de Servicio Systemd -->
     <div class="panel">
       <div class="panel-header">
@@ -189,16 +204,18 @@
     <div class="panel">
       <div class="panel-header">
         <div class="panel-title">
-          <span>🛡️</span> CONFIGURACIÓN DE FAIL2BAN (MITHRIL SMART ACTION)
+          <span>🛡️</span> CONFIGURACIÓN MANUAL DE FAIL2BAN (SMART HYBRID ACTION v2)
         </div>
       </div>
       <div class="panel-body">
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.5rem;">
-          Cuando el operador aprueba un bloqueo en Mithril, el agente ejecuta <code>fail2ban-client set mithril-jail banip &lt;IP&gt;</code>. Funciona en cualquier plataforma (con o sin Cloudflare) y <strong>sin tocar ni recargar Nginx</strong>:
+          El instalador en 1 línea crea esto automáticamente. Si lo configuras a mano, crea primero <code>sudo touch /var/log/mithril-fail2ban.log</code> y estos 3 archivos (sin tocar ni recargar Nginx):
         </p>
-        <div style="font-size: 0.72rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.25rem;">1. Acción Híbrida (<code>/etc/fail2ban/action.d/mithril-smart.conf</code>):</div>
+        <div style="font-size: 0.72rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.25rem;">1. Filtro Base (<code>/etc/fail2ban/filter.d/mithril-empty.conf</code>):</div>
+        <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--text-main); font-family: var(--font-mono); font-size: 0.72rem; overflow-x: auto; white-space: pre-wrap; margin-bottom: 0.75rem;">{{ fail2ban_filter }}</pre>
+        <div style="font-size: 0.72rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.25rem;">2. Acción Híbrida v2 (<code>/etc/fail2ban/action.d/mithril-smart.conf</code>):</div>
         <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-emerald); font-family: var(--font-mono); font-size: 0.72rem; overflow-x: auto; white-space: pre-wrap; margin-bottom: 0.75rem;">{{ fail2ban_action }}</pre>
-        <div style="font-size: 0.72rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.25rem;">2. Jail Dedicado (<code>/etc/fail2ban/jail.d/mithril.local</code>):</div>
+        <div style="font-size: 0.72rem; color: var(--neon-cyan); font-weight: 600; margin-bottom: 0.25rem;">3. Jail Dedicado (<code>/etc/fail2ban/jail.d/mithril.local</code>):</div>
         <pre style="background: #060910; padding: 0.75rem; border-radius: 6px; border: 1px solid var(--border-dim); color: var(--neon-cyan); font-family: var(--font-mono); font-size: 0.72rem; overflow-x: auto; white-space: pre-wrap;">{{ fail2ban_jail }}</pre>
       </div>
     </div>

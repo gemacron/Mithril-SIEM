@@ -130,14 +130,20 @@ def node_configure_view(request, node_id):
 
     # Generar comando para levantar agente
     host_ip = request.get_host().split(':')[0]
+    generated_one_liner = (
+        f'curl -fsSL http://{host_ip}:9900/nodes/install.sh | '
+        f'sudo bash -s -- --server "http://{host_ip}:9900" --key "{node.api_key}" --mode {node.block_method}'
+    )
+
     generated_systemd_service = f"""[Unit]
 Description=Mithril SIEM Bouncer Agent ({node.name})
-After=network-online.target firewalld.service fail2ban.service nginx.service
+After=network-online.target fail2ban.service nginx.service
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
+Environment="PYTHONUNBUFFERED=1"
 Environment="MITHRIL_URL=http://{host_ip}:9900"
 Environment="NODE_API_KEY={node.api_key}"
 Environment="SYNC_INTERVAL={node.sync_interval_seconds}"
@@ -153,21 +159,40 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target"""
 
-    generated_fail2ban_action = """# /etc/fail2ban/action.d/mithril-smart.conf
+    generated_fail2ban_filter = """# /etc/fail2ban/filter.d/mithril-empty.conf
 [Definition]
-actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
-              iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+failregex = ^MITHRIL_MANUAL_BAN <HOST>$
+ignoreregex ="""
 
-actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+    generated_fail2ban_action = """# /etc/fail2ban/action.d/mithril-smart.conf
+# Mithril SIEM - Smart Hybrid Action v2 (Sin punto y coma para INI parser de Fail2ban)
+[Definition]
+actionstart = ipset create mithril_f2b hash:ip family inet timeout 0 -exist
+              ipset create mithril_f2b6 hash:ip family inet6 timeout 0 -exist 2>/dev/null || true
+              iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+              ip6tables -C INPUT -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || ip6tables -I INPUT 1 -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || true
+              iptables -N MITHRIL_REALIP 2>/dev/null || true
+              iptables -C INPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || iptables -I INPUT 2 -p tcp -j MITHRIL_REALIP
+              iptables -C OUTPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || iptables -I OUTPUT 1 -p tcp -j MITHRIL_REALIP
+
+actionstop  = iptables -D INPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || true
+              iptables -D OUTPUT -p tcp -j MITHRIL_REALIP 2>/dev/null || true
+              iptables -F MITHRIL_REALIP 2>/dev/null || true
+              iptables -X MITHRIL_REALIP 2>/dev/null || true
+              iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2>/dev/null || true
+              ip6tables -D INPUT -m set --match-set mithril_f2b6 src -j DROP 2>/dev/null || true
               ipset destroy mithril_f2b 2>/dev/null || true
+              ipset destroy mithril_f2b6 2>/dev/null || true
 
 actioncheck = ipset list mithril_f2b >/dev/null 2>&1
 
-actionban   = ipset add mithril_f2b <ip> -exist
-              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\\"mode\\":\\"block\\",\\"configuration\\":{\\"target\\":\\"ip\\",\\"value\\":\\"<ip>\\"},\\"notes\\":\\"Mithril-SIEM-Fail2ban\\"}" >/dev/null 2>&1 || true; fi; fi
+actionban   = ipset add mithril_f2b <ip> -exist 2>/dev/null || ipset add mithril_f2b6 <ip> -exist 2>/dev/null || true
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
 
-actionunban = ipset del mithril_f2b <ip> -exist
-              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&configuration.value=<ip>" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2>/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" >/dev/null 2>&1 || true; fi; fi; fi
+actionunban = ipset del mithril_f2b <ip> -exist 2>/dev/null || ipset del mithril_f2b6 <ip> -exist 2>/dev/null || true
+              iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
+              iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: <ip>" -j REJECT --reject-with tcp-reset 2>/dev/null || true
 
 [Init]
 name = mithril"""
@@ -232,7 +257,9 @@ access_log syslog:server={host_ip}:{node.syslog_port},facility=local7,tag=nginx 
 
     context = {
         'node': node,
+        'one_liner': generated_one_liner,
         'systemd_service': generated_systemd_service,
+        'fail2ban_filter': generated_fail2ban_filter,
         'fail2ban_action': generated_fail2ban_action,
         'fail2ban_jail': generated_fail2ban_jail,
         'nginx_snippet': generated_nginx_snippet,

@@ -154,14 +154,14 @@
           <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Alternativa: Instalación en una sola línea con Fail2ban (Automatizada / Ansible)</span>
           <button type="button" class="copy-btn" onclick="copyCode('code-installer-one-liner', this)">📋 Copiar</button>
         </div>
-        <pre id="code-installer-one-liner" class="terminal-box">sudo bash /tmp/Mithril-SIEM/agent/install_agent.sh "http://{{ host_ip }}:9900" "TU_NODE_API_KEY" "fail2ban" "15"</pre>
+        <pre id="code-installer-one-liner" class="terminal-box">curl -fsSL http://{{ host_ip }}:9900/nodes/install.sh | sudo bash -s -- --server "http://{{ host_ip }}:9900" --key "TU_NODE_API_KEY" --mode fail2ban</pre>
       </div>
     </div>
 
     <!-- TAB 2: Procedimiento Paso a Paso para Instalar y Configurar Fail2ban -->
     <div id="tab-fail2ban" class="guide-tab-content" style="display: none;">
       <div style="background: rgba(16, 185, 129, 0.06); border-left: 3px solid var(--neon-emerald); padding: 0.75rem 1rem; border-radius: 4px; margin-bottom: 1rem; font-size: 0.8rem; color: var(--text-main);">
-        🛡️ <strong>Arquitectura Universal con Fail2ban (Sin tocar Nginx):</strong> Cuando haces clic en <em>Aprobar Bloqueo</em> en Mithril, el agente ejecuta <code>fail2ban-client set mithril-jail banip &lt;IP&gt;</code>. La acción inteligente <code>mithril-smart</code> bloquea la IP en el Kernel de Linux (<code>ipset</code>/<code>iptables</code>) para cualquier servidor sin Cloudflare o ataques directos a IP, y si detecta credenciales en <code>/etc/mithril/cloudflare.env</code>, bloquea simultáneamente la IP real en el borde de Cloudflare.
+        🛡️ <strong>Arquitectura Universal con Fail2ban (Sin tocar Nginx):</strong> Cuando haces clic en <em>Aprobar Bloqueo</em> en Mithril, el agente ejecuta <code>fail2ban-client set mithril-jail banip &lt;IP&gt;</code>. La acción inteligente <code>mithril-smart</code> (v2) bloquea ataques directos en <code>ipset</code> y bloquea IPs reales detrás de Cloudflare vía <code>iptables MITHRIL_REALIP</code> (<code>CF-Connecting-IP</code> / <code>X-Real-IP</code>) sin tocar Nginx.
       </div>
 
       <div style="margin-bottom: 1rem;">
@@ -184,7 +184,7 @@ sudo dnf install -y epel-release && sudo dnf install -y fail2ban ipset iptables 
         <pre id="code-f2b-filter" class="terminal-box">sudo mkdir -p /etc/fail2ban/filter.d /etc/fail2ban/action.d /etc/fail2ban/jail.d /etc/mithril
 sudo touch /var/log/mithril-fail2ban.log
 
-sudo cat &lt;&lt;'EOF' &gt; /etc/fail2ban/filter.d/mithril-empty.conf
+sudo tee /etc/fail2ban/filter.d/mithril-empty.conf &gt;/dev/null &lt;&lt;'EOF'
 [Definition]
 failregex = ^MITHRIL_MANUAL_BAN &lt;HOST&gt;$
 ignoreregex =
@@ -193,24 +193,38 @@ EOF</pre>
 
       <div style="margin-bottom: 1rem;">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.3rem;">
-          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 3: Crear la Acción Híbrida Universal (/etc/fail2ban/action.d/mithril-smart.conf)</span>
+          <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 3: Crear la Acción Híbrida v2 (/etc/fail2ban/action.d/mithril-smart.conf)</span>
           <button type="button" class="copy-btn" onclick="copyCode('code-f2b-action', this)">📋 Copiar</button>
         </div>
-        <pre id="code-f2b-action" class="terminal-box">sudo cat &lt;&lt;'EOF' &gt; /etc/fail2ban/action.d/mithril-smart.conf
+        <pre id="code-f2b-action" class="terminal-box">sudo tee /etc/fail2ban/action.d/mithril-smart.conf &gt;/dev/null &lt;&lt;'EOF'
+# Mithril SIEM - Smart Hybrid Action v2 (Sin punto y coma para INI parser de Fail2ban)
 [Definition]
-actionstart = ipset create mithril_f2b hash:ip timeout 0 -exist
+actionstart = ipset create mithril_f2b hash:ip family inet timeout 0 -exist
+              ipset create mithril_f2b6 hash:ip family inet6 timeout 0 -exist 2&gt;/dev/null || true
               iptables -C INPUT -m set --match-set mithril_f2b src -j DROP 2&gt;/dev/null || iptables -I INPUT 1 -m set --match-set mithril_f2b src -j DROP
+              ip6tables -C INPUT -m set --match-set mithril_f2b6 src -j DROP 2&gt;/dev/null || ip6tables -I INPUT 1 -m set --match-set mithril_f2b6 src -j DROP 2&gt;/dev/null || true
+              iptables -N MITHRIL_REALIP 2&gt;/dev/null || true
+              iptables -C INPUT -p tcp -j MITHRIL_REALIP 2&gt;/dev/null || iptables -I INPUT 2 -p tcp -j MITHRIL_REALIP
+              iptables -C OUTPUT -p tcp -j MITHRIL_REALIP 2&gt;/dev/null || iptables -I OUTPUT 1 -p tcp -j MITHRIL_REALIP
 
-actionstop  = iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2&gt;/dev/null || true
+actionstop  = iptables -D INPUT -p tcp -j MITHRIL_REALIP 2&gt;/dev/null || true
+              iptables -D OUTPUT -p tcp -j MITHRIL_REALIP 2&gt;/dev/null || true
+              iptables -F MITHRIL_REALIP 2&gt;/dev/null || true
+              iptables -X MITHRIL_REALIP 2&gt;/dev/null || true
+              iptables -D INPUT -m set --match-set mithril_f2b src -j DROP 2&gt;/dev/null || true
+              ip6tables -D INPUT -m set --match-set mithril_f2b6 src -j DROP 2&gt;/dev/null || true
               ipset destroy mithril_f2b 2&gt;/dev/null || true
+              ipset destroy mithril_f2b6 2&gt;/dev/null || true
 
 actioncheck = ipset list mithril_f2b &gt;/dev/null 2&gt;&amp;1
 
-actionban   = ipset add mithril_f2b &lt;ip&gt; -exist
-              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] &amp;&amp; [ -n "$CF_ZONE_ID" ]; then curl -fsSL -X POST "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" --data "{\"mode\":\"block\",\"configuration\":{\"target\":\"ip\",\"value\":\"&lt;ip&gt;\"},\"notes\":\"Mithril-SIEM-Fail2ban\"}" &gt;/dev/null 2&gt;&amp;1 || true; fi; fi
+actionban   = ipset add mithril_f2b &lt;ip&gt; -exist 2&gt;/dev/null || ipset add mithril_f2b6 &lt;ip&gt; -exist 2&gt;/dev/null || true
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: &lt;ip&gt;" -j REJECT --reject-with tcp-reset 2&gt;/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: &lt;ip&gt;" -j REJECT --reject-with tcp-reset 2&gt;/dev/null || true
+              iptables -C MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: &lt;ip&gt;" -j REJECT --reject-with tcp-reset 2&gt;/dev/null || iptables -A MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: &lt;ip&gt;" -j REJECT --reject-with tcp-reset 2&gt;/dev/null || true
 
-actionunban = ipset del mithril_f2b &lt;ip&gt; -exist
-              if [ -f /etc/mithril/cloudflare.env ]; then . /etc/mithril/cloudflare.env; if [ -n "$CF_API_TOKEN" ] &amp;&amp; [ -n "$CF_ZONE_ID" ]; then RULE_ID=$(curl -fsSL -X GET "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules?configuration.target=ip&amp;configuration.value=&lt;ip&gt;" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" 2&gt;/dev/null | grep -o '"id":"[^"]*"' | head -n1 | cut -d'"' -f4); if [ -n "$RULE_ID" ]; then curl -fsSL -X DELETE "https://api.cloudflare.com/client/v4/zones/$CF_ZONE_ID/firewall/access_rules/rules/$RULE_ID" -H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json" &gt;/dev/null 2&gt;&amp;1 || true; fi; fi; fi
+actionunban = ipset del mithril_f2b &lt;ip&gt; -exist 2&gt;/dev/null || ipset del mithril_f2b6 &lt;ip&gt; -exist 2&gt;/dev/null || true
+              iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "CF-Connecting-IP: &lt;ip&gt;" -j REJECT --reject-with tcp-reset 2&gt;/dev/null || true
+              iptables -D MITHRIL_REALIP -p tcp -m string --algo bm --icase --string "X-Real-IP: &lt;ip&gt;" -j REJECT --reject-with tcp-reset 2&gt;/dev/null || true
 
 [Init]
 name = mithril
@@ -222,7 +236,7 @@ EOF</pre>
           <span style="font-size: 0.75rem; color: var(--neon-cyan); font-weight: 600;">Paso 4: Crear el Jail de Mithril (/etc/fail2ban/jail.d/mithril.local) y Activar Fail2ban</span>
           <button type="button" class="copy-btn" onclick="copyCode('code-f2b-jail', this)">📋 Copiar</button>
         </div>
-        <pre id="code-f2b-jail" class="terminal-box">sudo cat &lt;&lt;'EOF' &gt; /etc/fail2ban/jail.d/mithril.local
+        <pre id="code-f2b-jail" class="terminal-box">sudo tee /etc/fail2ban/jail.d/mithril.local &gt;/dev/null &lt;&lt;'EOF'
 [mithril-jail]
 enabled  = true
 filter   = mithril-empty
