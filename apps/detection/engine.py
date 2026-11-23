@@ -51,8 +51,8 @@ def _calibrate_security_rules_once():
                 r.risk_points = 80
                 updated_fields.append('risk_points')
             elif r.code == 'R-SCAN-404-BRUTE':
-                if r.threshold_count < 10:
-                    r.threshold_count = 10
+                if r.threshold_count < 40:
+                    r.threshold_count = 40
                     updated_fields.append('threshold_count')
                 if r.risk_points < 80:
                     r.risk_points = 80
@@ -1569,18 +1569,19 @@ def process_incoming_log(data, node=None):
 
         # B. Detección Heurística de Enumeración de Directorios (rutas 404 DISTINTAS >= umbral, agnóstico a la aplicación)
         elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
-            if not skip_freq_heuristics and log.status_code == 404 and not is_benign_sync:
+            if not skip_freq_heuristics and log.status_code == 404 and log.http_method != 'PROPFIND' and not is_benign_sync:
                 distinct_404_uris = (
                     TrafficLog.objects.filter(
                         client_ip=target_client_ip,
                         status_code=404,
                         created_at__gte=window_start
                     )
+                    .exclude(http_method='PROPFIND')
                     .values_list('uri', flat=True)
                     .distinct()
                 )
                 distinct_404_count = sum(1 for u in distinct_404_uris if not _is_benign_app_sync(u, 404))
-                if distinct_404_count >= max(10, rule.threshold_count):
+                if distinct_404_count >= max(1, rule.threshold_count):
                     matched_any_rule = True
                     if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
                         event = SecurityEvent.objects.create(

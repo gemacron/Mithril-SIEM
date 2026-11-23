@@ -107,8 +107,8 @@ Al iniciar el contenedor `mithril-web`, el sistema configura automáticamente 12
 | `R-SSRF-METADATA` | Server-Side Request Forgery (`169.254.169.254`, `metadata.google.internal`, `file://`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
 | `R-XXE-SSTI` | Inyección de Plantillas (SSTI) / Entidades XML Externas (`<!ENTITY`, `{{7*7}}`, `__class__`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
 | `R-BAD-USER-AGENT` | Escáneres de Vulnerabilidades (`sqlmap`, `nikto`, `nuclei`, `nmap`, `gobuster`, `ffuf`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
-| `R-SCAN-404-BRUTE` | Heurística de Enumeración de Directorios (`404 Not Found` en rutas distintas) | `HIGH` | 10 rutas distintas / 60s | Candidato Bloqueo |
-| `R-AUTH-BRUTE-401` | Heurística de Fuerza Bruta de Autenticación (`401`/`403` repetidos en logins/APIs) | `HIGH` | 3 hits / 60s | Candidato Bloqueo |
+| `R-SCAN-404-BRUTE` | Heurística de Enumeración de Directorios (`404 Not Found` en rutas distintas) | `HIGH` | 40 rutas distintas / 60s | Candidato Bloqueo |
+| `R-AUTH-BRUTE-401` | Heurística de Fuerza Bruta de Autenticación (`401`/`403` repetidos en logins/tokens) | `HIGH` | 15 hits / 60s | Candidato Bloqueo |
 | `R-HTTP-FLOOD-DOS` | Heurística de Inundación HTTP / Denegación de Servicio (DoS Capa 7) | `CRITICAL` | 300 reqs / 60s | Candidato Bloqueo |
 | `R-DIRECT-IP-ACCESS` | Acceso Directo a IP Pública (Host IP cruda o vacío evadiendo Cloudflare/DNS) | `HIGH` | 1 hit / 60s | Candidato Bloqueo |
 

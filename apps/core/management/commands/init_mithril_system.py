@@ -117,7 +117,7 @@ class Command(BaseCommand):
                 'description': 'Acumulación anómala de respuestas 404 Not Found en rutas distintas desde una misma IP en corto lapso de tiempo',
                 'category': 'SCANNER',
                 'pattern_regex': '',
-                'threshold_count': 10,
+                'threshold_count': 40,
                 'threshold_seconds': 60,
                 'risk_points': 80,
             },
