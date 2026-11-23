@@ -51,15 +51,15 @@ def _calibrate_security_rules_once():
                 r.risk_points = 80
                 updated_fields.append('risk_points')
             elif r.code == 'R-SCAN-404-BRUTE':
-                if r.threshold_count < 8 or r.threshold_count > 12:
-                    r.threshold_count = 8
+                if r.threshold_count < 10:
+                    r.threshold_count = 10
                     updated_fields.append('threshold_count')
                 if r.risk_points < 80:
                     r.risk_points = 80
                     updated_fields.append('risk_points')
             elif r.code == 'R-AUTH-BRUTE-401':
-                if r.threshold_count < 5 or r.threshold_count > 8:
-                    r.threshold_count = 5
+                if r.threshold_count < 15:
+                    r.threshold_count = 15
                     updated_fields.append('threshold_count')
                 if r.risk_points < 80:
                     r.risk_points = 80
@@ -1542,15 +1542,18 @@ def process_incoming_log(data, node=None):
                     triggered_events.append(event)
                     risk_to_add += max(rule.risk_points, 80)
 
-        # A. Reglas de Fuerza Bruta de Autenticación (401/403 repetidos >= umbral)
+        # A. Reglas de Fuerza Bruta de Autenticación (401/403 repetidos >= umbral sobre la ruta real, sin el [Host])
         elif rule.code == 'R-AUTH-BRUTE-401':
-            if not skip_freq_heuristics and log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(normalized_uri)):
+            pure_path = str(log.uri or '')
+            if pure_path.startswith('[') and '] ' in pure_path:
+                pure_path = pure_path.split('] ', 1)[1]
+            if not skip_freq_heuristics and log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(pure_path)):
                 recent_auth_fails = TrafficLog.objects.filter(
                     client_ip=target_client_ip,
                     status_code__in=[401, 403],
                     created_at__gte=window_start
                 ).count()
-                if recent_auth_fails >= max(3, rule.threshold_count):
+                if recent_auth_fails >= max(1, rule.threshold_count):
                     matched_any_rule = True
                     if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
                         event = SecurityEvent.objects.create(

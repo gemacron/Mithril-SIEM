@@ -124,10 +124,10 @@ class Command(BaseCommand):
             {
                 'code': 'R-AUTH-BRUTE-401',
                 'name': 'Heurística de Fuerza Bruta de Autenticación (401/403)',
-                'description': 'Múltiples respuestas 401 Unauthorized o 403 Forbidden en endpoints de acceso o API',
+                'description': 'Múltiples respuestas 401 Unauthorized o 403 Forbidden en endpoints de autenticación (login, auth, signin, token, oauth)',
                 'category': 'RATE_LIMIT',
-                'pattern_regex': r'(login|auth|admin|signin|token|session|api|wp-login|xmlrpc)',
-                'threshold_count': 3,
+                'pattern_regex': r'(login|auth|admin|signin|signup|token|session|oauth|wp-login|xmlrpc)',
+                'threshold_count': 15,
                 'threshold_seconds': 60,
                 'risk_points': 80,
             },
@@ -172,7 +172,7 @@ class Command(BaseCommand):
                 obj.name = r_data['name']
                 obj.description = r_data['description']
                 obj.pattern_regex = r_data['pattern_regex']
-                if obj.code in ('R-HTTP-FLOOD-DOS', 'R-SCAN-404-BRUTE'):
+                if obj.code in ('R-HTTP-FLOOD-DOS', 'R-SCAN-404-BRUTE', 'R-AUTH-BRUTE-401'):
                     obj.threshold_count = max(obj.threshold_count, r_data['threshold_count'])
                 else:
                     obj.threshold_count = min(obj.threshold_count, r_data['threshold_count'])
