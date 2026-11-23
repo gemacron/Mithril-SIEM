@@ -30,16 +30,16 @@ A diferencia de los analizadores tradicionales basados en lectura de archivos de
 
 - **⚡ Espejo de Red 100% en Memoria RAM (`AF_PACKET` Kernel Mirror + Syslog):**
   - **Cero lectura de archivos en disco:** El agente (`agent/mithril_bouncer.py`) no lee ni toca `/var/log/nginx/` ni `/etc/nginx/`, garantizando riesgo cero de I/O en servidores de producción.
-  - **Inspección de Tráfico Entrante y `proxy_pass` Interno:** Captura en RAM todas las peticiones HTTP entrantes y las peticiones desencriptadas por Nginx hacia los *upstreams* internos (`proxy_pass`), extrayendo la IP real del cliente (`X-Real-IP` / `X-Forwarded-For`), el dominio (`Host`), método HTTP, `URI`, `query_params`, `User-Agent` y `Referer`.
-  - **Emparejamiento de Respuestas y TLS SNI:** Correlaciona en RAM las respuestas HTTP (`HTTP/1.x <status>`) para obtener el código de estado real (`200`, `401`, `403`, `404`, `500`, etc.) y la latencia en milisegundos, además de extraer el **SNI (`Server Name Indication`)** del handshake TLS `ClientHello` en conexiones HTTPS (`443`).
-  - **Receptor Syslog Universal Multi-Formato (`mithril_lan_proxy.py`):** Recibe flujos UDP en el puerto `5140` compatibles con cualquier formato de log (`mithril_json`, `json_analytics`, `otel_json`, `combined`/`main` estándar y `error_log` en texto plano) con **deduplicación inteligente en ventana de 1.5 segundos**.
-- **🧠 Motor de Detección y Heurística Anti-Evasión (`apps/detection/engine.py`):**
+  - **Inspección IPv4 + IPv6 de Tráfico Entrante, `proxy_pass` Interno y Cuerpos HTTP:** Captura en RAM todas las peticiones HTTP entrantes y las peticiones desencriptadas por Nginx hacia los *upstreams* internos (`proxy_pass`), extrayendo la IP real del cliente (`CF-Connecting-IP` / `X-Real-IP` / `X-Forwarded-For`), el dominio (`Host`), método HTTP (incluyendo `CONNECT`, `TRACE`, `PROPFIND`, etc.), `URI`, `query_params`, `User-Agent`, `Referer` y un fragmento sanitizado del cuerpo `POST`/`PUT`/`PATCH` (hasta 2 KB, censurando contraseñas/tokens automáticamente).
+  - **Emparejamiento de Respuestas y Buffers Anti-Pérdida (4 MB):** Correlaciona en RAM las respuestas HTTP (`HTTP/1.x <status>`) para obtener el código de estado real (`200`, `401`, `403`, `404`, `500`, etc.) y la latencia en milisegundos, utilizando buffers de red ampliados (4 MB) para evitar pérdidas durante ráfagas.
+  - **Receptor Syslog Universal Multi-Formato (`mithril_lan_proxy.py`):** Recibe flujos UDP en el puerto `5140` con **autenticación estricta por `NODE_API_KEY`** (rechaza con `403` cualquier nodo no registrado o deshabilitado) y deduplicación inteligente en ventana de 1.5 segundos.
+- **🧠 Motor de Detección Agnóstico a la Aplicación (`apps/detection/engine.py`):**
   - **Normalización Profunda de Payloads:** Decodificación automática de doble capa URL (`unquote_plus` para detectar `%27`, `%20`, `%252e%252e%252f`, `%3cscript%3e`) y limpieza de comentarios SQL ofuscados (`/**/`).
-  - **Heurística Genérica por Umbral y Ventana de Tiempo:** Evalúa frecuencia de impactos (`threshold_count`) dentro de ventanas móviles (`threshold_seconds`) tanto para expresiones regulares como para anomalías de estado HTTP (`401`/`403` Auth Brute Force, `404` Directory Scanning y `DoS` HTTP Flood en Capa 7).
+  - **Heurística Universal sin Rutas Hardcodeadas:** Evalúa cada petición de forma individual (`is_threat` exacto por petición) y analiza patrones reales de ataque agnósticos a cualquier aplicación web (`401`/`403` Auth Brute Force, `404` en **rutas base distintas** para enumeración de directorios, y `DoS` HTTP Flood en Capa 7).
   - **Gestor Visual de Reglas en la Web UI (`/detection/rules/`):** Creación, edición, activación/desactivación y eliminación de reglas Regex y heurísticas en caliente desde el navegador.
-- **🎮 Centro de Operaciones de Seguridad (SOC) y Mapa Táctico 2D:**
+- **🎮 Centro de Operaciones de Seguridad (SOC) y Mapas Tácticos 2D:**
   - Feed en vivo persistente sincronizado con PostgreSQL (`TrafficLog` + `SecurityEvent`) y cálculo de **RPS en tiempo real** por nodo.
-  - Visualización mundial interactiva en Canvas 2D con geolocalización de tráfico y vectores de ataque.
+  - Visualización interactiva en Canvas 2D (Mapa Mundial + Mapa Táctico con zoom hasta `120x`) con geolocalización offline automática (`GeoLite2-City.mmdb`) y vectores de ataque clicables.
 - **🔍 Explorador Forense de Tráfico HTTP (`/reports/`):**
   - Búsqueda histórica sobre el 100% de las peticiones HTTP/HTTPS registradas (`TrafficLog`) filtrando por IP de origen, URI/Host o código de respuesta HTTP, más auditoría de incidentes y exportación directa a **CSV** (`?type=traffic` y `?type=events`).
 - **🛡️ Mitigación Universal con Fail2ban Smart Hybrid Action (`fail2ban`), Kernel (`ipset`) o Modo Monitor (`monitor`):**
@@ -95,21 +95,22 @@ A diferencia de los analizadores tradicionales basados en lectura de archivos de
 
 ## 🧠 Reglas de Detección y Heurística Preconfiguradas
 
-Al iniciar el contenedor `mithril-web`, el sistema configura automáticamente 11 reglas universales que pueden personalizarse o ampliarse desde **`http://localhost:9900/detection/rules/`**:
+Al iniciar el contenedor `mithril-web`, el sistema configura automáticamente 12 reglas universales que pueden personalizarse o ampliarse desde **`http://<IP_MITHRIL>:9900/detection/rules/`**:
 
 | Código | Nombre de la Regla / Heurística | Severidad | Umbral por Defecto | Acción |
 | :--- | :--- | :---: | :---: | :---: |
-| `R-ENV-SCAN` | Escaneo de Archivos Sensibles (`.env`, `.git`, `.aws`, `wp-config`, `.sql`, `.bak`) | `CRITICAL` | 1 hit / 60s | Bloqueo IP |
-| `R-SQLI-URL` | Inyección SQL Universal (`UNION SELECT`, `SLEEP()`, `BENCHMARK()`, `OR 1=1`) | `CRITICAL` | 1 hit / 60s | Bloqueo IP |
-| `R-PATH-TRAVERSAL` | Escalada de Directorios / LFI (`../`, `/etc/passwd`, `php://`, `proc/self`) | `HIGH` | 1 hit / 60s | Bloqueo IP |
-| `R-XSS-PAYLOAD` | Cross-Site Scripting (`<script>`, `javascript:`, `onerror=`, `onload=`, `<svg>`) | `MEDIUM` | 1 hit / 60s | Alerta |
-| `R-RCE-CMD` | Ejecución Remota de Comandos / Log4Shell (`${jndi:...}`, `cmd=`, `/bin/sh`, `wget`) | `CRITICAL` | 1 hit / 60s | Bloqueo IP |
-| `R-SSRF-METADATA` | Server-Side Request Forgery (`169.254.169.254`, `metadata.google.internal`, `127.0.0.1`) | `CRITICAL` | 1 hit / 60s | Bloqueo IP |
-| `R-BAD-USER-AGENT` | Escáneres de Vulnerabilidades (`sqlmap`, `nikto`, `nuclei`, `nmap`, `gobuster`, `ffuf`) | `HIGH` | 1 hit / 60s | Bloqueo IP |
-| `R-SCAN-404-BRUTE` | Heurística de Descubrimiento de Rutas (`404 Not Found` masivos) | `MEDIUM` | 15 hits / 60s | Bloqueo IP |
-| `R-AUTH-BRUTE-401` | Heurística de Fuerza Bruta de Autenticación (`401`/`403` masivos en logins/APIs) | `HIGH` | 10 hits / 60s | Bloqueo IP |
-| `R-HTTP-FLOOD-DOS` | Heurística de Inundación HTTP / Denegación de Servicio (DoS Capa 7) | `CRITICAL` | 120 hits / 10s | Bloqueo IP |
-| `R-DIRECT-IP-ACCESS` | Acceso Directo a IP Pública (Evasión de Proxy Cloudflare `🎯 DIRECTO A IP`) | `MEDIUM` | 1 hit / 60s | Alerta (+35 pts) |
+| `R-ENV-SCAN` | Escaneo de Archivos Sensibles (`.env`, `.git`, `.aws`, `wp-config`, `.sql`, `.bak`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-SQLI-URL` | Inyección SQL Universal (`UNION SELECT`, `SLEEP()`, `BENCHMARK()`, `OR 1=1`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-PATH-TRAVERSAL` | Escalada de Directorios / LFI (`../`, `/etc/passwd`, `proc/self`, `win.ini`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-XSS-PAYLOAD` | Cross-Site Scripting (`<script>`, `javascript:`, `onerror=`, `onload=`, `<svg>`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-RCE-CMD` | Ejecución Remota de Comandos / Log4Shell / Shellshock (`${jndi:...}`, `wget`, `bash`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-SSRF-METADATA` | Server-Side Request Forgery (`169.254.169.254`, `metadata.google.internal`, `file://`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-XXE-SSTI` | Inyección de Plantillas (SSTI) / Entidades XML Externas (`<!ENTITY`, `{{7*7}}`, `__class__`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-BAD-USER-AGENT` | Escáneres de Vulnerabilidades (`sqlmap`, `nikto`, `nuclei`, `nmap`, `gobuster`, `ffuf`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-SCAN-404-BRUTE` | Heurística de Enumeración de Directorios (`404 Not Found` en rutas distintas) | `HIGH` | 10 rutas distintas / 60s | Candidato Bloqueo |
+| `R-AUTH-BRUTE-401` | Heurística de Fuerza Bruta de Autenticación (`401`/`403` repetidos en logins/APIs) | `HIGH` | 3 hits / 60s | Candidato Bloqueo |
+| `R-HTTP-FLOOD-DOS` | Heurística de Inundación HTTP / Denegación de Servicio (DoS Capa 7) | `CRITICAL` | 300 reqs / 60s | Candidato Bloqueo |
+| `R-DIRECT-IP-ACCESS` | Acceso Directo a IP Pública (Host IP cruda o vacío evadiendo Cloudflare/DNS) | `HIGH` | 1 hit / 60s | Candidato Bloqueo |
 
 ---
 
@@ -188,7 +189,7 @@ El sistema levanta automáticamente los 5 contenedores (incluyendo el receptor S
 
 ### Paso 1: Dar de alta el nodo en Mithril
 1. En el menú superior de Mithril, ve a **Nodos Proxy (`/nodes/`)** y haz clic en **+ Alta Proxy**.
-2. Asigna un nombre (ej: `Proxy-Personal`) y la dirección IP de tu servidor proxy (ej: `192.168.150.181`).
+2. Asigna un nombre identificativo (ej: `Proxy-Principal`) y la dirección IP de tu servidor proxy (ej: `<IP_DEL_PROXY>`).
 3. Al guardarlo, Mithril te mostrará en pantalla el **Comando de Instalación de 1 Línea** con tu `NODE_API_KEY` ya incluido.
 
 ### Paso 2: Ejecutar el Instalador de 1 Línea en el Servidor Proxy
@@ -231,11 +232,17 @@ sudo iptables -L INPUT -n -v | grep mithril_f2b
 sudo iptables -L MITHRIL_REALIP -n -v
 ```
 
-### Cambiar la IP del Servidor Mithril en un Agente ya Instalado
-Si mudas Mithril SIEM a una nueva IP (ej. `192.168.150.48`), ejecuta en tu servidor proxy:
+### Actualizar el Agente o Cambiar la IP del Servidor Mithril
+Para actualizar el agente en un proxy ya instalado (sin tocar Nginx):
 ```bash
-sudo sed -i 's|^Environment="MITHRIL_URL=.*|Environment="MITHRIL_URL=http://192.168.150.48:9900"|' /etc/systemd/system/mithril-bouncer.service
-sudo curl -fsSL "http://192.168.150.48:9900/nodes/mithril_bouncer.py" -o /opt/mithril-agent/mithril_bouncer.py
+sudo curl -fsSL "http://<IP_MITHRIL>:9900/nodes/mithril_bouncer.py" -o /opt/mithril-agent/mithril_bouncer.py
+sudo systemctl restart mithril-bouncer
+```
+
+Si mudas Mithril SIEM a una nueva IP (`<NUEVA_IP_MITHRIL>`), ejecuta en tu servidor proxy:
+```bash
+sudo sed -i 's|^Environment="MITHRIL_URL=.*|Environment="MITHRIL_URL=http://<NUEVA_IP_MITHRIL>:9900"|' /etc/systemd/system/mithril-bouncer.service
+sudo curl -fsSL "http://<NUEVA_IP_MITHRIL>:9900/nodes/mithril_bouncer.py" -o /opt/mithril-agent/mithril_bouncer.py
 sudo systemctl daemon-reload && sudo systemctl restart mithril-bouncer
 ```
 
