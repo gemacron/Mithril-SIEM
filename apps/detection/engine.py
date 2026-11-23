@@ -1615,9 +1615,15 @@ def process_incoming_log(data, node=None):
                     triggered_events.append(event)
                     risk_to_add += max(rule.risk_points, 80)
 
-        # D. Reglas basadas en Expresión Regular (con soporte de umbral threshold_count >= 1)
+        # D. Reglas basadas en Expresión Regular (evaluadas sobre el campo HTTP correcto para evitar falsos positivos en Base64/Body)
         elif compiled_rx:
-            match = compiled_rx.search(full_target_string)
+            if rule.code == 'R-BAD-USER-AGENT':
+                target_for_rule = str(log.user_agent or '')
+            elif rule.code == 'R-ENV-SCAN':
+                target_for_rule = normalized_uri
+            else:
+                target_for_rule = full_target_string
+            match = compiled_rx.search(target_for_rule)
             if match:
                 matched_any_rule = True
                 matched_text = match.group(0)
