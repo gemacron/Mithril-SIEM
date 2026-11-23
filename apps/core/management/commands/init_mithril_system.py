@@ -73,10 +73,10 @@ class Command(BaseCommand):
             },
             {
                 'code': 'R-XSS-PAYLOAD',
-                'name': 'Cross-Site Scripting (XSS) en URL, Query o Headers',
-                'description': 'Vectores de inyección de scripts (<script>, javascript:, onerror=, onload=, svg/onload, document.cookie)',
+                'name': 'Cross-Site Scripting (XSS) en URL, Query, Headers o Body',
+                'description': 'Vectores reales de inyección XSS (<script>, javascript:alert/eval/document, onerror=, onload=, <svg onload>, <iframe src=>, document.cookie)',
                 'category': 'INJECTION',
-                'pattern_regex': r'(<script|javascript:|onerror\s*=|onload\s*=|<svg[^>]*onload|alert\s*\(|document\.cookie|eval\s*\()',
+                'pattern_regex': r'(<script\b|javascript\s*:\s*(alert|confirm|prompt|eval|document\.|window\.|location\.|fetch\s*\(|xmlhttprequest|fromcharcode|atob\s*\(|function\s*\()|on(error|load|mouseover|focus|click)\s*=\s*[\'"]?(alert|confirm|prompt|eval|document\.|window\.|location\.|fetch)|<svg[^>]*\bonload\b|<iframe\b[^>]*src\s*=|\balert\s*\(|\bdocument\.cookie\b|\beval\s*\()',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
                 'risk_points': 80,
