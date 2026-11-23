@@ -28,9 +28,9 @@ _WS_LAST_BROADCAST = {'window_ts': 0.0, 'count': 0}
 _LAST_CANDIDATE_SYNC = {'ts': 0.0}
 
 ENHANCED_ENV_SCAN_REGEX = (
-    r'(\.env|\.git/|/\.git|\.aws/|\.ssh/|\.docker/|wp-config|wp-login\.php|wp-admin|xmlrpc\.php|'
+    r'((^|/)\.env(\b|$)|(^|/)\.git(/|$)|(^|/)\.aws/|(^|/)\.ssh/|(^|/)\.docker/|wp-config|wp-login\.php|wp-admin|xmlrpc\.php|'
     r'phpmyadmin|pma/|myadmin|adminer|phpinfo|\.sql(\.gz|\.bz2|\.zip)?$|\.bak$|\.old$|\.swp$|'
-    r'\.htaccess|/actuator|/server-status|vendor/phpunit|eval-stdin\.php|boaform|cgi-bin|'
+    r'(^|/)\.htaccess|/actuator|/server-status|vendor/phpunit|eval-stdin\.php|boaform|cgi-bin|'
     r'nmaplowercheck|/sdk|/evox/about|/HNAP1|/GponForm|/shell|cmd\.php|cmd\.jsp|owa/auth|autodiscover|/solr/)'
 )
 

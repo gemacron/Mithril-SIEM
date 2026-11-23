@@ -44,9 +44,9 @@ class Command(BaseCommand):
             {
                 'code': 'R-ENV-SCAN',
                 'name': 'Escaneo de Archivos Sensibles, Backups y Config (.env / .git / wp-config)',
-                'description': 'Intento de acceso a archivos críticos (.env, .git, backups .sql/.bak, phpinfo, wp-admin, phpmyadmin, actuator)',
+                'description': 'Intento de acceso a archivos críticos (.env, /.git/, backups .sql/.bak, phpinfo, wp-admin, phpmyadmin, actuator)',
                 'category': 'SCANNER',
-                'pattern_regex': r'(\.env|\.git/|/\.git|\.aws/|\.ssh/|\.docker/|wp-config|wp-login\.php|wp-admin|xmlrpc\.php|phpmyadmin|pma/|myadmin|adminer|phpinfo|\.sql(\.gz|\.bz2|\.zip)?$|\.bak$|\.old$|\.swp$|\.htaccess|/actuator|/server-status|vendor/phpunit|eval-stdin\.php|boaform|cgi-bin|nmaplowercheck|/sdk|/evox/about|/HNAP1|/GponForm|/shell|cmd\.php|cmd\.jsp|owa/auth|autodiscover|/solr/)',
+                'pattern_regex': r'((^|/)\.env(\b|$)|(^|/)\.git(/|$)|(^|/)\.aws/|(^|/)\.ssh/|(^|/)\.docker/|wp-config|wp-login\.php|wp-admin|xmlrpc\.php|phpmyadmin|pma/|myadmin|adminer|phpinfo|\.sql(\.gz|\.bz2|\.zip)?$|\.bak$|\.old$|\.swp$|(^|/)\.htaccess|/actuator|/server-status|vendor/phpunit|eval-stdin\.php|boaform|cgi-bin|nmaplowercheck|/sdk|/evox/about|/HNAP1|/GponForm|/shell|cmd\.php|cmd\.jsp|owa/auth|autodiscover|/solr/)',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
                 'risk_points': 80,
@@ -64,9 +64,9 @@ class Command(BaseCommand):
             {
                 'code': 'R-PATH-TRAVERSAL',
                 'name': 'Path Traversal / Inclusión de Archivos Locales (LFI)',
-                'description': 'Intento de escapar de la raíz web hacia archivos del sistema (../, /etc/passwd, /proc/self, win.ini)',
+                'description': 'Intento de escapar de la raíz web hacia archivos del sistema (../, ..\\, /etc/passwd, /proc/self, win.ini)',
                 'category': 'TRAVERSAL',
-                'pattern_regex': r'(\.\./|\.\.\\|/etc/passwd|/etc/shadow|/proc/self/|win\.ini|boot\.ini|windows/system32)',
+                'pattern_regex': r'(\.\./|\.\.\\(?![nrt"\\])|/etc/passwd|/etc/shadow|/proc/self/|win\.ini|boot\.ini|windows/system32)',
                 'threshold_count': 1,
                 'threshold_seconds': 60,
                 'risk_points': 85,
