@@ -1146,29 +1146,16 @@ def resolve_geoip(ip_str, cf_country=''):
 
 def _is_benign_app_sync(uri_str, status_code):
     """
-    Identifica llamadas de sincronización en segundo plano legítimas de Nextcloud / WebDAV
-    y recursos estáticos inofensivos de navegadores (favicon, robots, fuentes, sourcemaps)
-    para evitar falsos positivos contra usuarios legítimos.
+    Identifica únicamente respuestas estándar de caché HTTP (304 Not Modified)
+    y recursos estáticos estándar de navegadores (favicon, robots, fuentes, imágenes, sourcemaps)
+    sin hardcodear rutas de ninguna aplicación específica.
     """
-    u = str(uri_str or '').lower().split('?')[0].strip()
     if status_code == 304:
         return True
-    if status_code == 404 and '/ocs/v2.php/apps/text/public/workspace' in u:
-        return True
-    if status_code in (200, 204, 206, 207, 304, 412) and any(p in u for p in (
-        '/index.php/avatar/',
-        '/core/preview',
-        '/index.php/core/preview',
-        '/index.php/apps/text/session/',
-        '/ocs/v2.php/apps/',
-        '/index.php/apps/files/api/v1/stats',
-        '/public.php/webdav/',
-        '/remote.php/dav/',
-        '/remote.php/webdav/',
-        '/cron.php',
-        '/status.php',
-    )):
-        return True
+    u = str(uri_str or '').lower().split('?')[0].strip()
+    # Extraer ruta pura si viene con prefijo de vhost "[dominio] /ruta"
+    if u.startswith('[') and '] ' in u:
+        u = u.split('] ', 1)[1].strip()
     if status_code == 404 and (
         u in ('/favicon.ico', '/robots.txt', '/sitemap.xml', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png')
         or u.endswith(('.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.woff', '.woff2', '.ttf', '.eot', '.css.map', '.js.map'))
@@ -1577,20 +1564,20 @@ def process_incoming_log(data, node=None):
                         triggered_events.append(event)
                         risk_to_add += max(rule.risk_points, 80)
 
-        # B. Detección Heurística de Frecuencia 404 (Enumeración de directorios / Scanners >= umbral)
+        # B. Detección Heurística de Enumeración de Directorios (rutas 404 DISTINTAS >= umbral, agnóstico a la aplicación)
         elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
             if not skip_freq_heuristics and log.status_code == 404 and not is_benign_sync:
-                recent_404_count = (
+                distinct_404_uris = (
                     TrafficLog.objects.filter(
                         client_ip=target_client_ip,
                         status_code=404,
                         created_at__gte=window_start
                     )
-                    .exclude(uri__icontains='/ocs/v2.php/apps/text/public/workspace')
-                    .exclude(uri__in=['/favicon.ico', '/robots.txt', '/sitemap.xml'])
-                    .count()
+                    .values_list('uri', flat=True)
+                    .distinct()
                 )
-                if recent_404_count >= max(5, rule.threshold_count):
+                distinct_404_count = sum(1 for u in distinct_404_uris if not _is_benign_app_sync(u, 404))
+                if distinct_404_count >= max(10, rule.threshold_count):
                     matched_any_rule = True
                     if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
                         event = SecurityEvent.objects.create(
@@ -1598,13 +1585,13 @@ def process_incoming_log(data, node=None):
                             rule=rule,
                             client_ip=target_client_ip,
                             severity='HIGH',
-                            matched_payload=f"Escaneo de rutas: {recent_404_count} errores 404 en {rule.threshold_seconds}s ({log.uri})",
-                            details={**base_req_details, 'count_404': recent_404_count}
+                            matched_payload=f"Escaneo de rutas: {distinct_404_count} rutas 404 distintas en {rule.threshold_seconds}s ({log.uri})",
+                            details={**base_req_details, 'count_404': distinct_404_count}
                         )
                         triggered_events.append(event)
                         risk_to_add += max(rule.risk_points, 80)
 
-        # C. Detección Heurística de Ráfaga / Flood DoS por IP (Rate Limit sin regex)
+        # C. Detección Heurística de Ráfaga / Flood DoS por IP (Rate Limit sin regex, agnóstico a la aplicación)
         elif not rule.pattern_regex and rule.category == 'RATE_LIMIT':
             if not skip_freq_heuristics and not is_benign_sync and not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=4.0):
                 recent_req_count = (
@@ -1613,11 +1600,6 @@ def process_incoming_log(data, node=None):
                         created_at__gte=window_start
                     )
                     .exclude(status_code=304)
-                    .exclude(uri__icontains='/index.php/avatar/')
-                    .exclude(uri__icontains='/core/preview')
-                    .exclude(uri__icontains='/index.php/apps/text/session/')
-                    .exclude(uri__icontains='/ocs/v2.php/apps/')
-                    .exclude(uri__icontains='/remote.php/dav/')
                     .count()
                 )
                 if recent_req_count >= rule.threshold_count:
@@ -1693,12 +1675,10 @@ def process_incoming_log(data, node=None):
             node_name=node.name if node else 'Direct',
         )
 
-    # 6. Emitir evento en vivo por WebSockets al SOC (100% consistente con Candidatos a Bloqueo)
-    is_threat = (not is_benign_sync) and (
-        len(triggered_events) > 0
-        or matched_any_rule
-        or reputation.status in ('PENDING_BAN', 'BANNED')
-    )
+    # 6. Emitir evento en vivo por WebSockets al SOC:
+    # Marcar is_threat=True ÚNICAMENTE cuando ESTA petición individual disparó una regla de seguridad real
+    # (sin contaminar peticiones legítimas posteriores de la misma IP).
+    is_threat = bool(len(triggered_events) > 0 or matched_any_rule)
     if is_threat:
         incoming_headers['is_threat'] = True
         log.raw_headers = incoming_headers

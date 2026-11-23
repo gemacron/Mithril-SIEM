@@ -94,7 +94,7 @@ def dashboard_view(request):
             log.client_ip = meta['real_client_ip']
         is_benign = _is_benign_app_sync(log.uri, log.status_code)
         raw_threat = bool(log.raw_headers.get('is_threat')) if isinstance(log.raw_headers, dict) else False
-        log.is_threat = (not is_benign) and (raw_threat or (log.client_ip in threat_ips))
+        log.is_threat = (not is_benign) and raw_threat
         log.is_cloudflare = meta['is_cloudflare']
         log.cloudflare_ip = meta['cloudflare_ip']
         log.connection_ip = meta['cloudflare_ip'] if (meta['is_cloudflare'] and meta['cloudflare_ip']) else log.client_ip
@@ -517,17 +517,11 @@ def api_live_feed_logs(request):
         elif status_filter.isdigit():
             qs = qs.filter(status_code=int(status_filter))
 
-    # 5. Filtro por Tipo (Amenaza vs Normal)
+    # 5. Filtro por Tipo (Amenaza real verificada por el motor vs Tráfico Normal)
     if type_filter == 'threat':
-        qs = qs.filter(
-            (Q(status_code__gte=400) | Q(raw_headers__is_threat=True))
-            & ~Q(uri__icontains='/ocs/v2.php/apps/text/public/workspace', status_code=404)
-        )
+        qs = qs.filter(raw_headers__is_threat=True)
     elif type_filter == 'normal':
-        qs = qs.filter(
-            (Q(status_code__lt=400) & ~Q(raw_headers__is_threat=True))
-            | Q(uri__icontains='/ocs/v2.php/apps/text/public/workspace', status_code=404)
-        )
+        qs = qs.exclude(raw_headers__is_threat=True)
 
     # 6. Búsqueda por texto (IP, dominio/URI, país, User-Agent, nodo)
     if search_q:

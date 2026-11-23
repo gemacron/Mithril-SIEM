@@ -114,10 +114,10 @@ class Command(BaseCommand):
             {
                 'code': 'R-SCAN-404-BRUTE',
                 'name': 'Heurística de Enumeración de Directorios (Ráfaga 404)',
-                'description': 'Acumulación anómala de respuestas 404 Not Found desde una misma IP en corto lapso de tiempo',
+                'description': 'Acumulación anómala de respuestas 404 Not Found en rutas distintas desde una misma IP en corto lapso de tiempo',
                 'category': 'SCANNER',
                 'pattern_regex': '',
-                'threshold_count': 4,
+                'threshold_count': 10,
                 'threshold_seconds': 60,
                 'risk_points': 80,
             },
@@ -172,7 +172,7 @@ class Command(BaseCommand):
                 obj.name = r_data['name']
                 obj.description = r_data['description']
                 obj.pattern_regex = r_data['pattern_regex']
-                if obj.code == 'R-HTTP-FLOOD-DOS':
+                if obj.code in ('R-HTTP-FLOOD-DOS', 'R-SCAN-404-BRUTE'):
                     obj.threshold_count = max(obj.threshold_count, r_data['threshold_count'])
                 else:
                     obj.threshold_count = min(obj.threshold_count, r_data['threshold_count'])
