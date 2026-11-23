@@ -136,15 +136,20 @@ def dashboard_view(request):
 @login_required
 def api_map_data(request):
     """
-    Retorna datos agregados de países y coordenadas de peticiones sospechosas
-    para el mapa táctico 2D, garantizando consistencia 1 a 1 con Candidatos a Bloqueo.
+    Retorna ÚNICAMENTE tráfico activo en tiempo real (ventana móvil de los últimos 90 segundos,
+    sin datos históricos) para los mapas tácticos 2D. El historial completo queda reservado para Informes (/reports/).
     """
     now = timezone.now()
-    since = now - timedelta(hours=24)
+    try:
+        window_sec = int(request.GET.get('window_sec', '90'))
+        window_sec = max(15, min(300, window_sec))
+    except ValueError:
+        window_sec = 90
+    since = now - timedelta(seconds=window_sec)
 
     sync_unbanned_threats_to_candidates()
 
-    # Top países con eventos de seguridad y tráfico real
+    # Top países con actividad en curso (ventana en vivo)
     country_stats = (
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(country_code__in=['', 'LAN'])
@@ -168,11 +173,11 @@ def api_map_data(request):
         'client_ip', 'status_code', 'uri', 'raw_headers', 'user_agent', 'http_method', 'node__name', 'created_at'
     )
 
-    # Priorizar peticiones de candidatos activos / amenazas confirmadas + clientes reales
+    # Priorizar peticiones en curso que hayan disparado una amenaza real + clientes activos actuales
     threat_points = list(
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(http_method='HTTPS')
-        .filter(Q(client_ip__in=(candidate_ips | active_ban_ips)) | Q(raw_headers__is_threat=True))
+        .filter(raw_headers__is_threat=True)
         .values(*fields_list)
         .order_by('-id')[:45]
     )
@@ -258,11 +263,7 @@ def api_map_data(request):
             and not is_benign
             and not is_probe_flag
             and not was_dismissed_after
-            and (
-                (p['client_ip'] in threat_ips)
-                or (real_ip_clean in threat_ips)
-                or raw_is_threat
-            )
+            and raw_is_threat
         )
 
         # Si el punto se marca como amenaza en el mapa y aún no está bloqueado ni en Candidatos, crearlo de inmediato

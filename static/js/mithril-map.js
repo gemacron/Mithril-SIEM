@@ -1472,11 +1472,9 @@ class TacticalParaguayMap {
           status_code: p.status_code || 200
         });
       }
-      if (pyPoints.length > 0) {
-        this.points = pyPoints.slice(0, 60);
-        if (hadNoPoints) {
-          this.emitActiveVectors();
-        }
+      this.points = pyPoints.slice(0, 60);
+      if (hadNoPoints && this.points.length > 0) {
+        this.emitActiveVectors();
       }
     }
   }
