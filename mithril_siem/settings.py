@@ -83,6 +83,10 @@ if DB_HOST:
             'HOST': DB_HOST,
             'PORT': os.getenv('DB_PORT', '5432'),
             'CONN_MAX_AGE': 60,
+            'CONN_HEALTH_CHECKS': True,
+            'OPTIONS': {
+                'options': '-c statement_timeout=15000',
+            },
         }
     }
 else:

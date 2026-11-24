@@ -2,6 +2,7 @@ import math
 from django.shortcuts import render
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse
+from django.core.cache import cache
 from django.db.models import Count, Q
 from django.utils import timezone
 from datetime import timedelta
@@ -63,9 +64,6 @@ def dashboard_view(request):
 
     recent_logs = list(
         TrafficLog.objects.select_related('node')
-        .exclude(http_method='HTTPS')
-        .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
-        .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
         .order_by('-id')[:25]
     )
     recent_ips = {log.client_ip for log in recent_logs}
@@ -145,11 +143,17 @@ def api_map_data(request):
         window_sec = max(15, min(300, window_sec))
     except ValueError:
         window_sec = 90
+
+    map_cache_key = f'api_map_data_v1_{window_sec}'
+    cached_map = cache.get(map_cache_key)
+    if cached_map is not None:
+        return JsonResponse(cached_map)
+
     since = now - timedelta(seconds=window_sec)
 
     sync_unbanned_threats_to_candidates()
 
-    # Top países con actividad en curso (ventana en vivo)
+    # Top países con actividad en curso (ventana en vivo, solo columnas indexadas)
     country_stats = (
         TrafficLog.objects.filter(created_at__gte=since)
         .exclude(country_code__in=['', 'LAN'])
@@ -173,51 +177,12 @@ def api_map_data(request):
         'client_ip', 'status_code', 'uri', 'raw_headers', 'user_agent', 'http_method', 'node__name', 'created_at'
     )
 
-    # Priorizar peticiones en curso que hayan disparado una amenaza real + clientes activos actuales
-    threat_points = list(
+    # Una sola consulta rápida sobre índice created_at / PK (cero filtros JSONB en SQL)
+    raw_points = list(
         TrafficLog.objects.filter(created_at__gte=since)
-        .exclude(http_method='HTTPS')
-        .filter(raw_headers__is_threat=True)
         .values(*fields_list)
-        .order_by('-id')[:45]
+        .order_by('-id')[:120]
     )
-    real_client_points = list(
-        TrafficLog.objects.filter(created_at__gte=since)
-        .exclude(latitude__isnull=True)
-        .exclude(http_method='HTTPS')
-        .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
-        .exclude(country_code__startswith='CF-')
-        .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-        .values(*fields_list)
-        .order_by('-id')[:80]
-    )
-    py_points = list(
-        TrafficLog.objects.filter(created_at__gte=since)
-        .exclude(http_method='HTTPS')
-        .exclude(country_code__startswith='CF-')
-        .filter(
-            Q(country_code__in=['PY', 'LAN'])
-            | Q(country_name__icontains='Paraguay')
-            | Q(raw_headers__cf_country='PY')
-            | Q(raw_headers__is_local_ip=True)
-            | Q(raw_headers__is_own_public_ip=True)
-        )
-        .values(*fields_list)
-        .order_by('-id')[:45]
-    )
-    seen_ids = set()
-    raw_points = []
-    for item in (threat_points + real_client_points + py_points):
-        if item['id'] not in seen_ids:
-            seen_ids.add(item['id'])
-            raw_points.append(item)
-    point_ips = {p['client_ip'] for p in raw_points}
-    threat_ips = set(
-        SecurityEvent.objects.filter(client_ip__in=point_ips, created_at__gte=since)
-        .values_list('client_ip', flat=True).distinct()
-    ) if point_ips else set()
-    threat_ips.update(candidate_ips)
-    threat_ips.update(active_ban_ips)
 
     recent_points = []
     for p in raw_points:
@@ -311,14 +276,20 @@ def api_map_data(request):
             'longitude': base_lon + (idx * 2.8),
         })
 
-    return JsonResponse({
+    map_payload = {
         'countries': list(country_stats),
         'points': list(recent_points),
         'nodes': proxy_nodes
-    })
+    }
+    cache.set(map_cache_key, map_payload, timeout=3)
+    return JsonResponse(map_payload)
 
 @login_required
 def api_live_stats(request):
+    cached_stats = cache.get('api_live_stats_v1')
+    if cached_stats is not None:
+        return JsonResponse(cached_stats)
+
     nodes = list(ProxyNode.objects.all())
     for n in nodes:
         n.check_health()
@@ -328,29 +299,23 @@ def api_live_stats(request):
 
     now = timezone.now()
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    since_24h = now - timedelta(hours=24)
 
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=now).update(is_active=False)
     sync_unbanned_threats_to_candidates()
 
-    total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
+    total_logs_today = cache.get('total_logs_today_cnt')
+    if total_logs_today is None:
+        total_logs_today = TrafficLog.objects.filter(created_at__gte=today_start).count()
+        cache.set('total_logs_today_cnt', total_logs_today, timeout=10)
     threats_today = SecurityEvent.objects.filter(created_at__gte=today_start).count()
     pending_bans = BanCandidate.objects.filter(status='PENDING').count()
     active_bans = ActiveBan.objects.filter(is_active=True).count()
 
+    # Consulta ultrarrápida por PK descendente (sin escaneo JSONB en SQL)
     recent_logs_qs = list(
         TrafficLog.objects.select_related('node')
-        .exclude(http_method='HTTPS')
-        .exclude(country_code__startswith='CF-')
-        .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
-        .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-        .order_by('-id')[:25]
+        .order_by('-id')[:35]
     )
-    recent_ips = {log.client_ip for log in recent_logs_qs}
-    threat_ips = set(
-        SecurityEvent.objects.filter(client_ip__in=recent_ips, created_at__gte=since_24h)
-        .values_list('client_ip', flat=True).distinct()
-    ) if recent_ips else set()
     recent_logs_data = []
     for log in recent_logs_qs:
         lat = log.latitude
@@ -390,7 +355,7 @@ def api_live_stats(request):
             'latitude': lat,
             'longitude': lon,
             'node': log.node.name if log.node else 'Direct',
-            'is_threat': (not is_benign) and (not is_own_pub) and (raw_threat or (target_geo_ip in threat_ips)),
+            'is_threat': (not is_benign) and (not is_own_pub) and raw_threat,
             'is_cloudflare': meta['is_cloudflare'],
             'cloudflare_ip': meta['cloudflare_ip'],
             'real_client_ip': real_ip_clean,
@@ -435,7 +400,7 @@ def api_live_stats(request):
             'detected_at': c.created_at.strftime('%H:%M:%S')
         })
 
-    return JsonResponse({
+    stats_payload = {
         'total_rps': total_rps,
         'online_nodes': online_count,
         'total_nodes': len(nodes),
@@ -445,8 +410,10 @@ def api_live_stats(request):
         'active_bans': active_bans,
         'nodes': nodes_data,
         'candidates': candidates_data,
-        'recent_logs': recent_logs_data
-    })
+        'recent_logs': recent_logs_data[:25]
+    }
+    cache.set('api_live_stats_v1', stats_payload, timeout=3)
+    return JsonResponse(stats_payload)
 
 
 @login_required
@@ -477,29 +444,25 @@ def api_live_feed_logs(request):
     hide_probes = request.GET.get('hide_probes', '0') == '1'
 
     base_qs = TrafficLog.objects.select_related('node').filter(created_at__gte=today_start)
-    total_today = base_qs.count()
+    total_today = cache.get('total_logs_today_cnt')
+    if total_today is None:
+        total_today = base_qs.count()
+        cache.set('total_logs_today_cnt', total_today, timeout=10)
 
     qs = base_qs
 
-    # 1. Filtro independiente de IPs Locales Privadas / Balanceador (RFC1918 / Loopback)
+    # 1. Filtro rápido por columnas indexadas (cero escaneo JSONB en PostgreSQL)
     if hide_local:
         qs = (
-            qs.exclude(client_ip__startswith='127.')
+            qs.exclude(country_code='LAN')
+            .exclude(client_ip__startswith='127.')
             .exclude(client_ip__startswith='10.')
             .exclude(client_ip__startswith='192.168.')
             .exclude(client_ip__startswith='169.254.')
-            .exclude(country_code='LAN')
-            .exclude(raw_headers__is_local_ip=True)
         )
 
-    # 2. Excluir siempre sondas de Cloudflare / Handshakes TLS sin IP de cliente final
-    qs = (
-        qs.exclude(http_method='HTTPS')
-        .exclude(country_code__startswith='CF-')
-        .exclude(user_agent__icontains='Cloudflare-Traffic-Manager')
-        .exclude(user_agent__icontains='TLS SNI')
-        .exclude(Q(raw_headers__is_cloudflare=True) & Q(raw_headers__real_client_ip=''))
-    )
+    # 2. Excluir únicamente por columnas indexadas (las sondas ya se filtran en ingesta)
+    qs = qs.exclude(http_method='HTTPS').exclude(country_code__startswith='CF-')
 
     # 3. Filtro por Método HTTP
     if method_filter and method_filter != 'ALL':
@@ -518,11 +481,17 @@ def api_live_feed_logs(request):
         elif status_filter.isdigit():
             qs = qs.filter(status_code=int(status_filter))
 
-    # 5. Filtro por Tipo (Amenaza real verificada por el motor vs Tráfico Normal)
-    if type_filter == 'threat':
-        qs = qs.filter(raw_headers__is_threat=True)
-    elif type_filter == 'normal':
-        qs = qs.exclude(raw_headers__is_threat=True)
+    # 5. Filtro por Tipo usando SecurityEvent (índice PK, cero escaneo JSONB sobre TrafficLog)
+    if type_filter in ('threat', 'normal'):
+        threat_log_ids = [
+            ev.details.get('log_id')
+            for ev in SecurityEvent.objects.filter(created_at__gte=today_start).only('details')
+            if isinstance(ev.details, dict) and ev.details.get('log_id')
+        ]
+        if type_filter == 'threat':
+            qs = qs.filter(id__in=threat_log_ids) if threat_log_ids else qs.none()
+        else:
+            qs = qs.exclude(id__in=threat_log_ids) if threat_log_ids else qs
 
     # 6. Búsqueda por texto (IP, dominio/URI, país, User-Agent, nodo)
     if search_q:

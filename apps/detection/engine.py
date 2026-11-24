@@ -7,6 +7,7 @@ import threading
 import urllib.parse
 import urllib.request
 import ipaddress
+from collections import deque
 from datetime import timedelta
 from django.utils import timezone
 from django.core.cache import cache
@@ -26,6 +27,40 @@ _EVENT_COOLDOWN_CACHE = {}
 _WS_LAST_BROADCAST = {'window_ts': 0.0, 'count': 0}
 # Control de cadencia para sincronización retroactiva de candidatos a bloqueo
 _LAST_CANDIDATE_SYNC = {'ts': 0.0}
+_CANDIDATE_SYNC_LOCK = threading.Lock()
+
+# Contadores deslizantes en memoria RAM (cero SELECT COUNT(*) en PostgreSQL por petición)
+_MEM_WINDOW_LOCK = threading.Lock()
+_MEM_REQ_WINDOW = {}        # client_ip -> deque[monotonic_ts]
+_MEM_AUTH_FAIL_WINDOW = {}  # client_ip -> deque[monotonic_ts]
+_MEM_404_WINDOW = {}        # client_ip -> deque[(monotonic_ts, uri_path)]
+
+def _record_and_count_window(store, client_ip, now_mono, window_sec, value=None):
+    """Registra un evento en ventana móvil en RAM y devuelve el conteo (o conteo de valores distintos si value != None)."""
+    cutoff = now_mono - max(1, window_sec)
+    with _MEM_WINDOW_LOCK:
+        if len(store) > 5000:
+            # Limpiar entradas antiguas para mantener uso de RAM acotado (<5 MB)
+            stale_keys = [
+                k for k, dq in store.items()
+                if not dq or (dq[-1][0] if isinstance(dq[-1], tuple) else dq[-1]) < cutoff
+            ]
+            for k in stale_keys[:2500]:
+                store.pop(k, None)
+        dq = store.get(client_ip)
+        if dq is None:
+            dq = deque()
+            store[client_ip] = dq
+        if value is None:
+            dq.append(now_mono)
+            while dq and dq[0] < cutoff:
+                dq.popleft()
+            return len(dq)
+        else:
+            dq.append((now_mono, value))
+            while dq and dq[0][0] < cutoff:
+                dq.popleft()
+            return len({item[1] for item in dq})
 
 ENHANCED_ENV_SCAN_REGEX = (
     r'((^|/)\.env(\b|$)|(^|/)\.git(/|$)|(^|/)\.aws/|(^|/)\.ssh/|(^|/)\.docker/|wp-config|wp-login\.php|wp-admin|xmlrpc\.php|'
@@ -1246,26 +1281,30 @@ def ensure_ban_candidate_for_ip(target_ip, reputation=None, last_event=None, rea
 
 def sync_unbanned_threats_to_candidates(force=False):
     """
-    Sincroniza retroactivamente todas las amenazas detectadas en las últimas 24 horas
-    con la cola de Candidatos a Bloqueo (PENDING), asegurando consistencia 1 a 1 entre
-    los vectores rojos de ataque mostrados en los mapas y la lista de posibles bloqueos.
+    Sincroniza retroactivamente las amenazas confirmadas en SecurityEvent (últimas 24h)
+    con la cola de Candidatos a Bloqueo (PENDING), sin escanear la tabla pesada TrafficLog.
     """
     now_mono = time.monotonic()
-    if not force and (now_mono - _LAST_CANDIDATE_SYNC['ts']) < 8.0:
+    if not force and (now_mono - _LAST_CANDIDATE_SYNC['ts']) < 30.0:
         return
-    _LAST_CANDIDATE_SYNC['ts'] = now_mono
-
+    if not _CANDIDATE_SYNC_LOCK.acquire(blocking=False):
+        return
     try:
+        now_mono = time.monotonic()
+        if not force and (now_mono - _LAST_CANDIDATE_SYNC['ts']) < 30.0:
+            return
+        _LAST_CANDIDATE_SYNC['ts'] = now_mono
+
         since = timezone.now() - timedelta(hours=24)
         active_ban_ips = set(ActiveBan.objects.filter(is_active=True).values_list('client_ip', flat=True))
         pending_cand_ips = set(BanCandidate.objects.filter(status='PENDING').values_list('client_ip', flat=True))
         whitelisted_ips = set(IpReputation.objects.filter(status='WHITELISTED').values_list('client_ip', flat=True))
 
-        # 1. Revisar todos los SecurityEvents recientes
+        # Revisar únicamente SecurityEvent (tabla pequeña e indexada, <1 ms)
         recent_events = list(
             SecurityEvent.objects.filter(created_at__gte=since)
             .select_related('rule', 'node')
-            .order_by('-created_at')[:250]
+            .order_by('-created_at')[:150]
         )
         seen_ips = set()
         for ev in recent_events:
@@ -1296,67 +1335,10 @@ def sync_unbanned_threats_to_candidates(force=False):
                 node_name=ev.node.name if ev.node else ev_details.get('node', ''),
             )
             pending_cand_ips.add(target_ip)
-
-        # 2. Revisar logs marcados con is_threat=True en raw_headers que no tenían SecurityEvent previo
-        threat_logs = list(
-            TrafficLog.objects.filter(created_at__gte=since, raw_headers__is_threat=True)
-            .select_related('node')
-            .order_by('-id')[:120]
-        )
-        scanner_rule = SecurityRule.objects.filter(code='R-ENV-SCAN').first() or SecurityRule.objects.filter(is_active=True).first()
-        for tlog in threat_logs:
-            meta = extract_log_ip_meta(tlog.client_ip, tlog.raw_headers)
-            target_ip = meta.get('real_client_ip') or (tlog.client_ip if not is_cloudflare_ip(tlog.client_ip) else '')
-            if not target_ip or target_ip in seen_ips:
-                continue
-            seen_ips.add(target_ip)
-            if target_ip in active_ban_ips or target_ip in pending_cand_ips or target_ip in whitelisted_ips:
-                continue
-            if is_cloudflare_ip(target_ip) or is_own_infrastructure_ip(target_ip):
-                continue
-            if _is_benign_app_sync(tlog.uri, tlog.status_code):
-                continue
-            if BanCandidate.objects.filter(client_ip=target_ip, status='DISMISSED', reviewed_at__gte=tlog.created_at).exists():
-                continue
-
-            ev = SecurityEvent.objects.filter(client_ip=target_ip).order_by('-created_at').first()
-            if not ev:
-                ev = SecurityEvent.objects.create(
-                    node=tlog.node,
-                    rule=scanner_rule,
-                    client_ip=target_ip,
-                    severity='HIGH',
-                    matched_payload=f"Petición hostil HTTP {tlog.status_code} en {tlog.uri}",
-                    details={
-                        'log_id': tlog.id,
-                        'node': tlog.node.name if tlog.node else 'Direct',
-                        'http_method': tlog.http_method,
-                        'uri': tlog.uri,
-                        'query_params': tlog.query_params,
-                        'status_code': tlog.status_code,
-                        'user_agent': tlog.user_agent,
-                        'country_code': tlog.country_code,
-                        'country_name': tlog.country_name,
-                        'city': tlog.city,
-                        'is_cloudflare': meta.get('is_cloudflare', False),
-                        'cloudflare_ip': meta.get('cloudflare_ip', ''),
-                        'real_client_ip': target_ip,
-                        'headers': tlog.raw_headers or {},
-                    }
-                )
-            rep = IpReputation.objects.filter(client_ip=target_ip).first()
-            ensure_ban_candidate_for_ip(
-                target_ip=target_ip,
-                reputation=rep,
-                last_event=ev,
-                is_cf=meta.get('is_cloudflare', False),
-                cf_node_ip=meta.get('cloudflare_ip', ''),
-                country_name=tlog.country_name,
-                node_name=tlog.node.name if tlog.node else 'Direct',
-            )
-            pending_cand_ips.add(target_ip)
     except Exception:
         pass
+    finally:
+        _CANDIDATE_SYNC_LOCK.release()
 
 
 def process_incoming_log(data, node=None):
@@ -1542,17 +1524,15 @@ def process_incoming_log(data, node=None):
                     triggered_events.append(event)
                     risk_to_add += max(rule.risk_points, 80)
 
-        # A. Reglas de Fuerza Bruta de Autenticación (401/403 repetidos >= umbral sobre la ruta real, sin el [Host])
+        # A. Reglas de Fuerza Bruta de Autenticación (401/403 repetidos >= umbral en RAM, cero SELECT en PostgreSQL)
         elif rule.code == 'R-AUTH-BRUTE-401':
             pure_path = str(log.uri or '')
             if pure_path.startswith('[') and '] ' in pure_path:
                 pure_path = pure_path.split('] ', 1)[1]
             if not skip_freq_heuristics and log.status_code in (401, 403) and (not compiled_rx or compiled_rx.search(pure_path)):
-                recent_auth_fails = TrafficLog.objects.filter(
-                    client_ip=target_client_ip,
-                    status_code__in=[401, 403],
-                    created_at__gte=window_start
-                ).count()
+                recent_auth_fails = _record_and_count_window(
+                    _MEM_AUTH_FAIL_WINDOW, target_client_ip, time.monotonic(), rule.threshold_seconds
+                )
                 if recent_auth_fails >= max(1, rule.threshold_count):
                     matched_any_rule = True
                     if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
@@ -1567,20 +1547,12 @@ def process_incoming_log(data, node=None):
                         triggered_events.append(event)
                         risk_to_add += max(rule.risk_points, 80)
 
-        # B. Detección Heurística de Enumeración de Directorios (rutas 404 DISTINTAS >= umbral, agnóstico a la aplicación)
+        # B. Detección Heurística de Enumeración de Directorios (rutas 404 DISTINTAS >= umbral en RAM, cero SELECT en PostgreSQL)
         elif rule.code == 'R-SCAN-404-BRUTE' or (not rule.pattern_regex and rule.category == 'SCANNER'):
             if not skip_freq_heuristics and log.status_code == 404 and log.http_method != 'PROPFIND' and not is_benign_sync:
-                distinct_404_uris = (
-                    TrafficLog.objects.filter(
-                        client_ip=target_client_ip,
-                        status_code=404,
-                        created_at__gte=window_start
-                    )
-                    .exclude(http_method='PROPFIND')
-                    .values_list('uri', flat=True)
-                    .distinct()
+                distinct_404_count = _record_and_count_window(
+                    _MEM_404_WINDOW, target_client_ip, time.monotonic(), rule.threshold_seconds, value=log.uri
                 )
-                distinct_404_count = sum(1 for u in distinct_404_uris if not _is_benign_app_sync(u, 404))
                 if distinct_404_count >= max(1, rule.threshold_count):
                     matched_any_rule = True
                     if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=3.0):
@@ -1595,18 +1567,13 @@ def process_incoming_log(data, node=None):
                         triggered_events.append(event)
                         risk_to_add += max(rule.risk_points, 80)
 
-        # C. Detección Heurística de Ráfaga / Flood DoS por IP (Rate Limit sin regex, agnóstico a la aplicación)
+        # C. Detección Heurística de Ráfaga / Flood DoS por IP (en RAM, cero SELECT COUNT(*) por petición)
         elif not rule.pattern_regex and rule.category == 'RATE_LIMIT':
-            if not skip_freq_heuristics and not is_benign_sync and not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=4.0):
-                recent_req_count = (
-                    TrafficLog.objects.filter(
-                        client_ip=target_client_ip,
-                        created_at__gte=window_start
-                    )
-                    .exclude(status_code=304)
-                    .count()
+            if not skip_freq_heuristics and not is_benign_sync and log.status_code != 304:
+                recent_req_count = _record_and_count_window(
+                    _MEM_REQ_WINDOW, target_client_ip, time.monotonic(), rule.threshold_seconds
                 )
-                if recent_req_count >= rule.threshold_count:
+                if recent_req_count >= rule.threshold_count and not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=4.0):
                     matched_any_rule = True
                     event = SecurityEvent.objects.create(
                         node=node,

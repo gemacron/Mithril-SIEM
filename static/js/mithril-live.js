@@ -822,5 +822,5 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   fetchLiveStats();
-  setInterval(fetchLiveStats, 3000);
+  setInterval(fetchLiveStats, 5000);
 });
