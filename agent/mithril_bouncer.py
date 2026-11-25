@@ -168,11 +168,61 @@ findtime = 600
 maxretry = 1
 """
 
+def collect_blocked_hit_counters():
+    """
+    Lee los contadores exactos del kernel (iptables MITHRIL_REALIP + ipset mithril_f2b/mithril_f2b6)
+    para reportar al SIEM qué IPs bloqueadas volvieron a intentar conectarse y cuántas veces fueron repelidas.
+    """
+    hits = {}
+    # 1. Contadores exactos por IP en cadena L7 DPI (tráfico detrás de Cloudflare)
+    try:
+        res = subprocess.run(
+            ["iptables", "-L", "MITHRIL_REALIP", "-n", "-v", "-x"],
+            capture_output=True, text=True, check=False, timeout=4
+        )
+        if res.returncode == 0 and res.stdout:
+            for line in res.stdout.splitlines():
+                line_s = line.strip()
+                if not line_s or line_s.startswith(("Chain ", "pkts ")):
+                    continue
+                parts = line_s.split()
+                if not parts or not parts[0].isdigit():
+                    continue
+                pkts = int(parts[0])
+                if pkts <= 0:
+                    continue
+                m = re.search(r'(?:CF-Connecting-IP|X-Real-IP):\s*([0-9a-fA-F\.:]+)', line_s, re.IGNORECASE)
+                if m:
+                    ip_val = m.group(1).strip()
+                    hits[ip_val] = hits.get(ip_val, 0) + pkts
+    except Exception:
+        pass
+
+    # 2. Contadores por IP en ipset (si el conjunto fue creado con opción 'counters', tráfico directo L3/L4)
+    for set_name in ("mithril_f2b", "mithril_f2b6"):
+        try:
+            res = subprocess.run(
+                ["ipset", "list", set_name],
+                capture_output=True, text=True, check=False, timeout=4
+            )
+            if res.returncode == 0 and res.stdout:
+                for line in res.stdout.splitlines():
+                    m = re.match(r'^([0-9a-fA-F\.:]+)\s+.*?\bpackets\s+(\d+)', line.strip())
+                    if m:
+                        ip_val = m.group(1).strip()
+                        pkts = int(m.group(2))
+                        if pkts > 0:
+                            hits[ip_val] = hits.get(ip_val, 0) + pkts
+        except Exception:
+            pass
+    return hits
+
+
 def ensure_f2b_kernel_structures():
     """Garantiza que los conjuntos ipset (mithril_f2b / mithril_f2b6) y la cadena MITHRIL_REALIP existan en el kernel."""
     try:
-        subprocess.run(["ipset", "create", "mithril_f2b", "hash:ip", "family", "inet", "timeout", "0", "-exist"], capture_output=True, check=False)
-        subprocess.run(["ipset", "create", "mithril_f2b6", "hash:ip", "family", "inet6", "timeout", "0", "-exist"], capture_output=True, check=False)
+        subprocess.run(["ipset", "create", "mithril_f2b", "hash:ip", "family", "inet", "timeout", "0", "counters", "-exist"], capture_output=True, check=False)
+        subprocess.run(["ipset", "create", "mithril_f2b6", "hash:ip", "family", "inet6", "timeout", "0", "counters", "-exist"], capture_output=True, check=False)
         if subprocess.run(["iptables", "-C", "INPUT", "-m", "set", "--match-set", "mithril_f2b", "src", "-j", "DROP"], capture_output=True, check=False).returncode != 0:
             subprocess.run(["iptables", "-I", "INPUT", "1", "-m", "set", "--match-set", "mithril_f2b", "src", "-j", "DROP"], capture_output=True, check=False)
         if subprocess.run(["ip6tables", "-C", "INPUT", "-m", "set", "--match-set", "mithril_f2b6", "src", "-j", "DROP"], capture_output=True, check=False).returncode != 0:
@@ -937,7 +987,7 @@ def main():
                 _OWN_PUBLIC_WAN_IP = wan_cand
                 _OWN_PROTECTED_WAN_IPS.add(wan_cand)
 
-        # 1. Enviar Heartbeat y Telemetria al SIEM (incluyendo IP pública WAN real del proxy)
+        # 1. Enviar Heartbeat y Telemetria al SIEM (incluyendo IP pública WAN real y contadores de intentos repelidos)
         hb_data = {
             "status": "ok",
             "cpu": cpu,
@@ -947,6 +997,7 @@ def main():
             "rps": 0,
             "node_ips": _LOCAL_NODE_IPS,
             "public_ip": _OWN_PUBLIC_WAN_IP,
+            "blocked_hits": collect_blocked_hit_counters(),
         }
         if env_lat and env_lon:
             try:

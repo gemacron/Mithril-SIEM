@@ -327,8 +327,9 @@ def api_heartbeat(request):
         public_ip = str(data.get('public_ip', '') or '').strip()
         hb_lat = float(data['latitude']) if data.get('latitude') not in (None, '') else None
         hb_lon = float(data['longitude']) if data.get('longitude') not in (None, '') else None
+        blocked_hits = data.get('blocked_hits') if isinstance(data.get('blocked_hits'), dict) else {}
     except Exception:
-        rps, cpu, ram, conns, nginx_ver, node_ips, public_ip, hb_lat, hb_lon = 0, 0.0, 0.0, 0, "", [], "", None, None
+        rps, cpu, ram, conns, nginx_ver, node_ips, public_ip, hb_lat, hb_lon, blocked_hits = 0, 0.0, 0.0, 0, "", [], "", None, None, {}
 
     api_key = auth_header.split(' ', 1)[1].strip().strip('"').strip("'")
     node = ProxyNode.objects.filter(api_key=api_key).first()
@@ -365,6 +366,48 @@ def api_heartbeat(request):
         latitude=hb_lat,
         longitude=hb_lon,
     )
+
+    # Actualizar contadores reales de intentos repelidos por el kernel en este proxy (solo escribe si hubo delta > 0)
+    if blocked_hits:
+        try:
+            from django.utils import timezone as dj_tz
+            from apps.mitigation.models import ActiveBan, NodeBanSync
+            now_ts = dj_tz.now()
+            clean_hits = {}
+            for raw_ip, raw_cnt in blocked_hits.items():
+                try:
+                    cnt_i = int(raw_cnt)
+                    ip_s = str(raw_ip).strip()
+                    if ip_s and cnt_i > 0:
+                        clean_hits[ip_s] = cnt_i
+                except (ValueError, TypeError):
+                    continue
+            if clean_hits:
+                active_bans = list(ActiveBan.objects.filter(is_active=True, client_ip__in=list(clean_hits.keys())))
+                for ban in active_bans:
+                    raw_cnt = clean_hits.get(ban.client_ip, 0)
+                    sync_rec, _ = NodeBanSync.objects.get_or_create(
+                        ban=ban,
+                        node=node,
+                        defaults={'is_synced': True, 'synced_at': now_ts}
+                    )
+                    prev_cnt = sync_rec.last_kernel_counter or 0
+                    if raw_cnt == prev_cnt:
+                        continue
+                    # Si el contador del kernel disminuyó (por reinicio del proxy/firewall), sumar el nuevo valor completo
+                    delta = (raw_cnt - prev_cnt) if raw_cnt > prev_cnt else raw_cnt
+                    sync_rec.last_kernel_counter = raw_cnt
+                    if delta > 0:
+                        sync_rec.blocked_hits = (sync_rec.blocked_hits or 0) + delta
+                        sync_rec.last_blocked_at = now_ts
+                        sync_rec.save(update_fields=['last_kernel_counter', 'blocked_hits', 'last_blocked_at'])
+                        ban.blocked_attempts = (ban.blocked_attempts or 0) + delta
+                        ban.last_blocked_attempt_at = now_ts
+                        ban.save(update_fields=['blocked_attempts', 'last_blocked_attempt_at'])
+                    else:
+                        sync_rec.save(update_fields=['last_kernel_counter'])
+        except Exception:
+            pass
 
     return JsonResponse({
         'status': 'ok',

@@ -514,9 +514,14 @@ def active_bans_list_view(request):
     # Expirar automáticamente bloqueos cuyo tiempo haya concluido
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=timezone.now()).update(is_active=False)
     bans = list(ActiveBan.objects.filter(is_active=True).select_related('approved_by').prefetch_related('sync_records', 'sync_records__node'))
+    total_repelled = 0
     for b in bans:
         b.is_cloudflare = is_cloudflare_ip(b.client_ip)
-    return render(request, 'mitigation/active_bans.html', {'bans': bans})
+        total_repelled += (b.blocked_attempts or 0)
+    return render(request, 'mitigation/active_bans.html', {
+        'bans': bans,
+        'total_repelled': total_repelled,
+    })
 
 @login_required
 def revoke_ban_view(request, ban_id):

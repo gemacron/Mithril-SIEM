@@ -13,7 +13,10 @@
         IPs actualmente bloqueadas en el firewall/Nginx de todos los proxies sincronizados.
       </p>
     </div>
-    <span class="badge critical">{{ bans|length }} ACTIVOS</span>
+    <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+      <span class="badge safe" style="font-size: 0.72rem;">🛡️ {{ total_repelled|default:0 }} INTENTOS REPELIDOS</span>
+      <span class="badge critical">{{ bans|length }} ACTIVOS</span>
+    </div>
   </div>
 
   <div class="panel-body" style="padding: 0;">
@@ -25,6 +28,7 @@
           <th>Aprobado Por</th>
           <th>Fecha Bloqueo</th>
           <th>Expira En</th>
+          <th>Intentos Repelidos (Firewall)</th>
           <th>Sincronización en Proxies</th>
           <th style="text-align: right;">Acciones</th>
         </tr>
@@ -40,7 +44,7 @@
               {% endif %}
             </div>
           </td>
-          <td style="color: var(--text-muted); max-width: 280px;">
+          <td style="color: var(--text-muted); max-width: 260px;">
             {{ b.reason }}
           </td>
           <td>
@@ -57,26 +61,47 @@
             {% endif %}
           </td>
           <td>
+            {% if b.blocked_attempts > 0 %}
+              <div style="display: flex; flex-direction: column; gap: 0.2rem;">
+                <span class="badge critical" style="width: fit-content; font-family: var(--font-mono);" title="Paquetes/intentos bloqueados en el kernel tras aplicar el ban">
+                  🛡️ {{ b.blocked_attempts }} bloqueado{{ b.blocked_attempts|pluralize:"s" }}
+                </span>
+                {% if b.last_blocked_attempt_at %}
+                  <span style="color: var(--neon-amber); font-size: 0.68rem; font-family: var(--font-mono);">
+                    Último: {{ b.last_blocked_attempt_at|date:"Y-m-d H:i:s" }}
+                  </span>
+                {% endif %}
+              </div>
+            {% else %}
+              <span style="color: var(--text-dim); font-size: 0.74rem; font-family: var(--font-mono);">0 (Sin reintentos)</span>
+            {% endif %}
+          </td>
+          <td>
             {% for sync in b.sync_records.all %}
-              <span class="badge {% if sync.is_synced %}safe{% else %}high{% endif %}" title="{{ sync.node.name }}">
-                {{ sync.node.name }}: {% if sync.is_synced %}OK{% else %}SYNC...{% endif %}
+              <span class="badge {% if sync.is_synced %}safe{% else %}high{% endif %}" title="{{ sync.node.name }}{% if sync.blocked_hits %} — {{ sync.blocked_hits }} intentos repelidos{% endif %}">
+                {{ sync.node.name }}: {% if sync.is_synced %}OK{% else %}SYNC...{% endif %}{% if sync.blocked_hits %} ({{ sync.blocked_hits }}){% endif %}
               </span>
             {% empty %}
               <span style="color: var(--text-dim); font-size: 0.75rem;">Sin proxies vinculados</span>
             {% endfor %}
           </td>
           <td style="text-align: right;">
-            <form method="POST" action="{% url 'mitigation:revoke_ban' b.id %}">
-              {% csrf_token %}
-              <button type="submit" class="btn btn-dim" style="padding: 0.35rem 0.75rem; color: var(--neon-crimson); border-color: rgba(255, 51, 102, 0.4);" onclick="return confirm('¿Seguro que deseas revocar el bloqueo para esta IP?');">
-                🔓 Desbloquear IP
-              </button>
-            </form>
+            <div style="display: inline-flex; align-items: center; gap: 0.4rem;">
+              <a href="{% url 'reports:index' %}?ip={{ b.client_ip|urlencode }}" class="btn btn-dim" style="padding: 0.35rem 0.6rem; font-size: 0.74rem; color: var(--neon-cyan); border-color: rgba(0, 229, 255, 0.35);" title="Buscar actividad histórica de esta IP en Informes">
+                🔍 Logs
+              </a>
+              <form method="POST" action="{% url 'mitigation:revoke_ban' b.id %}" style="margin: 0;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-dim" style="padding: 0.35rem 0.75rem; color: var(--neon-crimson); border-color: rgba(255, 51, 102, 0.4);" onclick="return confirm('¿Seguro que deseas revocar el bloqueo para esta IP?');">
+                  🔓 Desbloquear
+                </button>
+              </form>
+            </div>
           </td>
         </tr>
         {% empty %}
         <tr>
-          <td colspan="7" style="text-align: center; color: var(--text-dim); padding: 3rem;">
+          <td colspan="8" style="text-align: center; color: var(--text-dim); padding: 3rem;">
             No hay bloqueos activos en este momento.
           </td>
         </tr>

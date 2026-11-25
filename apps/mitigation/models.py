@@ -62,6 +62,8 @@ class ActiveBan(models.Model):
     banned_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField(null=True, blank=True, help_text="NULL indica bloqueo permanente")
     is_active = models.BooleanField(default=True, db_index=True)
+    blocked_attempts = models.BigIntegerField(default=0, help_text="Total de paquetes/intentos repelidos por el firewall tras el bloqueo")
+    last_blocked_attempt_at = models.DateTimeField(null=True, blank=True, help_text="Última vez que esta IP bloqueada volvió a intentar conectarse")
     revoked_at = models.DateTimeField(null=True, blank=True)
     revoked_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='revoked_bans')
 
@@ -79,6 +81,9 @@ class NodeBanSync(models.Model):
     node = models.ForeignKey(ProxyNode, on_delete=models.CASCADE, related_name='ban_syncs')
     is_synced = models.BooleanField(default=False)
     synced_at = models.DateTimeField(null=True, blank=True)
+    blocked_hits = models.BigIntegerField(default=0, help_text="Intentos repelidos acumulados en este nodo proxy")
+    last_kernel_counter = models.BigIntegerField(default=0, help_text="Último contador crudo de iptables/ipset reportado por este nodo")
+    last_blocked_at = models.DateTimeField(null=True, blank=True)
     error_message = models.TextField(blank=True, default='')
 
     class Meta:
