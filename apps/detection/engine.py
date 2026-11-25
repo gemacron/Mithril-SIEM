@@ -1191,9 +1191,9 @@ def _is_benign_app_sync(uri_str, status_code):
     # Extraer ruta pura si viene con prefijo de vhost "[dominio] /ruta"
     if u.startswith('[') and '] ' in u:
         u = u.split('] ', 1)[1].strip()
-    if status_code == 404 and (
+    if status_code in (200, 206, 304, 404) and (
         u in ('/favicon.ico', '/robots.txt', '/sitemap.xml', '/apple-touch-icon.png', '/apple-touch-icon-precomposed.png')
-        or u.endswith(('.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.woff', '.woff2', '.ttf', '.eot', '.css.map', '.js.map'))
+        or u.endswith(('.ico', '.png', '.jpg', '.jpeg', '.gif', '.svg', '.webp', '.woff', '.woff2', '.ttf', '.eot', '.css', '.css.map', '.js.map'))
     ):
         return True
     return False
