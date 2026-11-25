@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     curl \
     netcat-traditional \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/

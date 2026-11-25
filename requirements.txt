@@ -12,3 +12,4 @@ maxminddb>=2.6.0
 python-dotenv>=1.0.1
 Pillow>=10.2.0
 whitenoise>=6.6.0
+tzdata>=2024.1

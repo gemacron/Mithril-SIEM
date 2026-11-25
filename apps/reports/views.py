@@ -3,6 +3,7 @@ import json
 from django.shortcuts import render
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponse, JsonResponse
+from django.utils import timezone
 from .models import AuditTrail
 from apps.detection.models import SecurityEvent, TrafficLog
 from apps.detection.engine import extract_log_ip_meta, resolve_geoip
@@ -97,7 +98,7 @@ def export_csv_view(request):
         for e in events:
             writer.writerow([
                 e.id,
-                e.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                timezone.localtime(e.created_at).strftime('%Y-%m-%d %H:%M:%S'),
                 e.severity,
                 e.client_ip,
                 e.rule.name if e.rule else 'Heurística',
@@ -110,7 +111,7 @@ def export_csv_view(request):
         for l in logs:
             writer.writerow([
                 l.id,
-                l.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                timezone.localtime(l.created_at).strftime('%Y-%m-%d %H:%M:%S'),
                 l.client_ip,
                 l.country_name or l.country_code,
                 l.http_method,
@@ -128,7 +129,7 @@ def export_csv_view(request):
         for r in records:
             writer.writerow([
                 r.id,
-                r.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+                timezone.localtime(r.created_at).strftime('%Y-%m-%d %H:%M:%S'),
                 r.user.username if r.user else 'Sistema',
                 r.action,
                 r.target,

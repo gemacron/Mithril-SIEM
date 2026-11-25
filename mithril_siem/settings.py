@@ -115,7 +115,110 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 LANGUAGE_CODE = 'es-es'
-TIME_ZONE = 'UTC'
+
+def _detect_server_timezone():
+    """
+    Detecta automáticamente la zona horaria IANA real del servidor donde corre Mithril SIEM
+    (sin hardcodear ningún país ni ciudad). Soporta:
+      1. Variable de entorno TIME_ZONE o TZ (si se configura en .env).
+      2. Archivo /etc/timezone (Debian/Ubuntu).
+      3. Enlace simbólico /etc/localtime -> .../zoneinfo/<Area/Ciudad> (Rocky/RHEL/Ubuntu).
+      4. Archivo binario TZif montado en /etc/localtime (Podman/Docker bind-mount), buscando coincidencia exacta en zoneinfo.
+      5. Respaldo por desplazamiento local del SO (Etc/GMT±N) o UTC.
+    """
+    import time as _time
+    from zoneinfo import ZoneInfo
+
+    def _valid_tz(name):
+        if not name:
+            return ''
+        cand = str(name).strip().lstrip(':')
+        try:
+            ZoneInfo(cand)
+            return cand
+        except Exception:
+            return ''
+
+    # 1. Variable de entorno explícita
+    for env_key in ('TIME_ZONE', 'TZ'):
+        v = _valid_tz(os.getenv(env_key, ''))
+        if v:
+            return v
+
+    # 2. /etc/timezone (Debian/Ubuntu)
+    if os.path.isfile('/etc/timezone'):
+        try:
+            with open('/etc/timezone', 'r', encoding='utf-8') as f:
+                v = _valid_tz(f.read().strip())
+                if v:
+                    return v
+        except Exception:
+            pass
+
+    # 3. Symlink /etc/localtime -> .../zoneinfo/<Zona>
+    if os.path.exists('/etc/localtime'):
+        try:
+            real_p = os.path.realpath('/etc/localtime')
+            if 'zoneinfo/' in real_p:
+                v = _valid_tz(real_p.split('zoneinfo/', 1)[1])
+                if v:
+                    return v
+        except Exception:
+            pass
+
+        # 4. Bind-mount plano /etc/localtime en Podman/Docker: comparar bytes con /usr/share/zoneinfo o tzdata
+        try:
+            with open('/etc/localtime', 'rb') as f:
+                local_bytes = f.read()
+            if local_bytes:
+                zone_roots = ['/usr/share/zoneinfo']
+                try:
+                    import tzdata
+                    zone_roots.append(os.path.join(os.path.dirname(tzdata.__file__), 'zoneinfo'))
+                except Exception:
+                    pass
+                fallback_match = ''
+                for zroot in zone_roots:
+                    if not os.path.isdir(zroot):
+                        continue
+                    for dirpath, dirnames, filenames in os.walk(zroot):
+                        dirnames[:] = [d for d in dirnames if d not in ('posix', 'right', 'Etc')]
+                        for fname in filenames:
+                            fpath = os.path.join(dirpath, fname)
+                            try:
+                                if os.path.getsize(fpath) != len(local_bytes):
+                                    continue
+                                with open(fpath, 'rb') as zf:
+                                    if zf.read() == local_bytes:
+                                        rel = os.path.relpath(fpath, zroot).replace('\\', '/')
+                                        v = _valid_tz(rel)
+                                        if v:
+                                            if '/' in v:
+                                                return v
+                                            if not fallback_match:
+                                                fallback_match = v
+                            except Exception:
+                                continue
+                if fallback_match:
+                    return fallback_match
+        except Exception:
+            pass
+
+    # 5. Respaldo usando el desplazamiento UTC real del sistema operativo (signo invertido en POSIX Etc/GMT)
+    try:
+        offset_sec = _time.localtime().tm_gmtoff
+        if offset_sec % 3600 == 0 and offset_sec != 0:
+            hours = int(offset_sec // 3600)
+            etc_name = f"Etc/GMT{-hours:+d}"
+            v = _valid_tz(etc_name)
+            if v:
+                return v
+    except Exception:
+        pass
+
+    return 'UTC'
+
+TIME_ZONE = _detect_server_timezone()
 USE_I18N = True
 USE_TZ = True
 

@@ -5,6 +5,7 @@ from django.contrib.auth.decorators import login_required
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.contrib import messages
+from django.utils import timezone
 from datetime import timedelta
 from .models import SecurityRule, TrafficLog, SecurityEvent
 from .engine import (
@@ -282,7 +283,7 @@ def log_inspect_api_view(request, log_id):
         'status': 'ok',
         'log': {
             'id': log.id,
-            'timestamp': log.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'timestamp': timezone.localtime(log.created_at).strftime('%Y-%m-%d %H:%M:%S'),
             'node_name': log.node.name if log.node else 'Direct',
             'client_ip': log.client_ip,
             'connection_ip': connection_ip,

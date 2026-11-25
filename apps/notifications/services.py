@@ -27,7 +27,7 @@ def send_telegram_alert(title, message, severity='HIGH'):
             return False
 
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        full_text = f"🛡️ *[MITHRIL SIEM]*\n*{title}*\n━━━━━━━━━━━━━━━━━━━━━━\n{message}\n━━━━━━━━━━━━━━━━━━━━━━\n⏱️ _{timezone.now().strftime('%Y-%m-%d %H:%M:%S UTC')}_"
+        full_text = f"🛡️ *[MITHRIL SIEM]*\n*{title}*\n━━━━━━━━━━━━━━━━━━━━━━\n{message}\n━━━━━━━━━━━━━━━━━━━━━━\n⏱️ _{timezone.localtime().strftime('%Y-%m-%d %H:%M:%S %Z')}_"
 
         payload = {
             'chat_id': chat_id,

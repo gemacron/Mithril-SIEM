@@ -51,7 +51,7 @@ def dashboard_view(request):
         n.check_health()
 
     now = timezone.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0)
     since_24h = now - timedelta(hours=24)
 
     # Expirar bloqueos vencidos automáticamente y sincronizar amenazas con Candidatos a Bloqueo
@@ -343,7 +343,7 @@ def api_live_stats(request):
     online_count = sum(1 for n in nodes if n.status == 'ONLINE')
 
     now = timezone.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0)
 
     ActiveBan.objects.filter(is_active=True, expires_at__isnull=False, expires_at__lte=now).update(is_active=False)
     sync_unbanned_threats_to_candidates()
@@ -389,7 +389,7 @@ def api_live_stats(request):
         raw_threat = bool(log.raw_headers.get('is_threat')) if isinstance(log.raw_headers, dict) else False
         recent_logs_data.append({
             'id': log.id,
-            'timestamp': log.created_at.strftime('%H:%M:%S'),
+            'timestamp': timezone.localtime(log.created_at).strftime('%H:%M:%S'),
             'client_ip': eff_ip,
             'connection_ip': conn_ip,
             'method': log.http_method,
@@ -421,7 +421,7 @@ def api_live_stats(request):
             'cpu': round(n.cpu_usage, 1),
             'ram': round(n.memory_usage, 1),
             'logs': n.total_logs_processed,
-            'last_hb': n.last_heartbeat.strftime('%H:%M:%S') if n.last_heartbeat else 'Nunca'
+            'last_hb': timezone.localtime(n.last_heartbeat).strftime('%H:%M:%S') if n.last_heartbeat else 'Nunca'
         }
         for n in nodes
     ]
@@ -442,7 +442,7 @@ def api_live_stats(request):
             'is_cloudflare': c_meta['is_cloudflare'],
             'cloudflare_ip': c_meta['cloudflare_ip'],
             'real_client_ip': c_meta['real_client_ip'],
-            'detected_at': c.created_at.strftime('%H:%M:%S')
+            'detected_at': timezone.localtime(c.created_at).strftime('%H:%M:%S')
         })
 
     stats_payload = {
@@ -468,7 +468,7 @@ def api_live_feed_logs(request):
     para el panel LIVE FEED del Dashboard.
     """
     now = timezone.now()
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    today_start = timezone.localtime(now).replace(hour=0, minute=0, second=0, microsecond=0)
 
     try:
         page = max(1, int(request.GET.get('page', '1')))
@@ -583,7 +583,7 @@ def api_live_feed_logs(request):
         raw_threat = bool(log.raw_headers.get('is_threat')) if isinstance(log.raw_headers, dict) else False
         logs_data.append({
             'id': log.id,
-            'timestamp': log.created_at.strftime('%H:%M:%S'),
+            'timestamp': timezone.localtime(log.created_at).strftime('%H:%M:%S'),
             'client_ip': eff_ip,
             'connection_ip': conn_ip,
             'method': log.http_method,

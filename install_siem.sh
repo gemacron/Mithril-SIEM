@@ -34,6 +34,16 @@ echo -e "\n${CYAN}⚙️  [2/4] Preparando configuración (.env) y permisos...${
 if [ ! -f .env ]; then
     cp .env.example .env
 fi
+# Detectar automáticamente la zona horaria real del servidor host (sin hardcodear ningún país)
+HOST_TZ=$(timedatectl show -p Timezone --value 2>/dev/null || readlink -f /etc/localtime 2>/dev/null | sed -n 's|.*/zoneinfo/||p' || true)
+if [ -n "$HOST_TZ" ] && ! grep -q '^TZ=.\+' .env 2>/dev/null; then
+    if grep -q '^TZ=' .env 2>/dev/null; then
+        sed -i "s|^TZ=.*|TZ=${HOST_TZ}|" .env
+    else
+        echo "TZ=${HOST_TZ}" >> .env
+    fi
+    echo -e "${GREEN}   Zona horaria detectada del servidor: ${HOST_TZ}${NC}"
+fi
 sed -i 's/\r$//' entrypoint.sh 2>/dev/null || true
 chmod +x entrypoint.sh
 

@@ -59,8 +59,11 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-False}
+      TZ: ${TZ:-}
+      TIME_ZONE: ${TIME_ZONE:-}
     volumes:
       - .:/app:z
+      - /etc/localtime:/etc/localtime:ro
       - mithril_static:/app/staticfiles
       - mithril_media:/app/media
     ports:
@@ -93,8 +96,11 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-False}
+      TZ: ${TZ:-}
+      TIME_ZONE: ${TIME_ZONE:-}
     volumes:
       - .:/app:z
+      - /etc/localtime:/etc/localtime:ro
     command: celery -A mithril_siem worker -l info -c 4
     depends_on:
       - mithril-db
@@ -117,8 +123,11 @@ services:
       DB_PORT: ${DB_PORT:-5432}
       REDIS_HOST: ${REDIS_HOST:-mithril-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
+      TZ: ${TZ:-}
+      TIME_ZONE: ${TIME_ZONE:-}
     volumes:
       - .:/app:z
+      - /etc/localtime:/etc/localtime:ro
     command: celery -A mithril_siem beat -l info
     depends_on:
       - mithril-db

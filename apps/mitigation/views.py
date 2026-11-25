@@ -40,7 +40,7 @@ def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_
         city = log_obj.city or ''
         headers = log_obj.raw_headers if isinstance(log_obj.raw_headers, dict) else {}
         node_str = log_obj.node.name if log_obj.node else node_name
-        ts_str = log_obj.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        ts_str = timezone.localtime(log_obj.created_at).strftime('%Y-%m-%d %H:%M:%S')
         ip_str = log_obj.client_ip
         req_id = log_obj.id
     else:
@@ -205,7 +205,7 @@ def candidate_inspect_api_view(request, candidate_id):
         fallback_details=trigger_ev.details if trigger_ev else {},
         client_ip=ip_str,
         node_name=trigger_ev.node.name if (trigger_ev and trigger_ev.node) else 'Direct',
-        created_at_str=trigger_ev.created_at.strftime('%Y-%m-%d %H:%M:%S') if trigger_ev else candidate.created_at.strftime('%Y-%m-%d %H:%M:%S')
+        created_at_str=timezone.localtime(trigger_ev.created_at).strftime('%Y-%m-%d %H:%M:%S') if trigger_ev else timezone.localtime(candidate.created_at).strftime('%Y-%m-%d %H:%M:%S')
     )
 
     trigger_summary = {
@@ -215,7 +215,7 @@ def candidate_inspect_api_view(request, candidate_id):
         'rule_category': trigger_ev.rule.get_category_display() if (trigger_ev and trigger_ev.rule) else 'Anomalía de Tráfico',
         'severity': trigger_ev.severity if trigger_ev else 'HIGH',
         'matched_payload': trigger_ev.matched_payload if trigger_ev else candidate.suggested_reason,
-        'timestamp': trigger_ev.created_at.strftime('%Y-%m-%d %H:%M:%S') if trigger_ev else candidate.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+        'timestamp': timezone.localtime(trigger_ev.created_at).strftime('%Y-%m-%d %H:%M:%S') if trigger_ev else timezone.localtime(candidate.created_at).strftime('%Y-%m-%d %H:%M:%S'),
     }
 
     events_list = []
@@ -223,7 +223,7 @@ def candidate_inspect_api_view(request, candidate_id):
         ev_details = ev.details if isinstance(ev.details, dict) else {}
         events_list.append({
             'id': ev.id,
-            'timestamp': ev.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'timestamp': timezone.localtime(ev.created_at).strftime('%Y-%m-%d %H:%M:%S'),
             'rule_code': ev.rule.code if ev.rule else 'HEURISTIC',
             'rule_name': ev.rule.name if ev.rule else 'Heurística',
             'severity': ev.severity,
@@ -259,7 +259,7 @@ def candidate_inspect_api_view(request, candidate_id):
             'accumulated_score': candidate.accumulated_score,
             'suggested_reason': candidate.suggested_reason,
             'status': candidate.status,
-            'created_at': candidate.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            'created_at': timezone.localtime(candidate.created_at).strftime('%Y-%m-%d %H:%M:%S'),
             'total_violations': reputation.total_violations if reputation else len(events_list),
             'country_code': (reputation.country_code if reputation and reputation.country_code else primary_request['country_code']),
             'country_name': primary_request['country_name'],

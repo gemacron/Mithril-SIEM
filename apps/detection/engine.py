@@ -1696,7 +1696,7 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
         'type': 'traffic_event',
         'event': {
             'id': log.id,
-            'timestamp': log.created_at.strftime('%H:%M:%S'),
+            'timestamp': timezone.localtime(log.created_at).strftime('%H:%M:%S'),
             'client_ip': eff_real_ip,
             'connection_ip': connection_ip,
             'method': log.http_method,
