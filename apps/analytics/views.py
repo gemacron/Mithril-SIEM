@@ -17,6 +17,7 @@ from apps.detection.engine import (
     is_private_local_ip,
     is_own_public_wan_ip,
     is_own_infrastructure_ip,
+    get_own_public_wan_ips,
     _is_benign_app_sync,
     ensure_ban_candidate_for_ip,
     sync_unbanned_threats_to_candidates,
@@ -263,17 +264,61 @@ def api_map_data(request):
             recent_points.append(p)
 
     proxy_nodes = []
-    for idx, n in enumerate(ProxyNode.objects.all()):
-        node_geo = resolve_geoip(n.ip_address) if not is_private_local_ip(n.ip_address) else None
-        base_lat = node_geo['latitude'] if (node_geo and node_geo.get('latitude')) else -34.6037
-        base_lon = node_geo['longitude'] if (node_geo and node_geo.get('longitude')) else -58.3816
+    seen_node_coords = {}
+    own_wan_ips = list(get_own_public_wan_ips() or [])
+    fallback_wan_ip = own_wan_ips[0] if own_wan_ips else ''
+
+    for n in ProxyNode.objects.all():
+        lat = n.latitude
+        lon = n.longitude
+        pub_ip = n.public_ip or (n.ip_address if not is_private_local_ip(n.ip_address) else '')
+
+        # Si el nodo aún no reportó coordenadas por heartbeat, resolver dinámicamente desde su IP pública o último log
+        if lat is None or lon is None:
+            if not pub_ip:
+                last_node_log = TrafficLog.objects.filter(node=n).only('raw_headers').order_by('-id').first()
+                if last_node_log and isinstance(last_node_log.raw_headers, dict):
+                    cand_pub = str(last_node_log.raw_headers.get('node_public_ip') or '').strip()
+                    if cand_pub and not is_private_local_ip(cand_pub):
+                        pub_ip = cand_pub
+            if not pub_ip and fallback_wan_ip and not is_private_local_ip(fallback_wan_ip):
+                pub_ip = fallback_wan_ip
+
+            if pub_ip:
+                node_geo = resolve_geoip(pub_ip)
+                if node_geo and (node_geo.get('latitude') or node_geo.get('longitude')):
+                    lat = node_geo['latitude']
+                    lon = node_geo['longitude']
+                    if not n.geo_manual:
+                        update_f = ['latitude', 'longitude']
+                        n.latitude = lat
+                        n.longitude = lon
+                        if not n.public_ip:
+                            n.public_ip = pub_ip
+                            update_f.append('public_ip')
+                        try:
+                            n.save(update_fields=update_f)
+                        except Exception:
+                            pass
+
+        if lat is None or lon is None:
+            continue
+
+        # Micro-separación visual mínima (~1 km) solo si dos proxies comparten exactamente las mismas coordenadas
+        coord_key = (round(float(lat), 3), round(float(lon), 3))
+        dup_idx = seen_node_coords.get(coord_key, 0)
+        seen_node_coords[coord_key] = dup_idx + 1
+        final_lat = float(lat) + (dup_idx * 0.012)
+        final_lon = float(lon) + (dup_idx * 0.014)
+
         proxy_nodes.append({
             'id': str(n.id),
             'name': n.name,
             'ip': n.ip_address,
+            'public_ip': pub_ip,
             'status': n.status,
-            'latitude': base_lat + (idx * 2.2),
-            'longitude': base_lon + (idx * 2.8),
+            'latitude': round(final_lat, 5),
+            'longitude': round(final_lon, 5),
         })
 
     map_payload = {

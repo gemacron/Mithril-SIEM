@@ -19,9 +19,7 @@ class TacticalWorldMap {
     this.points = [];
     this.pulses = [];
     this.arcs = [];
-    this.nodes = [
-      { id: 'default', name: 'Proxy Principal', status: 'ONLINE', latitude: -34.6037, longitude: -58.3816 }
-    ];
+    this.nodes = [];
     this.isFetching = false;
     this.threatCursorIdx = 0;
 
@@ -220,7 +218,7 @@ class TacticalWorldMap {
         targetNode = this.nodes[0];
       }
     } else {
-      targetNode = { latitude: -34.6037, longitude: -58.3816, name: 'Proxy Principal' };
+      targetNode = { latitude: 0.0, longitude: 0.0, name: 'Proxy' };
     }
     const target = this.geoToCanvas(targetNode.latitude, targetNode.longitude);
 
@@ -1414,15 +1412,28 @@ class TacticalParaguayMap {
   }
 
   getNodeGeo(nodeName = '') {
+    let targetNode = null;
+    if (nodeName && this.nodes.length > 0) {
+      targetNode = this.nodes.find(n => n.name === nodeName) || this.nodes[0];
+    } else if (this.nodes.length > 0) {
+      targetNode = this.nodes[0];
+    }
+    if (targetNode) {
+      const nLat = parseFloat(targetNode.latitude);
+      const nLon = parseFloat(targetNode.longitude);
+      if (Number.isFinite(nLat) && Number.isFinite(nLon) && nLat >= -27.8 && nLat <= -19.2 && nLon >= -62.7 && nLon <= -54.2) {
+        return { lat: nLat, lon: nLon };
+      }
+    }
     let idx = 0;
     if (nodeName && this.nodes.length > 1) {
       const found = this.nodes.findIndex(n => n.name === nodeName);
       if (found !== -1) idx = found;
     }
-    // Base defensiva en Microcentro Asunción (-25.2820, -57.6350)
+    // Respaldo únicamente si el nodo aún no reportó IP pública ni coordenadas válidas dentro de Paraguay
     return {
-      lat: -25.2820 + (idx * 0.06),
-      lon: -57.6350 - (idx * 0.06)
+      lat: -25.2820 + (idx * 0.015),
+      lon: -57.6350 - (idx * 0.015)
     };
   }
 

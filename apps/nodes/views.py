@@ -111,7 +111,27 @@ def node_configure_view(request, node_id):
             node.sync_interval_seconds = int(request.POST.get('sync_interval_seconds', 15))
             node.block_method = request.POST.get('block_method', 'fail2ban')
             node.notify_on_degraded = 'notify_on_degraded' in request.POST
+
+            raw_lat = request.POST.get('latitude', '').strip()
+            raw_lon = request.POST.get('longitude', '').strip()
+            if raw_lat and raw_lon:
+                try:
+                    node.latitude = float(raw_lat.replace(',', '.'))
+                    node.longitude = float(raw_lon.replace(',', '.'))
+                    node.geo_manual = True
+                except ValueError:
+                    messages.warning(request, "Coordenadas inválidas; se conservaron las anteriores.")
+            else:
+                node.latitude = None
+                node.longitude = None
+                node.geo_manual = False
+
             node.save()
+            try:
+                from django.core.cache import cache
+                cache.delete('api_map_data_v1_90')
+            except Exception:
+                pass
 
             AuditTrail.objects.create(
                 user=request.user,
@@ -304,8 +324,11 @@ def api_heartbeat(request):
         conns = int(data.get('active_connections', 0))
         nginx_ver = str(data.get('nginx_version', ''))
         node_ips = data.get('node_ips') if isinstance(data.get('node_ips'), list) else []
+        public_ip = str(data.get('public_ip', '') or '').strip()
+        hb_lat = float(data['latitude']) if data.get('latitude') not in (None, '') else None
+        hb_lon = float(data['longitude']) if data.get('longitude') not in (None, '') else None
     except Exception:
-        rps, cpu, ram, conns, nginx_ver, node_ips = 0, 0.0, 0.0, 0, "", []
+        rps, cpu, ram, conns, nginx_ver, node_ips, public_ip, hb_lat, hb_lon = 0, 0.0, 0.0, 0, "", [], "", None, None
 
     api_key = auth_header.split(' ', 1)[1].strip().strip('"').strip("'")
     node = ProxyNode.objects.filter(api_key=api_key).first()
@@ -324,12 +347,23 @@ def api_heartbeat(request):
     if not node:
         return JsonResponse({'error': 'Invalid node API key'}, status=403)
 
+    if public_ip:
+        try:
+            from apps.detection.engine import register_own_public_wan_ip, is_private_local_ip
+            if not is_private_local_ip(public_ip):
+                register_own_public_wan_ip(public_ip)
+        except Exception:
+            pass
+
     node.update_heartbeat(
         rps=rps,
         cpu=cpu,
         ram=ram,
         active_conns=conns,
-        nginx_ver=nginx_ver
+        nginx_ver=nginx_ver,
+        public_ip=public_ip or None,
+        latitude=hb_lat,
+        longitude=hb_lon,
     )
 
     return JsonResponse({

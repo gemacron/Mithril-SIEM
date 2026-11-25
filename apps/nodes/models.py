@@ -22,6 +22,10 @@ class ProxyNode(models.Model):
     name = models.CharField(max_length=64, unique=True, help_text="Ej: proxy-edge-us-east-01")
     description = models.TextField(blank=True, default="")
     ip_address = models.GenericIPAddressField(help_text="IP del servidor proxy Nginx")
+    public_ip = models.GenericIPAddressField(null=True, blank=True, help_text="IP Pública WAN reportada automáticamente por el agente")
+    latitude = models.FloatField(null=True, blank=True, help_text="Latitud del servidor proxy (auto-geolocalizada desde IP pública u opcional manual)")
+    longitude = models.FloatField(null=True, blank=True, help_text="Longitud del servidor proxy (auto-geolocalizada desde IP pública u opcional manual)")
+    geo_manual = models.BooleanField(default=False, help_text="Si es True, conserva las coordenadas ingresadas manualmente sin sobrescribirlas por GeoIP")
     location_label = models.CharField(max_length=64, blank=True, default="Datacenter Principal")
     api_key = models.CharField(max_length=64, unique=True, editable=False)
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default='OFFLINE')
@@ -76,7 +80,7 @@ class ProxyNode(models.Model):
         except Exception:
             return self.current_rps
 
-    def update_heartbeat(self, rps=None, cpu=None, ram=None, active_conns=None, nginx_ver=""):
+    def update_heartbeat(self, rps=None, cpu=None, ram=None, active_conns=None, nginx_ver="", public_ip=None, latitude=None, longitude=None):
         self.last_heartbeat = timezone.now()
         computed_rps = self.compute_live_rps()
         if rps is not None and rps > 0:
@@ -93,6 +97,40 @@ class ProxyNode(models.Model):
         if nginx_ver:
             self.nginx_version = nginx_ver
 
+        update_fields = [
+            'last_heartbeat', 'current_rps', 'cpu_usage', 'memory_usage',
+            'active_connections', 'nginx_version', 'status'
+        ]
+
+        # Actualizar IP Pública WAN reportada dinámicamente por el agente y auto-geolocalizar si corresponde
+        pub_changed = False
+        if public_ip:
+            pub_clean = str(public_ip).strip()
+            if pub_clean and self.public_ip != pub_clean:
+                self.public_ip = pub_clean
+                update_fields.append('public_ip')
+                pub_changed = True
+
+        if not self.geo_manual:
+            if latitude is not None and longitude is not None:
+                self.latitude = float(latitude)
+                self.longitude = float(longitude)
+                update_fields.extend(['latitude', 'longitude'])
+            elif (pub_changed or self.latitude is None or self.longitude is None) and (self.public_ip or self.ip_address):
+                try:
+                    from apps.detection.engine import resolve_geoip, is_private_local_ip
+                    geo_target = self.public_ip if (self.public_ip and not is_private_local_ip(self.public_ip)) else (
+                        self.ip_address if not is_private_local_ip(self.ip_address) else ''
+                    )
+                    if geo_target:
+                        geo = resolve_geoip(geo_target)
+                        if geo and (geo.get('latitude') or geo.get('longitude')):
+                            self.latitude = geo['latitude']
+                            self.longitude = geo['longitude']
+                            update_fields.extend(['latitude', 'longitude'])
+                except Exception:
+                    pass
+
         if not self.monitoring_enabled:
             self.status = 'MAINTENANCE'
         elif self.current_rps >= self.max_rps_alert_threshold:
@@ -100,10 +138,7 @@ class ProxyNode(models.Model):
         else:
             self.status = 'ONLINE'
 
-        self.save(update_fields=[
-            'last_heartbeat', 'current_rps', 'cpu_usage', 'memory_usage',
-            'active_connections', 'nginx_version', 'status'
-        ])
+        self.save(update_fields=list(dict.fromkeys(update_fields)))
 
     def check_health(self):
         if not self.monitoring_enabled:

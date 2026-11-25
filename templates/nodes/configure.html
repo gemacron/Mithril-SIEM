@@ -14,7 +14,9 @@
       </span>
     </div>
     <p style="color: var(--text-muted); font-size: 0.8rem; margin-top: 0.25rem;">
-      IP: <code>{{ node.ip_address }}</code> &nbsp;|&nbsp; Ubicación: {{ node.location_label }} &nbsp;|&nbsp; Último reporte: {{ node.last_heartbeat|date:"Y-m-d H:i:s"|default:"Nunca" }}
+      IP LAN: <code>{{ node.ip_address }}</code>
+      {% if node.public_ip %} &nbsp;|&nbsp; IP Pública WAN: <code style="color: var(--neon-cyan);">{{ node.public_ip }}</code>{% endif %}
+      &nbsp;|&nbsp; Ubicación: {{ node.location_label }} &nbsp;|&nbsp; Último reporte: {{ node.last_heartbeat|date:"Y-m-d H:i:s"|default:"Nunca" }}
     </p>
   </div>
 
@@ -122,6 +124,20 @@
           <label class="form-label" for="location_label">Ubicación / Etiqueta Descriptiva</label>
           <input type="text" id="location_label" name="location_label" class="form-input" value="{{ node.location_label }}">
         </div>
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
+          <div class="form-group">
+            <label class="form-label" for="latitude">Latitud en Mapa (Opcional)</label>
+            <input type="text" id="latitude" name="latitude" class="form-input" value="{{ node.latitude|default_if_none:'' }}" placeholder="Auto desde IP pública del agente">
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="longitude">Longitud en Mapa (Opcional)</label>
+            <input type="text" id="longitude" name="longitude" class="form-input" value="{{ node.longitude|default_if_none:'' }}" placeholder="Auto desde IP pública del agente">
+          </div>
+        </div>
+        <small style="color: var(--text-dim); font-size: 0.7rem; display: block; margin-top: -0.6rem; margin-bottom: 1rem;">
+          Déjalos vacíos para ubicar el proxy automáticamente mediante GeoIP de la IP pública WAN reportada por el agente{% if node.geo_manual %} (actualmente usando coordenadas manuales){% endif %}.
+        </small>
 
         <div class="form-group">
           <label class="form-label" for="description">Notas del Servidor</label>

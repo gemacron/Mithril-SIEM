@@ -902,18 +902,24 @@ def kernel_network_mirror_worker():
             pass
 
 def main():
-    global BLOCK_METHOD, SYNC_INTERVAL
+    global BLOCK_METHOD, SYNC_INTERVAL, _OWN_PUBLIC_WAN_IP
     print("=" * 60)
     print("🛡️  MITHRIL BOUNCER AGENT v2.1 - INICIADO")
     print(f"   SIEM Destino   : {MITHRIL_URL}")
     print(f"   Metodo Bloqueo : {BLOCK_METHOD} (Jail: {FAIL2BAN_JAIL})")
     print(f"   Intervalo Sync : {SYNC_INTERVAL} segundos")
+    if _OWN_PUBLIC_WAN_IP:
+        print(f"   IP Pública WAN : {_OWN_PUBLIC_WAN_IP}")
     print("=" * 60)
 
     init_firewall()
     t_mirror = threading.Thread(target=kernel_network_mirror_worker, daemon=True)
     t_mirror.start()
     last_banned_set = None
+    last_wan_probe = time.time() if _OWN_PUBLIC_WAN_IP else 0.0
+
+    env_lat = os.getenv("NODE_LAT", "").strip()
+    env_lon = os.getenv("NODE_LON", "").strip()
 
     while True:
         cpu = get_cpu_usage()
@@ -921,7 +927,17 @@ def main():
         nginx_ver = get_nginx_version()
         active_conns = get_active_connections()
 
-        # 1. Enviar Heartbeat y Telemetria al SIEM
+        # Refrescar IP pública WAN cada 30 min (o cada 5 min si falló al iniciar)
+        now_t = time.time()
+        probe_interval = 1800 if _OWN_PUBLIC_WAN_IP else 300
+        if now_t - last_wan_probe >= probe_interval:
+            last_wan_probe = now_t
+            wan_cand = discover_own_public_wan_ip()
+            if wan_cand:
+                _OWN_PUBLIC_WAN_IP = wan_cand
+                _OWN_PROTECTED_WAN_IPS.add(wan_cand)
+
+        # 1. Enviar Heartbeat y Telemetria al SIEM (incluyendo IP pública WAN real del proxy)
         hb_data = {
             "status": "ok",
             "cpu": cpu,
@@ -930,7 +946,14 @@ def main():
             "active_connections": active_conns,
             "rps": 0,
             "node_ips": _LOCAL_NODE_IPS,
+            "public_ip": _OWN_PUBLIC_WAN_IP,
         }
+        if env_lat and env_lon:
+            try:
+                hb_data["latitude"] = float(env_lat)
+                hb_data["longitude"] = float(env_lon)
+            except ValueError:
+                pass
         status_code, resp = http_request(f"{MITHRIL_URL}/nodes/api/heartbeat/", method="POST", data=hb_data)
         if status_code == 200:
             remote_method = resp.get("block_method")
