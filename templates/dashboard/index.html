@@ -69,9 +69,9 @@
             <input type="checkbox" id="mapToggleLocal" style="accent-color: #c084fc; cursor: pointer; width: 14px; height: 14px;" checked>
             <span>🏢 Tráfico Local (LAN)</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: #f6821f; background: rgba(246, 130, 31, 0.08); border: 1px solid rgba(246, 130, 31, 0.35); padding: 0.2rem 0.55rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Mostrar u ocultar vectores y arcos de sondas de Cloudflare">
-            <input type="checkbox" id="mapToggleProbes" style="accent-color: #f6821f; cursor: pointer; width: 14px; height: 14px;">
-            <span>☁️ Sondas Cloudflare</span>
+          <label style="display: flex; align-items: center; gap: 0.4rem; cursor: pointer; font-size: 0.74rem; font-family: var(--font-mono); color: #ff2a5f; background: rgba(255, 42, 95, 0.08); border: 1px solid rgba(255, 42, 95, 0.4); padding: 0.2rem 0.55rem; border-radius: 4px; user-select: none; transition: all 0.2s ease;" title="Mostrar únicamente vectores y puntos de amenazas confirmadas en el mapa mundial">
+            <input type="checkbox" id="mapToggleThreatsOnly" style="accent-color: #ff2a5f; cursor: pointer; width: 14px; height: 14px;">
+            <span>🚨 Solo Amenazas</span>
           </label>
           <div style="display: flex; align-items: center; gap: 0.45rem;">
             <span style="font-size: 0.72rem; color: var(--text-dim); font-family: var(--font-mono);">STREAM:</span>
@@ -261,6 +261,10 @@
             <input type="checkbox" id="pyMapToggleLocal" style="accent-color: #c084fc; cursor: pointer; width: 13px; height: 13px;" checked>
             <span>🏢 LAN</span>
           </label>
+          <label style="display: flex; align-items: center; gap: 0.3rem; cursor: pointer; font-size: 0.68rem; font-family: var(--font-mono); color: #ff2a5f; background: rgba(255, 42, 95, 0.08); border: 1px solid rgba(255, 42, 95, 0.4); padding: 0.16rem 0.45rem; border-radius: 4px; user-select: none;" title="Mostrar únicamente amenazas confirmadas en el mapa de Paraguay">
+            <input type="checkbox" id="pyMapToggleThreatsOnly" style="accent-color: #ff2a5f; cursor: pointer; width: 13px; height: 13px;">
+            <span>🚨 Amenazas</span>
+          </label>
           <span id="pyMapActiveBadge" class="badge safe" style="font-size: 0.65rem; padding: 0.12rem 0.45rem;">EN VIVO</span>
         </div>
       </div>
@@ -393,6 +397,6 @@
 {% endblock %}
 
 {% block extra_scripts %}
-<script src="{% static 'js/mithril-map.js' %}?v=20261125a"></script>
-<script src="{% static 'js/mithril-live.js' %}?v=20261125a"></script>
+<script src="{% static 'js/mithril-map.js' %}?v=20261126a"></script>
+<script src="{% static 'js/mithril-live.js' %}?v=20261126a"></script>
 {% endblock %}

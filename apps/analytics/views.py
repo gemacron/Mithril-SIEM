@@ -486,7 +486,7 @@ def api_live_feed_logs(request):
     method_filter = request.GET.get('method', 'all').strip().upper()
     status_filter = request.GET.get('status', 'all').strip().lower()
     hide_local = request.GET.get('hide_local', '1') == '1'
-    hide_probes = request.GET.get('hide_probes', '0') == '1'
+    hide_probes = request.GET.get('hide_probes', '1') == '1'
 
     base_qs = TrafficLog.objects.select_related('node').filter(created_at__gte=today_start)
     total_today = cache.get('total_logs_today_cnt')
@@ -501,13 +501,15 @@ def api_live_feed_logs(request):
         qs = (
             qs.exclude(country_code='LAN')
             .exclude(client_ip__startswith='127.')
+            .exclude(client_ip='::1')
             .exclude(client_ip__startswith='10.')
             .exclude(client_ip__startswith='192.168.')
             .exclude(client_ip__startswith='169.254.')
         )
 
-    # 2. Excluir únicamente por columnas indexadas (las sondas ya se filtran en ingesta)
-    qs = qs.exclude(http_method='HTTPS').exclude(country_code__startswith='CF-')
+    # 2. Filtro condicional de Sondas / Handshakes TLS según el checkbox hide_probes
+    if hide_probes:
+        qs = qs.exclude(http_method='HTTPS').exclude(country_code__startswith='CF-')
 
     # 3. Filtro por Método HTTP
     if method_filter and method_filter != 'ALL':
@@ -566,7 +568,7 @@ def api_live_feed_logs(request):
     for log in page_logs:
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
         real_ip_clean = meta.get('real_client_ip') or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
-        if not real_ip_clean and (meta['is_cloudflare'] or is_cloudflare_ip(log.client_ip)):
+        if hide_probes and not real_ip_clean and (meta['is_cloudflare'] or is_cloudflare_ip(log.client_ip)):
             continue
         eff_ip = real_ip_clean or log.client_ip
         conn_ip = meta.get('cloudflare_ip') or (log.client_ip if meta.get('is_cloudflare') else eff_ip)

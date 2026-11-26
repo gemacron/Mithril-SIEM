@@ -28,7 +28,7 @@ class TacticalWorldMap {
 
     this.showExternal = true;
     this.showLocal = true;
-    this.showProbes = true;
+    this.threatsOnly = false;
     this.initFilterToggles();
 
     this.resize();
@@ -82,7 +82,7 @@ class TacticalWorldMap {
   initFilterToggles() {
     const extToggle = document.getElementById('mapToggleExternal');
     const locToggle = document.getElementById('mapToggleLocal');
-    const probesToggle = document.getElementById('mapToggleProbes');
+    const threatsToggle = document.getElementById('mapToggleThreatsOnly');
 
     const savedExt = localStorage.getItem('mithril_map_show_external');
     if (savedExt !== null) {
@@ -100,14 +100,14 @@ class TacticalWorldMap {
       this.showLocal = locToggle.checked;
     }
 
-    const savedProbes = localStorage.getItem('mithril_map_show_probes_v2');
-    if (savedProbes !== null) {
-      this.showProbes = (savedProbes === 'true');
-      if (probesToggle) probesToggle.checked = this.showProbes;
-    } else if (probesToggle) {
-      this.showProbes = probesToggle.checked;
+    const savedThreats = localStorage.getItem('mithril_map_threats_only');
+    if (savedThreats !== null) {
+      this.threatsOnly = (savedThreats === 'true');
+      if (threatsToggle) threatsToggle.checked = this.threatsOnly;
+    } else if (threatsToggle) {
+      this.threatsOnly = threatsToggle.checked;
     } else {
-      this.showProbes = false;
+      this.threatsOnly = false;
     }
 
     if (extToggle) {
@@ -126,35 +126,29 @@ class TacticalWorldMap {
       });
     }
 
-    if (probesToggle) {
-      probesToggle.addEventListener('change', () => {
-        this.showProbes = probesToggle.checked;
-        localStorage.setItem('mithril_map_show_probes_v2', this.showProbes ? 'true' : 'false');
+    if (threatsToggle) {
+      threatsToggle.addEventListener('change', () => {
+        this.threatsOnly = threatsToggle.checked;
+        localStorage.setItem('mithril_map_threats_only', this.threatsOnly ? 'true' : 'false');
         this.onFilterChanged();
       });
     }
   }
 
+  passesFilters(isLoc, isThreat) {
+    if (isLoc && !this.showLocal) return false;
+    if (!isLoc && !this.showExternal) return false;
+    if (this.threatsOnly && !isThreat) return false;
+    return true;
+  }
+
   onFilterChanged() {
+    this.hoverPoint = null;
     // 1. Poda inmediata de arcos balísticos en vuelo que no cumplan los filtros activos
-    this.arcs = this.arcs.filter(arc => {
-      const isLoc = this.isItemLocal(arc);
-      const isPrb = Boolean(arc.isProbe);
-      if (isLoc && !this.showLocal) return false;
-      if (!isLoc && !this.showExternal) return false;
-      if (isPrb && !this.showProbes) return false;
-      return true;
-    });
+    this.arcs = this.arcs.filter(arc => this.passesFilters(this.isItemLocal(arc), Boolean(arc.isThreat)));
 
     // 2. Poda inmediata de ondas de pulso que no cumplan los filtros activos
-    this.pulses = this.pulses.filter(p => {
-      const isLoc = Boolean(p.isLocal);
-      const isPrb = Boolean(p.isProbe);
-      if (isLoc && !this.showLocal) return false;
-      if (!isLoc && !this.showExternal) return false;
-      if (isPrb && !this.showProbes) return false;
-      return true;
-    });
+    this.pulses = this.pulses.filter(p => this.passesFilters(Boolean(p.isLocal), Boolean(p.isThreat)));
   }
 
   isLocalIp(ip) {
@@ -198,8 +192,7 @@ class TacticalWorldMap {
     for (let i = 0; i < this.points.length; i++) {
       const pt = this.points[i];
       const isLoc = this.isItemLocal(pt);
-      if (isLoc && !this.showLocal) continue;
-      if (!isLoc && !this.showExternal) continue;
+      if (!this.passesFilters(isLoc, Boolean(pt.isThreat))) continue;
       const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
       if (Math.hypot(x - this.mouse.x, y - this.mouse.y) < 11) {
         this.hoverPoint = { ...pt, isLocal: isLoc, screenX: x, screenY: y };
@@ -270,9 +263,7 @@ class TacticalWorldMap {
     const probe = Boolean(isProbe) || (isCloudflare && !realClientIp);
 
     // Respetar de inmediato los filtros activos en el mapa táctico
-    if (isLoc && !this.showLocal) return;
-    if (!isLoc && !this.showExternal) return;
-    if (probe && !this.showProbes) return;
+    if (!this.passesFilters(isLoc, Boolean(isThreat))) return;
 
     const coords = this.geoToCanvas(lat, lon);
     const isDirect = (!isCloudflare && !isLoc);
@@ -340,14 +331,7 @@ class TacticalWorldMap {
   emitActiveThreatVectors() {
     // Mantiene visible la flecha de ataque actual para los atacantes/candidatos recientes en el mapa
     if (!this.points || this.points.length === 0) return;
-    const activePoints = this.points.filter(p => {
-      const isLoc = this.isItemLocal(p);
-      const isPrb = Boolean(p.isProbe);
-      if (isLoc && !this.showLocal) return false;
-      if (!isLoc && !this.showExternal) return false;
-      if (isPrb && !this.showProbes) return false;
-      return true;
-    });
+    const activePoints = this.points.filter(p => this.passesFilters(this.isItemLocal(p), Boolean(p.isThreat)));
     if (activePoints.length === 0) return;
 
     const threats = activePoints.filter(p => p.isThreat);
@@ -405,7 +389,7 @@ class TacticalWorldMap {
           this.nodes = data.nodes;
         }
 
-        if (data.points && Array.isArray(data.points) && data.points.length > 0) {
+        if (data.points && Array.isArray(data.points)) {
           const hadNoPoints = this.points.length === 0;
           const incoming = data.points.map(p => ({
             lat: parseFloat(p.latitude) || 0,
@@ -426,7 +410,7 @@ class TacticalWorldMap {
           }));
           this.points = incoming.slice(0, 90);
 
-          if (hadNoPoints) {
+          if (hadNoPoints && this.points.length > 0) {
             this.emitActiveThreatVectors();
           }
         }
@@ -763,9 +747,7 @@ class TacticalWorldMap {
       const isLoc = this.isItemLocal(pt);
       const isPrb = Boolean(pt.isProbe) || (pt.isCloudflare && !pt.realClientIp);
       const isDirect = (!pt.isCloudflare && !isLoc);
-      if (isLoc && !this.showLocal) continue;
-      if (!isLoc && !this.showExternal) continue;
-      if (isPrb && !this.showProbes) continue;
+      if (!this.passesFilters(isLoc, Boolean(pt.isThreat))) continue;
 
       const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
       const color = pt.isThreat
@@ -791,8 +773,7 @@ class TacticalWorldMap {
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const arc = this.arcs[i];
       const isLoc = this.isItemLocal(arc);
-      const isPrb = Boolean(arc.isProbe);
-      if ((isLoc && !this.showLocal) || (!isLoc && !this.showExternal) || (isPrb && !this.showProbes)) {
+      if (!this.passesFilters(isLoc, Boolean(arc.isThreat))) {
         arc.progress += arc.speed;
         if (arc.progress >= 1.0) {
           this.arcs.splice(i, 1);
@@ -909,8 +890,7 @@ class TacticalWorldMap {
     for (let i = this.pulses.length - 1; i >= 0; i--) {
       const p = this.pulses[i];
       const isLoc = Boolean(p.isLocal);
-      const isPrb = Boolean(p.isProbe);
-      if ((isLoc && !this.showLocal) || (!isLoc && !this.showExternal) || (isPrb && !this.showProbes)) {
+      if (!this.passesFilters(isLoc, Boolean(p.isThreat))) {
         p.radius += 0.65;
         p.alpha -= 0.028;
         if (p.alpha <= 0 || p.radius >= p.maxRadius) {
@@ -1075,6 +1055,7 @@ class TacticalParaguayMap {
 
     this.showPublic = true;
     this.showLocal = true;
+    this.threatsOnly = false;
     this.initFilterToggles();
     this.initCameraControls();
 
@@ -1090,6 +1071,7 @@ class TacticalParaguayMap {
   initFilterToggles() {
     const pubToggle = document.getElementById('pyMapTogglePublic');
     const locToggle = document.getElementById('pyMapToggleLocal');
+    const threatsToggle = document.getElementById('pyMapToggleThreatsOnly');
 
     const savedPub = localStorage.getItem('mithril_py_map_show_public');
     if (savedPub !== null) {
@@ -1107,18 +1089,48 @@ class TacticalParaguayMap {
       this.showLocal = locToggle.checked;
     }
 
+    const savedThreats = localStorage.getItem('mithril_py_map_threats_only');
+    if (savedThreats !== null) {
+      this.threatsOnly = (savedThreats === 'true');
+      if (threatsToggle) threatsToggle.checked = this.threatsOnly;
+    } else if (threatsToggle) {
+      this.threatsOnly = threatsToggle.checked;
+    }
+
     if (pubToggle) {
       pubToggle.addEventListener('change', () => {
         this.showPublic = pubToggle.checked;
         localStorage.setItem('mithril_py_map_show_public', this.showPublic ? 'true' : 'false');
+        this.onFilterChanged();
       });
     }
     if (locToggle) {
       locToggle.addEventListener('change', () => {
         this.showLocal = locToggle.checked;
         localStorage.setItem('mithril_py_map_show_local', this.showLocal ? 'true' : 'false');
+        this.onFilterChanged();
       });
     }
+    if (threatsToggle) {
+      threatsToggle.addEventListener('change', () => {
+        this.threatsOnly = threatsToggle.checked;
+        localStorage.setItem('mithril_py_map_threats_only', this.threatsOnly ? 'true' : 'false');
+        this.onFilterChanged();
+      });
+    }
+  }
+
+  passesFilters(isLocal, isThreat) {
+    if (isLocal && !this.showLocal) return false;
+    if (!isLocal && !this.showPublic) return false;
+    if (this.threatsOnly && !isThreat) return false;
+    return true;
+  }
+
+  onFilterChanged() {
+    this.hoverPoint = null;
+    this.arcs = this.arcs.filter(arc => this.passesFilters(Boolean(arc.isLocal), Boolean(arc.isThreat)));
+    this.pulses = this.pulses.filter(p => this.passesFilters(Boolean(p.isLocal), Boolean(p.isThreat)));
   }
 
   initCameraControls() {
@@ -1495,8 +1507,7 @@ class TacticalParaguayMap {
     if (!this.isParaguayEvent(lat, lon, countryCode, countryName, isLoc, isProbe, cityName)) {
       return;
     }
-    if (isLoc && !this.showLocal) return;
-    if (!isLoc && !this.showPublic) return;
+    if (!this.passesFilters(isLoc, Boolean(isThreat))) return;
 
     const mainIp = realClientIp || clientIp || 'PY';
     const resolved = this.resolveParaguayCoords(lat, lon, mainIp, isLoc, cityName);
@@ -1566,7 +1577,7 @@ class TacticalParaguayMap {
 
   emitActiveVectors() {
     if (!this.points || this.points.length === 0) return;
-    const visible = this.points.filter(p => (p.isLocal ? this.showLocal : this.showPublic));
+    const visible = this.points.filter(p => this.passesFilters(Boolean(p.isLocal), Boolean(p.isThreat)));
     if (visible.length === 0) return;
     const threats = visible.filter(p => p.isThreat);
     const pool = threats.length > 0 ? threats.slice(0, 6) : visible.slice(0, 4);
@@ -1603,8 +1614,7 @@ class TacticalParaguayMap {
     this.hoverPoint = null;
     for (let i = 0; i < this.points.length; i++) {
       const pt = this.points[i];
-      if (pt.isLocal && !this.showLocal) continue;
-      if (!pt.isLocal && !this.showPublic) continue;
+      if (!this.passesFilters(Boolean(pt.isLocal), Boolean(pt.isThreat))) continue;
       const { x, y } = this.geoToCanvas(pt.lat, pt.lon);
       if (Math.hypot(x - this.mouse.x, y - this.mouse.y) < 12) {
         this.hoverPoint = { ...pt, screenX: x, screenY: y };
@@ -1781,8 +1791,7 @@ class TacticalParaguayMap {
     let labelsDrawn = 0;
     for (let i = 0; i < this.points.length; i++) {
       const p = this.points[i];
-      if (p.isLocal && !this.showLocal) continue;
-      if (!p.isLocal && !this.showPublic) continue;
+      if (!this.passesFilters(Boolean(p.isLocal), Boolean(p.isThreat))) continue;
 
       const { x, y } = this.geoToCanvas(p.lat, p.lon);
       if (x < -30 || x > this.width + 30 || y < -30 || y > this.height + 30) continue;
@@ -1830,12 +1839,7 @@ class TacticalParaguayMap {
     // 2. Flechas de trayectoria en Paraguay (calculadas dinámicamente desde las coordenadas reales de origen -> destino)
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       const arc = this.arcs[i];
-      if (arc.isLocal && !this.showLocal) {
-        arc.progress += arc.speed;
-        if (arc.progress >= 1.0) this.arcs.splice(i, 1);
-        continue;
-      }
-      if (!arc.isLocal && !this.showPublic) {
+      if (!this.passesFilters(Boolean(arc.isLocal), Boolean(arc.isThreat))) {
         arc.progress += arc.speed;
         if (arc.progress >= 1.0) this.arcs.splice(i, 1);
         continue;
@@ -1946,6 +1950,14 @@ class TacticalParaguayMap {
     // 4. Ondas sónicas ancladas a coordenadas geográficas
     for (let i = this.pulses.length - 1; i >= 0; i--) {
       const p = this.pulses[i];
+      if (!this.passesFilters(Boolean(p.isLocal), Boolean(p.isThreat))) {
+        p.radius += 0.55;
+        p.alpha -= 0.03;
+        if (p.alpha <= 0 || p.radius >= p.maxRadius) {
+          this.pulses.splice(i, 1);
+        }
+        continue;
+      }
       const pos = this.geoToCanvas(p.lat, p.lon);
       ctx.save();
       ctx.beginPath();

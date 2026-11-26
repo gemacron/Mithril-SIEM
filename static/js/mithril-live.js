@@ -404,7 +404,7 @@ document.addEventListener('DOMContentLoaded', () => {
     localIpToggle.addEventListener('change', () => {
       hideLocalIps = localIpToggle.checked;
       localStorage.setItem('mithril_hide_local_ips', hideLocalIps ? 'true' : 'false');
-      fetchPaginatedTodayLogs(1);
+      fetchPaginatedTodayLogs(1, true);
     });
   }
 
@@ -420,7 +420,7 @@ document.addEventListener('DOMContentLoaded', () => {
     probesToggle.addEventListener('change', () => {
       hideProbes = probesToggle.checked;
       localStorage.setItem('mithril_hide_probes_v2', hideProbes ? 'true' : 'false');
-      fetchPaginatedTodayLogs(1);
+      fetchPaginatedTodayLogs(1, true);
     });
   }
 
@@ -560,8 +560,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function fetchPaginatedTodayLogs(targetPage = 1) {
-    if (!tableBody || isFetchingFeedPage) return;
+  function fetchPaginatedTodayLogs(targetPage = 1, forceReplace = false) {
+    if (!tableBody) return;
+    if (isFetchingFeedPage && !forceReplace) return;
     isFetchingFeedPage = true;
     currentPage = Math.max(1, targetPage);
     currentPageSize = pageSizeSelect ? (parseInt(pageSizeSelect.value, 10) || 50) : 50;
@@ -592,13 +593,17 @@ document.addEventListener('DOMContentLoaded', () => {
         // Ordenar explícitamente de más nuevo (ID mayor) a más viejo (ID menor)
         logs.sort((a, b) => (parseInt(b.id || 0, 10) - parseInt(a.id || 0, 10)));
 
-        // Conservar filas en vivo más nuevas que hayan llegado por WebSocket mientras se consultaba la Página 1
+        // Conservar filas en vivo más nuevas SOLO si no fue un cambio de filtro/checkbox (forceReplace=false)
         const newerLiveRows = [];
-        if (currentPage === 1 && logs.length > 0) {
+        if (!forceReplace && currentPage === 1 && logs.length > 0) {
           const maxFetchedId = parseInt(logs[0].id || 0, 10) || 0;
           tableBody.querySelectorAll('tr[data-log-id]').forEach(existingRow => {
             const rId = parseInt(existingRow.getAttribute('data-log-id') || '0', 10) || 0;
             if (rId > maxFetchedId) {
+              const rowLocal = existingRow.getAttribute('data-local-ip') === '1';
+              const rowProbe = existingRow.getAttribute('data-probe') === '1';
+              if (hideLocalIps && rowLocal) return;
+              if (hideProbes && rowProbe) return;
               newerLiveRows.push(existingRow.cloneNode(true));
             }
           });
@@ -656,13 +661,13 @@ document.addEventListener('DOMContentLoaded', () => {
   if (searchInput) {
     searchInput.addEventListener('input', () => {
       if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
-      searchDebounceTimer = setTimeout(() => fetchPaginatedTodayLogs(1), 260);
+      searchDebounceTimer = setTimeout(() => fetchPaginatedTodayLogs(1, true), 260);
     });
   }
-  if (typeSelect) typeSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1));
-  if (methodSelect) methodSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1));
-  if (statusSelect) statusSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1));
-  if (pageSizeSelect) pageSizeSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1));
+  if (typeSelect) typeSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1, true));
+  if (methodSelect) methodSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1, true));
+  if (statusSelect) statusSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1, true));
+  if (pageSizeSelect) pageSizeSelect.addEventListener('change', () => fetchPaginatedTodayLogs(1, true));
 
   if (clearFiltersBtn) {
     clearFiltersBtn.addEventListener('click', () => {
@@ -670,16 +675,16 @@ document.addEventListener('DOMContentLoaded', () => {
       if (typeSelect) typeSelect.value = 'all';
       if (methodSelect) methodSelect.value = 'all';
       if (statusSelect) statusSelect.value = 'all';
-      fetchPaginatedTodayLogs(1);
+      fetchPaginatedTodayLogs(1, true);
     });
   }
 
-  if (firstPageBtn) firstPageBtn.addEventListener('click', () => fetchPaginatedTodayLogs(1));
-  if (prevPageBtn) prevPageBtn.addEventListener('click', () => { if (currentPage > 1) fetchPaginatedTodayLogs(currentPage - 1); });
-  if (nextPageBtn) nextPageBtn.addEventListener('click', () => { if (currentPage < totalPages) fetchPaginatedTodayLogs(currentPage + 1); });
-  if (lastPageBtn) lastPageBtn.addEventListener('click', () => fetchPaginatedTodayLogs(totalPages));
+  if (firstPageBtn) firstPageBtn.addEventListener('click', () => fetchPaginatedTodayLogs(1, true));
+  if (prevPageBtn) prevPageBtn.addEventListener('click', () => { if (currentPage > 1) fetchPaginatedTodayLogs(currentPage - 1, true); });
+  if (nextPageBtn) nextPageBtn.addEventListener('click', () => { if (currentPage < totalPages) fetchPaginatedTodayLogs(currentPage + 1, true); });
+  if (lastPageBtn) lastPageBtn.addEventListener('click', () => fetchPaginatedTodayLogs(totalPages, true));
 
-  window.applyLiveFeedFilters = () => fetchPaginatedTodayLogs(1);
+  window.applyLiveFeedFilters = () => fetchPaginatedTodayLogs(1, true);
 
   function flushWsQueue() {
     rafScheduled = false;
