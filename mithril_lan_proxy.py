@@ -104,7 +104,7 @@ def ingest_worker():
         first_item = log_queue.get()
         batch = [first_item]
         try:
-            while len(batch) < 25:
+            while len(batch) < 60:
                 try:
                     batch.append(log_queue.get_nowait())
                 except queue.Empty:
@@ -116,7 +116,7 @@ def ingest_worker():
                 "X-Node-IP": first_item.get('node_ip', '')
             }
             req = urllib.request.Request(INGEST_URL, data=payload_bytes, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=4) as resp:
+            with urllib.request.urlopen(req, timeout=10) as resp:
                 resp.read()
         except Exception:
             pass

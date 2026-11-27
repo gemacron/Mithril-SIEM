@@ -17,6 +17,7 @@ from apps.detection.engine import (
     is_own_public_wan_ip,
     resolve_geoip,
     sync_unbanned_threats_to_candidates,
+    invalidate_reputation_cache,
 )
 from apps.reports.models import AuditTrail
 from apps.notifications.services import send_telegram_alert
@@ -104,7 +105,7 @@ def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_
 
     cf_country_hdr = ip_meta.get('cf_country', '')
     if cf_country_hdr or not country_code or country_code in ('FR', 'JP', 'RU', 'CN', 'DE', 'GB', 'ES', 'NL', 'US'):
-        re_geo = resolve_geoip(ip_meta['real_client_ip'] or ip_str, cf_country=cf_country_hdr)
+        re_geo = resolve_geoip(ip_meta['real_client_ip'] or ip_str, cf_country=cf_country_hdr, allow_network=False)
         if cf_country_hdr or is_own_public_wan_ip(ip_meta['real_client_ip'] or ip_str) or is_private_local_ip(ip_meta['real_client_ip'] or ip_str):
             country_code = re_geo['country_code']
             country_name = re_geo['country_name']
@@ -327,6 +328,7 @@ def approve_candidate_view(request, candidate_id):
 
     # 3. Actualizar Reputación de la IP
     IpReputation.objects.filter(client_ip=ip_str).update(status='BANNED')
+    invalidate_reputation_cache(ip_str)
 
     # 4. Crear registros de sincronización para cada proxy activo
     active_nodes = ProxyNode.objects.all()
@@ -382,6 +384,7 @@ def dismiss_candidate_view(request, candidate_id):
 
     # Bajar puntaje de riesgo para no alertar de inmediato
     IpReputation.objects.filter(client_ip=candidate.client_ip).update(current_risk_score=20, status='MONITORED')
+    invalidate_reputation_cache(candidate.client_ip)
 
     AuditTrail.objects.create(
         user=request.user,
@@ -474,6 +477,7 @@ def manual_ban_ip_view(request):
         client_ip=ip_str,
         defaults={'status': 'BANNED', 'current_risk_score': 100}
     )
+    invalidate_reputation_cache(ip_str)
 
     active_nodes = ProxyNode.objects.all()
     for node in active_nodes:
@@ -535,6 +539,7 @@ def revoke_ban_view(request, ban_id):
     ban.save(update_fields=['is_active', 'revoked_at', 'revoked_by'])
 
     IpReputation.objects.filter(client_ip=ban.client_ip).update(status='MONITORED', current_risk_score=0)
+    invalidate_reputation_cache(ban.client_ip)
 
     # Notificar a los proxies para que remuevan la IP
     NodeBanSync.objects.filter(ban=ban).update(is_synced=False)

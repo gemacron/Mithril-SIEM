@@ -95,11 +95,12 @@ A diferencia de los analizadores tradicionales basados en lectura de archivos de
 
 ## 🧠 Reglas de Detección y Heurística Preconfiguradas
 
-Al iniciar el contenedor `mithril-web`, el sistema configura automáticamente 12 reglas universales que pueden personalizarse o ampliarse desde **`http://<IP_MITHRIL>:9900/detection/rules/`**:
+Al iniciar el contenedor `mithril-web`, el sistema configura automáticamente 13 reglas universales que pueden personalizarse o ampliarse desde **`http://<IP_MITHRIL>:9900/detection/rules/`**:
 
 | Código | Nombre de la Regla / Heurística | Severidad | Umbral por Defecto | Acción |
 | :--- | :--- | :---: | :---: | :---: |
 | `R-ENV-SCAN` | Escaneo de Archivos Sensibles (`.env`, `.git`, `.aws`, `wp-config`, `.sql`, `.bak`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
+| `R-DANGEROUS-EXT-PROBE` | Sondeo de Extensiones Peligrosas / Webshells (`.php`, `.aspx`, `.jsp`, `.cgi`, `.zip` con `403`/`404` o sin UA) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
 | `R-SQLI-URL` | Inyección SQL Universal (`UNION SELECT`, `SLEEP()`, `BENCHMARK()`, `OR 1=1`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
 | `R-PATH-TRAVERSAL` | Escalada de Directorios / LFI (`../`, `/etc/passwd`, `proc/self`, `win.ini`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |
 | `R-XSS-PAYLOAD` | Cross-Site Scripting (`<script>`, `javascript:`, `onerror=`, `onload=`, `<svg>`) | `CRITICAL` | 1 hit / 60s | Candidato Bloqueo |

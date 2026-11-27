@@ -106,7 +106,7 @@ def dashboard_view(request):
             log.country_code = 'LAN'
             log.country_name = 'Red Interna (LAN)'
         elif log.is_own_public_ip or meta.get('cf_country'):
-            re_geo = resolve_geoip(eff_target_ip, cf_country=meta.get('cf_country', ''))
+            re_geo = resolve_geoip(eff_target_ip, cf_country=meta.get('cf_country', ''), allow_network=False)
             log.country_code = re_geo['country_code']
             log.country_name = re_geo['country_name']
         log.is_direct_public_ip = meta.get('is_direct_public_ip', (not log.is_cloudflare and not log.is_local_ip and not log.is_own_public_ip and bool(eff_target_ip)))
@@ -203,7 +203,7 @@ def api_map_data(request):
         if is_cloudflare_ip(target_geo_ip) or (meta['is_cloudflare'] and not real_ip_clean):
             continue
 
-        re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
+        re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''), allow_network=False)
         p['latitude'] = re_geo['latitude']
         p['longitude'] = re_geo['longitude']
         p['country_code'] = re_geo['country_code']
@@ -366,7 +366,7 @@ def api_live_stats(request):
         lat = log.latitude
         lon = log.longitude
         if lat is not None and abs(lat - (-34.6037)) < 0.01 and abs(lon - (-58.3816)) < 0.01:
-            re_geo = resolve_geoip(log.client_ip)
+            re_geo = resolve_geoip(log.client_ip, allow_network=False)
             lat, lon = re_geo['latitude'], re_geo['longitude']
         meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
         real_ip_clean = meta.get('real_client_ip') or (log.client_ip if not is_cloudflare_ip(log.client_ip) else '')
@@ -380,7 +380,7 @@ def api_live_stats(request):
         c_code = 'LAN' if is_loc else log.country_code
         c_name = 'Red Interna (LAN)' if is_loc else (log.country_name or log.country_code or 'Remoto')
         if not is_loc and (is_own_pub or meta.get('cf_country') or real_ip_clean):
-            re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
+            re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''), allow_network=False)
             c_code = re_geo['country_code']
             c_name = re_geo['country_name']
             if lat is not None and abs(lat - (-34.6037)) < 0.01 and abs(lon - (-58.3816)) < 0.01:
@@ -578,7 +578,7 @@ def api_live_feed_logs(request):
         c_code = 'LAN' if is_loc else log.country_code
         c_name = 'Red Interna (LAN)' if is_loc else (log.country_name or log.country_code or 'Remoto')
         if not is_loc and (is_own_pub or meta.get('cf_country') or real_ip_clean):
-            re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''))
+            re_geo = resolve_geoip(target_geo_ip, cf_country=meta.get('cf_country', ''), allow_network=False)
             c_code = re_geo['country_code']
             c_name = re_geo['country_name']
         is_benign = _is_benign_app_sync(log.uri, log.status_code)

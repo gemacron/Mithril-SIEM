@@ -1,10 +1,13 @@
 import re
 import json
+import time
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib.auth.decorators import login_required
 from django.views.decorators.csrf import csrf_exempt
 from django.http import JsonResponse
 from django.contrib import messages
+from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from datetime import timedelta
 from .models import SecurityRule, TrafficLog, SecurityEvent
@@ -16,10 +19,25 @@ from .engine import (
     extract_log_ip_meta,
     is_cloudflare_ip,
     is_own_infrastructure_ip,
+    get_node_live_rps,
 )
 from apps.mitigation.models import IpReputation
 from apps.nodes.models import ProxyNode
 from apps.reports.models import AuditTrail
+
+# Caché ligero en RAM de nodos activos (TTL 15s) para evitar 25+ SELECT ProxyNode por cada micro-lote
+_INGEST_NODES_CACHE = {'ts': 0.0, 'by_key': {}, 'by_ip': {}, 'has_nodes': False}
+_LAST_NODE_HB_DB_SYNC = {}
+
+def _get_cached_nodes_maps():
+    now_m = time.monotonic()
+    if (now_m - _INGEST_NODES_CACHE['ts']) > 15.0:
+        nodes = list(ProxyNode.objects.all())
+        _INGEST_NODES_CACHE['by_key'] = {n.api_key: n for n in nodes if n.api_key}
+        _INGEST_NODES_CACHE['by_ip'] = {n.ip_address: n for n in nodes if n.ip_address}
+        _INGEST_NODES_CACHE['has_nodes'] = bool(nodes)
+        _INGEST_NODES_CACHE['ts'] = now_m
+    return _INGEST_NODES_CACHE
 
 @login_required
 def rules_list_view(request):
@@ -156,19 +174,23 @@ def api_ingest(request):
     if request.method != 'POST':
         return JsonResponse({'error': 'POST required'}, status=405)
 
-    if not ProxyNode.objects.exists():
+    nodes_cache = _get_cached_nodes_maps()
+    if not nodes_cache['has_nodes']:
         return JsonResponse({'error': 'No hay proxies registrados en Mithril SIEM. Ingesta rechazada.'}, status=403)
+
+    by_key = nodes_cache['by_key']
+    by_ip = nodes_cache['by_ip']
 
     auth_header = request.META.get('HTTP_AUTHORIZATION', '')
     header_node = None
     if auth_header.startswith('Bearer '):
         api_key = auth_header.split(' ', 1)[1].strip().strip('"').strip("'")
-        header_node = ProxyNode.objects.filter(api_key=api_key).first()
+        header_node = by_key.get(api_key)
 
     if not header_node:
         node_ip = request.META.get('HTTP_X_NODE_IP') or request.META.get('REMOTE_ADDR')
         if node_ip and node_ip not in ('127.0.0.1', '::1'):
-            header_node = ProxyNode.objects.filter(ip_address=node_ip).first()
+            header_node = by_ip.get(node_ip)
 
     try:
         body = json.loads(request.body.decode('utf-8'))
@@ -179,37 +201,73 @@ def api_ingest(request):
     logs_data = body if isinstance(body, list) else [body]
     processed_count = 0
     rejected_count = 0
-    touched_nodes = {}
+    touched_counts = {}
 
+    def _resolve_item_node(item):
+        nonlocal by_key, by_ip
+        target_node = None
+        item_key = str(item.get('node_api_key') or '').strip().strip('"').strip("'")
+        if item_key:
+            target_node = by_key.get(item_key)
+            if not target_node:
+                _INGEST_NODES_CACHE['ts'] = 0.0
+                refreshed = _get_cached_nodes_maps()
+                by_key, by_ip = refreshed['by_key'], refreshed['by_ip']
+                target_node = by_key.get(item_key)
+        else:
+            item_ips = item.get('node_ips')
+            if isinstance(item_ips, list) and item_ips:
+                for ip_cand in item_ips:
+                    if ip_cand in by_ip:
+                        target_node = by_ip[ip_cand]
+                        break
+            if not target_node and item.get('node_ip'):
+                target_node = by_ip.get(item['node_ip'])
+            if not target_node:
+                target_node = header_node
+        return target_node
+
+    # Resolver nodos antes de abrir la transacción única (1 solo COMMIT/fsync en PostgreSQL por lote de 60 logs)
+    resolved_items = []
     for item in logs_data:
+        target_node = _resolve_item_node(item)
+        if not target_node or not target_node.monitoring_enabled:
+            rejected_count += 1
+            continue
+        resolved_items.append((item, target_node))
+
+    if resolved_items:
         try:
-            target_node = None
-            item_key = str(item.get('node_api_key') or '').strip().strip('"').strip("'")
-            if item_key:
-                # Si el agente envía node_api_key, DEBE coincidir estrictamente con un nodo activo registrado
-                target_node = ProxyNode.objects.filter(api_key=item_key).first()
-            else:
-                # Respaldo solo para syslog nativo sin agente: verificar IP exacta de nodo registrado o Bearer token
-                item_ips = item.get('node_ips')
-                if isinstance(item_ips, list) and item_ips:
-                    target_node = ProxyNode.objects.filter(ip_address__in=item_ips).first()
-                if not target_node and item.get('node_ip'):
-                    target_node = ProxyNode.objects.filter(ip_address=item['node_ip']).first()
-                if not target_node:
-                    target_node = header_node
+            with transaction.atomic():
+                for item, target_node in resolved_items:
+                    process_incoming_log(item, node=target_node, defer_node_update=True)
+                    touched_counts[target_node.id] = touched_counts.get(target_node.id, 0) + 1
+                    processed_count += 1
+        except Exception as batch_err:
+            # Respaldo granular por registro si un log puntual del lote falló
+            processed_count = 0
+            touched_counts = {}
+            print(f"Lote atómico degradado a modo individual ({batch_err})")
+            for item, target_node in resolved_items:
+                try:
+                    process_incoming_log(item, node=target_node, defer_node_update=True)
+                    touched_counts[target_node.id] = touched_counts.get(target_node.id, 0) + 1
+                    processed_count += 1
+                except Exception as e:
+                    print(f"Error procesando log individual: {e}")
 
-            if not target_node or not target_node.monitoring_enabled:
-                rejected_count += 1
-                continue
-
-            touched_nodes[target_node.id] = target_node
-            process_incoming_log(item, node=target_node)
-            processed_count += 1
-        except Exception as e:
-            print(f"Error procesando log individual: {e}")
-
-    for n in touched_nodes.values():
-        n.update_heartbeat()
+    # Actualizar ProxyNode UNA sola vez por lote (sin contención de locks fila por fila ni SELECT COUNT(*))
+    now_m = time.monotonic()
+    now_ts = timezone.now()
+    for node_id, batch_cnt in touched_counts.items():
+        update_kwargs = {'total_logs_processed': F('total_logs_processed') + batch_cnt}
+        if (now_m - _LAST_NODE_HB_DB_SYNC.get(node_id, 0.0)) >= 5.0:
+            _LAST_NODE_HB_DB_SYNC[node_id] = now_m
+            live_rps = get_node_live_rps(node_id)
+            update_kwargs['last_heartbeat'] = now_ts
+            update_kwargs['current_rps'] = live_rps
+            update_kwargs['status'] = 'ONLINE'
+        ProxyNode.objects.filter(id=node_id).update(**update_kwargs)
 
     if processed_count == 0 and rejected_count > 0:
         return JsonResponse({

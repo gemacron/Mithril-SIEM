@@ -52,6 +52,16 @@ class Command(BaseCommand):
                 'risk_points': 80,
             },
             {
+                'code': 'R-DANGEROUS-EXT-PROBE',
+                'name': 'Sondeo de Extensiones Peligrosas / Webshells (.php, .aspx, .jsp, .cgi, .zip)',
+                'description': 'Intento de acceso a rutas terminadas en extensiones ejecutables, scripts o backups bloqueadas/inexistentes (403/404) o sin User-Agent',
+                'category': 'SCANNER',
+                'pattern_regex': r'\.(php[0-9]?|phtml|phar|asp|aspx|jsp|jspx|cgi|pl|sh|cfm|bak|old|orig|save|swp|sql|tar|tgz|zip|rar|7z|ini|conf|yml|yaml|dist)/?$',
+                'threshold_count': 1,
+                'threshold_seconds': 60,
+                'risk_points': 85,
+            },
+            {
                 'code': 'R-SQLI-URL',
                 'name': 'Inyección SQL (SQLi) en URI o Parámetros',
                 'description': 'Patrones SQL maliciosos (UNION SELECT, OR 1=1, SLEEP, BENCHMARK, INFORMATION_SCHEMA, pg_sleep)',

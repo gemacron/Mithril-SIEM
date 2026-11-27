@@ -237,6 +237,18 @@ LOGIN_URL = '/auth/login/'
 LOGIN_REDIRECT_URL = '/'
 LOGOUT_REDIRECT_URL = '/auth/login/'
 
+# Caché en memoria de alta capacidad (evita expulsiones prematuras de GeoIP y paneles Live)
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'mithril-siem-ram-cache',
+        'OPTIONS': {
+            'MAX_ENTRIES': 10000,
+            'CULL_FREQUENCY': 4,
+        },
+    }
+}
+
 # Channels & Redis Layer
 REDIS_HOST = os.getenv('REDIS_HOST', '')
 REDIS_PORT = os.getenv('REDIS_PORT', '6379')

@@ -23,8 +23,36 @@ from apps.notifications.services import send_telegram_alert
 _RULES_CACHE = {'ts': 0.0, 'rules': [], 'calibrated': False}
 # Cooldown por (client_ip, rule_code) para evitar saturar PostgreSQL ante ráfagas DoS/Scanners
 _EVENT_COOLDOWN_CACHE = {}
-# Control de cadencia de WebSocket por ventana de 1s (permite micro-batches completos en orden cronológico sin descartar los más nuevos)
+# Control de cadencia de WebSocket por ventana de 1s y envío asíncrono en segundo plano (cero bloqueo en ingesta)
 _WS_LAST_BROADCAST = {'window_ts': 0.0, 'count': 0}
+_WS_QUEUE_LOCK = threading.Lock()
+_WS_QUEUE = deque(maxlen=250)
+_WS_WAKE_EVENT = threading.Event()
+_WS_WORKER_STARTED = False
+
+def _ws_broadcast_worker():
+    while True:
+        _WS_WAKE_EVENT.wait(timeout=1.0)
+        _WS_WAKE_EVENT.clear()
+        while True:
+            with _WS_QUEUE_LOCK:
+                if not _WS_QUEUE:
+                    break
+                payload = _WS_QUEUE.popleft()
+            try:
+                channel_layer = get_channel_layer()
+                if channel_layer:
+                    async_to_sync(channel_layer.group_send)('soc_live_feed', payload)
+            except Exception:
+                pass
+
+def _ensure_ws_worker():
+    global _WS_WORKER_STARTED
+    if not _WS_WORKER_STARTED:
+        with _WS_QUEUE_LOCK:
+            if not _WS_WORKER_STARTED:
+                _WS_WORKER_STARTED = True
+                threading.Thread(target=_ws_broadcast_worker, daemon=True).start()
 # Control de cadencia para sincronización retroactiva de candidatos a bloqueo
 _LAST_CANDIDATE_SYNC = {'ts': 0.0}
 _CANDIDATE_SYNC_LOCK = threading.Lock()
@@ -34,6 +62,46 @@ _MEM_WINDOW_LOCK = threading.Lock()
 _MEM_REQ_WINDOW = {}        # client_ip -> deque[monotonic_ts]
 _MEM_AUTH_FAIL_WINDOW = {}  # client_ip -> deque[monotonic_ts]
 _MEM_404_WINDOW = {}        # client_ip -> deque[(monotonic_ts, uri_path)]
+_MEM_NODE_RPS_WINDOW = {}   # node_id_str -> deque[monotonic_ts]
+_REP_MEM_CACHE = {}         # client_ip -> (status_str, monotonic_ts)
+
+def record_node_traffic(node_id, count=1):
+    """Registra peticiones recibidas por nodo en ventana móvil de 10s en RAM (cero SELECT COUNT(*) en BD)."""
+    if not node_id:
+        return
+    key = str(node_id)
+    now_m = time.monotonic()
+    cutoff = now_m - 10.0
+    with _MEM_WINDOW_LOCK:
+        dq = _MEM_NODE_RPS_WINDOW.get(key)
+        if dq is None:
+            dq = deque()
+            _MEM_NODE_RPS_WINDOW[key] = dq
+        for _ in range(max(1, int(count))):
+            dq.append(now_m)
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+
+def get_node_live_rps(node_id):
+    """Calcula RPS en tiempo real desde RAM (ventana 10s) en 0.005 ms sin consultar PostgreSQL."""
+    if not node_id:
+        return 0
+    key = str(node_id)
+    cutoff = time.monotonic() - 10.0
+    with _MEM_WINDOW_LOCK:
+        dq = _MEM_NODE_RPS_WINDOW.get(key)
+        if not dq:
+            return 0
+        while dq and dq[0] < cutoff:
+            dq.popleft()
+        cnt = len(dq)
+    return max(1, round(cnt / 10)) if cnt > 0 else 0
+
+def invalidate_reputation_cache(client_ip=None):
+    if client_ip:
+        _REP_MEM_CACHE.pop(str(client_ip).strip(), None)
+    else:
+        _REP_MEM_CACHE.clear()
 
 def _record_and_count_window(store, client_ip, now_mono, window_sec, value=None):
     """Registra un evento en ventana móvil en RAM y devuelve el conteo (o conteo de valores distintos si value != None)."""
@@ -985,10 +1053,13 @@ def _lookup_maxmind(ip_str):
         return None
 
 
-def _lookup_public_geoip_api(ip_clean):
+_GEOIP_BG_INFLIGHT = set()
+
+def _lookup_public_geoip_api(ip_clean, allow_network=True):
     """
     Consulta universal GeoIP con prioridad a la base offline MMDB (0.05 ms, sin límites),
     respaldo en caché RAM/Redis y fallback en línea HTTPS (ipwho.is -> ip-api.com -> freeipapi.com).
+    Si allow_network=False (ruta crítica de ingesta), nunca bloquea con HTTP externo: agenda consulta en 2do plano.
     """
     if not ip_clean or is_private_local_ip(ip_clean) or is_cloudflare_ip(ip_clean):
         return None
@@ -1014,6 +1085,18 @@ def _lookup_public_geoip_api(ip_clean):
     # Evitar reintentos repetidos si las APIs externas acaban de fallar para esta IP
     now_mono = time.monotonic()
     if (now_mono - _GEOIP_FAIL_CACHE.get(ip_clean, 0.0)) < 180.0:
+        return None
+
+    if not allow_network:
+        # En ruta caliente de ingesta, enriquecer en segundo plano sin frenar jamás la detección
+        if len(_GEOIP_BG_INFLIGHT) < 12 and ip_clean not in _GEOIP_BG_INFLIGHT:
+            _GEOIP_BG_INFLIGHT.add(ip_clean)
+            def _bg_geo(target_ip):
+                try:
+                    _lookup_public_geoip_api(target_ip, allow_network=True)
+                finally:
+                    _GEOIP_BG_INFLIGHT.discard(target_ip)
+            threading.Thread(target=_bg_geo, args=(ip_clean,), daemon=True).start()
         return None
 
     def _save_geo_result(cc, cname, city, lat, lon):
@@ -1075,7 +1158,7 @@ def _lookup_public_geoip_api(ip_clean):
     return None
 
 
-def resolve_geoip(ip_str, cf_country=''):
+def resolve_geoip(ip_str, cf_country='', allow_network=True):
     """
     Resuelve la ubicación geográfica REAL y exacta de cualquier IP:
       1) IP Privada / Red Local (RFC1918 / Loopback) -> Asunción (Sede Central LAN)
@@ -1122,7 +1205,7 @@ def resolve_geoip(ip_str, cf_country=''):
     # 1 y 2. Prioridad absoluta: GeoIP real por IP (MaxMind/DB-IP offline -> Caché -> APIs HTTPS)
     base_geo = None
     if not is_cf:
-        base_geo = _lookup_public_geoip_api(ip_clean)
+        base_geo = _lookup_public_geoip_api(ip_clean, allow_network=allow_network)
 
     # 3. Respaldo por cabecera real CF-IPCountry si la consulta por IP no devolvió datos
     if not base_geo and cc_clean and cc_clean not in ('XX', 'T1', '-'):
@@ -1341,7 +1424,7 @@ def sync_unbanned_threats_to_candidates(force=False):
         _CANDIDATE_SYNC_LOCK.release()
 
 
-def process_incoming_log(data, node=None):
+def process_incoming_log(data, node=None, defer_node_update=False):
     """
     Procesa, normaliza, enriquece e inspecciona cada petición recibida de Nginx.
     Evalúa, puntúa y genera candidatos a bloqueo SIEMPRE sobre la IP del cliente real
@@ -1377,7 +1460,7 @@ def process_incoming_log(data, node=None):
     target_client_ip = real_client_ip if real_client_ip else raw_conn_ip
 
     cf_country_hdr = ip_meta.get('cf_country', '')
-    geo = resolve_geoip(target_client_ip, cf_country=cf_country_hdr)
+    geo = resolve_geoip(target_client_ip, cf_country=cf_country_hdr, allow_network=False)
 
     incoming_headers = dict(data.get('headers', {})) if isinstance(data.get('headers'), dict) else {}
     if is_cf:
@@ -1423,34 +1506,46 @@ def process_incoming_log(data, node=None):
     )
 
     if node:
-        ProxyNode.objects.filter(id=node.id).update(total_logs_processed=F('total_logs_processed') + 1)
+        record_node_traffic(node.id, 1)
+        if not defer_node_update:
+            ProxyNode.objects.filter(id=node.id).update(total_logs_processed=F('total_logs_processed') + 1)
 
-    # 2. Consultar o crear reputación de la IP del CLIENTE
+    # 2. Consultar estado de reputación en caché RAM (60s) para evitar SELECT/UPDATE en PostgreSQL por cada petición normal
     is_own_infra = is_own_infrastructure_ip(target_client_ip)
     rep_cc = str(geo.get('country_code') or '')[:4]
-    reputation, _ = IpReputation.objects.get_or_create(
-        client_ip=target_client_ip,
-        defaults={
-            'country_code': rep_cc,
-            'asn': 'OWN_INFRASTRUCTURE' if is_own_infra else ('CLOUDFLARE' if (is_cf and not real_client_ip) else ''),
-            'status': 'WHITELISTED' if is_own_infra else 'MONITORED'
-        }
-    )
-    if is_own_infra and (reputation.status != 'WHITELISTED' or reputation.country_code != rep_cc):
-        reputation.status = 'WHITELISTED'
-        reputation.country_code = rep_cc
-        reputation.asn = 'OWN_INFRASTRUCTURE'
-        reputation.current_risk_score = 0
-        reputation.save(update_fields=['status', 'country_code', 'asn', 'current_risk_score'])
-    elif not is_own_infra and cf_country_hdr and len(rep_cc) == 2 and reputation.country_code != rep_cc:
-        reputation.country_code = rep_cc
-        reputation.save(update_fields=['country_code'])
-    elif is_cf and not real_client_ip and reputation.asn != 'CLOUDFLARE':
-        reputation.asn = 'CLOUDFLARE'
-        reputation.save(update_fields=['asn'])
+    reputation = None
+    now_mono_rep = time.monotonic()
+    cached_rep = _REP_MEM_CACHE.get(target_client_ip)
+    cached_status = cached_rep[0] if (cached_rep and (now_mono_rep - cached_rep[1]) < 60.0) else None
+
+    if cached_status is None:
+        reputation, _ = IpReputation.objects.get_or_create(
+            client_ip=target_client_ip,
+            defaults={
+                'country_code': rep_cc,
+                'asn': 'OWN_INFRASTRUCTURE' if is_own_infra else ('CLOUDFLARE' if (is_cf and not real_client_ip) else ''),
+                'status': 'WHITELISTED' if is_own_infra else 'MONITORED'
+            }
+        )
+        if is_own_infra and (reputation.status != 'WHITELISTED' or reputation.country_code != rep_cc):
+            reputation.status = 'WHITELISTED'
+            reputation.country_code = rep_cc
+            reputation.asn = 'OWN_INFRASTRUCTURE'
+            reputation.current_risk_score = 0
+            reputation.save(update_fields=['status', 'country_code', 'asn', 'current_risk_score'])
+        elif not is_own_infra and cf_country_hdr and len(rep_cc) == 2 and reputation.country_code != rep_cc:
+            reputation.country_code = rep_cc
+            reputation.save(update_fields=['country_code'])
+        elif is_cf and not real_client_ip and reputation.asn != 'CLOUDFLARE':
+            reputation.asn = 'CLOUDFLARE'
+            reputation.save(update_fields=['asn'])
+        cached_status = reputation.status
+        if len(_REP_MEM_CACHE) > 8000:
+            _REP_MEM_CACHE.clear()
+        _REP_MEM_CACHE[target_client_ip] = (cached_status, now_mono_rep)
 
     # Si la IP está en Lista Blanca o es la propia IP de la infraestructura (WAN o Balanceador), no generar alertas de bloqueo
-    if reputation.status == 'WHITELISTED' or is_own_infra:
+    if cached_status == 'WHITELISTED' or is_own_infra:
         broadcast_to_soc(log, is_threat=False, reputation=reputation)
         return log
 
@@ -1586,6 +1681,29 @@ def process_incoming_log(data, node=None):
                     triggered_events.append(event)
                     risk_to_add += max(rule.risk_points, 80)
 
+        # D0. Detección universal de sondeo de extensiones peligrosas / webshells (.php, .aspx, .jsp, .cgi, .zip...)
+        # Dispara al primer intento si la ruta TERMINA en una extensión peligrosa y devuelve 403/404/405 o llega sin User-Agent.
+        elif rule.code == 'R-DANGEROUS-EXT-PROBE' and compiled_rx:
+            pure_path_ext = str(log.uri or '').split('?', 1)[0].strip()
+            if pure_path_ext.startswith('[') and ']' in pure_path_ext:
+                pure_path_ext = pure_path_ext.split(']', 1)[1].strip()
+            has_empty_ua = not bool((log.user_agent or '').strip())
+            if (log.status_code in (403, 404, 405) or has_empty_ua) and compiled_rx.search(pure_path_ext):
+                matched_any_rule = True
+                if not _is_in_event_cooldown(target_client_ip, rule.code, cooldown_sec=2.0):
+                    ext_match = compiled_rx.search(pure_path_ext).group(0)
+                    reason_tag = "sin User-Agent" if has_empty_ua else f"HTTP {log.status_code}"
+                    event = SecurityEvent.objects.create(
+                        node=node,
+                        rule=rule,
+                        client_ip=target_client_ip,
+                        severity='CRITICAL',
+                        matched_payload=f"Extensión peligrosa ({ext_match}, {reason_tag}): {pure_path_ext}",
+                        details={**base_req_details, 'uri': log.uri, 'query': log.query_params, 'agent': log.user_agent}
+                    )
+                    triggered_events.append(event)
+                    risk_to_add += max(rule.risk_points, 85)
+
         # D. Reglas basadas en Expresión Regular (evaluadas sobre el campo HTTP correcto para evitar falsos positivos en Base64/Body)
         elif compiled_rx:
             if rule.code == 'R-BAD-USER-AGENT':
@@ -1633,6 +1751,11 @@ def process_incoming_log(data, node=None):
 
     # 4. Actualizar puntaje de riesgo de la IP DEL CLIENTE y garantizar Candidato a Bloqueo (solo para ataques reales confirmados; nunca banear Cloudflare Edge)
     if (risk_to_add > 0 or matched_any_rule or len(triggered_events) > 0) and not is_cloudflare_ip(target_client_ip):
+        if reputation is None:
+            reputation, _ = IpReputation.objects.get_or_create(
+                client_ip=target_client_ip,
+                defaults={'country_code': rep_cc, 'status': 'MONITORED'}
+            )
         reputation.current_risk_score = min(100, max(80, reputation.current_risk_score + max(risk_to_add, 80)))
         reputation.total_violations = max(1, reputation.total_violations + max(1, len(triggered_events)))
         reputation.last_seen_at = now
@@ -1640,6 +1763,7 @@ def process_incoming_log(data, node=None):
         if reputation.status != 'BANNED':
             reputation.status = 'PENDING_BAN'
         reputation.save()
+        _REP_MEM_CACHE[target_client_ip] = (reputation.status, time.monotonic())
 
         last_event = triggered_events[0] if triggered_events else SecurityEvent.objects.filter(client_ip=target_client_ip).order_by('-created_at').first()
         ensure_ban_candidate_for_ip(
@@ -1667,20 +1791,16 @@ def process_incoming_log(data, node=None):
 
 def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
     """
-    Envía por WebSocket el evento para actualizar el mapa 2D y el Live Feed del operador.
-    Permite ráfagas de micro-batches completos en orden estricto de llegada para que el último log
-    (el más nuevo) siempre llegue y se muestre primero arriba del todo en el Live Feed.
+    Encola de forma NO BLOQUEANTE el evento para el mapa 2D y el Live Feed del operador.
+    Un hilo dedicado envía los mensajes a Redis/WebSocket para que la ingesta HTTP jamás se frene.
+    Las amenazas SIEMPRE se envían con prioridad; el tráfico normal se limita a 20 eventos/s en UI.
     """
     now_mono = time.monotonic()
     if (now_mono - _WS_LAST_BROADCAST['window_ts']) >= 1.0:
         _WS_LAST_BROADCAST['window_ts'] = now_mono
         _WS_LAST_BROADCAST['count'] = 0
     _WS_LAST_BROADCAST['count'] += 1
-    if not is_threat and _WS_LAST_BROADCAST['count'] > 60:
-        return
-
-    channel_layer = get_channel_layer()
-    if not channel_layer:
+    if not is_threat and _WS_LAST_BROADCAST['count'] > 20:
         return
 
     meta = extract_log_ip_meta(log.client_ip, log.raw_headers)
@@ -1721,7 +1841,10 @@ def broadcast_to_soc(log, is_threat=False, reputation=None, events=None):
         }
     }
 
-    try:
-        async_to_sync(channel_layer.group_send)('soc_live_feed', payload)
-    except Exception:
-        pass
+    _ensure_ws_worker()
+    with _WS_QUEUE_LOCK:
+        if is_threat:
+            _WS_QUEUE.appendleft(payload)
+        else:
+            _WS_QUEUE.append(payload)
+    _WS_WAKE_EVENT.set()

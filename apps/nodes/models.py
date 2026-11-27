@@ -62,21 +62,17 @@ class ProxyNode(models.Model):
         return self.api_key
 
     def compute_live_rps(self):
-        """Calcula las peticiones por segundo reales basadas en los logs recibidos en los últimos 10s"""
+        """Calcula las peticiones por segundo reales desde RAM (ventana 10s, cero carga a PostgreSQL)."""
         try:
+            from apps.detection.engine import get_node_live_rps
+            ram_rps = get_node_live_rps(self.id)
+            if ram_rps > 0:
+                return ram_rps
+            # Respaldo solo si no hay tráfico en RAM en este proceso (ej. comando CLI o recién iniciado)
             from apps.detection.models import TrafficLog
-            from django.db.models import Q
             window_start = timezone.now() - timezone.timedelta(seconds=10)
-            if ProxyNode.objects.count() == 1:
-                recent_count = TrafficLog.objects.filter(
-                    Q(node=self) | Q(node__isnull=True),
-                    created_at__gte=window_start
-                ).count()
-            else:
-                recent_count = self.logs.filter(created_at__gte=window_start).count()
-            if recent_count > 0:
-                return max(1, round(recent_count / 10))
-            return 0
+            recent_count = self.logs.filter(created_at__gte=window_start).count()
+            return max(1, round(recent_count / 10)) if recent_count > 0 else 0
         except Exception:
             return self.current_rps
 
