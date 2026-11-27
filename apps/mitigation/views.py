@@ -1,3 +1,4 @@
+import html
 import urllib.parse
 from datetime import timedelta
 from django.shortcuts import render, redirect, get_object_or_404
@@ -20,7 +21,11 @@ from apps.detection.engine import (
     invalidate_reputation_cache,
 )
 from apps.reports.models import AuditTrail
-from apps.notifications.services import send_telegram_alert
+from apps.notifications.services import (
+    send_telegram_alert,
+    sync_candidate_telegram_messages,
+    build_revoke_keyboard,
+)
 
 def _build_request_dict(log_obj=None, fallback_details=None, client_ip='', node_name='Direct', created_at_str=''):
     """
@@ -352,13 +357,19 @@ def approve_candidate_view(request, candidate_id):
         ip_address=request.META.get('REMOTE_ADDR')
     )
 
-    # 6. Notificar a Telegram
+    # 6. Notificar a Telegram y sincronizar botones del candidato en todos los chats
+    dur_lbl = 'Permanente' if not expires_at else f'{duration_hours} horas'
+    sync_candidate_telegram_messages(
+        candidate.id,
+        f"✅ <b>BLOQUEADO ({html.escape(dur_lbl)})</b> desde Panel Web por <b>{html.escape(request.user.username)}</b>",
+        reply_markup=build_revoke_keyboard(ban.id),
+    )
     send_telegram_alert(
         title="🛑 Bloqueo de IP Aprobado por Operador",
         message=(
             f"IP: {ip_str}\n"
             f"Operador: {request.user.username}\n"
-            f"Duración: {'Permanente' if not expires_at else f'{duration_hours} horas'}\n"
+            f"Duración: {dur_lbl}\n"
             f"Motivo: {candidate.suggested_reason}\n"
             f"Distribuyendo orden de bloqueo a {active_nodes.count()} proxies Nginx..."
         ),
@@ -394,6 +405,11 @@ def dismiss_candidate_view(request, candidate_id):
         target=f"IP: {candidate.client_ip}",
         details={'candidate_id': candidate.id},
         ip_address=request.META.get('REMOTE_ADDR')
+    )
+    sync_candidate_telegram_messages(
+        candidate.id,
+        f"🗑️ <b>DESCARTADO</b> desde Panel Web por <b>{html.escape(request.user.username)}</b>",
+        reply_markup={'inline_keyboard': []},
     )
 
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':

@@ -17,7 +17,7 @@ from channels.layers import get_channel_layer
 from .models import TrafficLog, SecurityRule, SecurityEvent
 from apps.nodes.models import ProxyNode
 from apps.mitigation.models import IpReputation, BanCandidate, ActiveBan
-from apps.notifications.services import send_telegram_alert
+from apps.notifications.services import send_telegram_alert, send_telegram_candidate_alert
 
 # Caché en memoria de reglas activas y expresiones regulares precompiladas (TTL 5s)
 _RULES_CACHE = {'ts': 0.0, 'rules': [], 'calibrated': False}
@@ -1347,19 +1347,13 @@ def ensure_ban_candidate_for_ip(target_ip, reputation=None, last_event=None, rea
         if update_f:
             candidate.save(update_fields=update_f)
     else:
-        cf_line = f"Conexión vía Cloudflare Node: {cf_node_ip}\n" if (is_cf and cf_node_ip) else ""
-        send_telegram_alert(
-            title="🚨 Nuevo Candidato a Bloqueo Detectado",
-            message=(
-                f"IP Cliente: {ip_clean} ({country_name or 'Desconocido'})\n"
-                f"{cf_line}"
-                f"Score de Riesgo: {eff_score}/100\n"
-                f"Proxy: {node_name or 'N/A'}\n"
-                f"Motivo: {reason_text}\n"
-                f"Estado: Esperando aprobación del operador en Mithril SIEM."
-            ),
-            severity='CRITICAL' if eff_score >= 85 else 'HIGH',
-            event_type='ban_candidate',
+        send_telegram_candidate_alert(
+            candidate=candidate,
+            last_event=last_event,
+            is_cf=is_cf,
+            cf_node_ip=cf_node_ip,
+            country_name=country_name,
+            node_name=node_name,
         )
     return candidate
 

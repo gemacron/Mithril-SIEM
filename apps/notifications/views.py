@@ -15,6 +15,7 @@ from .services import (
     ensure_legacy_recipients_migrated,
     get_telegram_bot_info,
     discover_telegram_chats,
+    is_interactive_poller_alive,
     test_telegram_connection,
     test_telegram_broadcast,
 )
@@ -41,6 +42,7 @@ def telegram_settings_view(request):
             prev_token = _clean_token(config.bot_token)
             config.bot_token = form_token
             config.is_enabled = 'is_enabled' in request.POST
+            config.enable_interactive_bot = 'enable_interactive_bot' in request.POST
             config.min_severity = request.POST.get('min_severity', 'HIGH')
             config.notify_on_ban_candidate = 'notify_on_ban_candidate' in request.POST
             config.notify_on_ban_action = 'notify_on_ban_action' in request.POST
@@ -102,7 +104,7 @@ def telegram_settings_view(request):
                         config.bot_username = info_me['username']
                         config.save(update_fields=['bot_username'])
 
-                ok_d, err_d, chats = discover_telegram_chats(effective_token)
+                ok_d, err_d, chats = discover_telegram_chats(effective_token, config=config)
                 if not ok_d:
                     config.last_error = err_d[:500]
                     config.save(update_fields=['last_error'])
@@ -132,6 +134,7 @@ def telegram_settings_view(request):
             on_cand = 'rec_notify_ban_candidate' in request.POST
             on_ban = 'rec_notify_ban_action' in request.POST
             on_off = 'rec_notify_node_offline' in request.POST
+            can_manage = 'rec_can_manage_bans' in request.POST
             send_test_now = 'rec_send_test_now' in request.POST
 
             if not chat_id:
@@ -150,6 +153,7 @@ def telegram_settings_view(request):
                         'recipient_type': rtype,
                         'role_label': role_label[:64],
                         'is_active': True,
+                        'can_manage_bans': can_manage and rtype != 'CHANNEL',
                         'min_severity': min_sev if min_sev in ('LOW', 'MEDIUM', 'HIGH', 'CRITICAL') else 'HIGH',
                         'notify_on_ban_candidate': on_cand,
                         'notify_on_ban_action': on_ban,
@@ -213,6 +217,7 @@ def telegram_settings_view(request):
                 rec.notify_on_ban_candidate = 'rec_notify_ban_candidate' in request.POST
                 rec.notify_on_ban_action = 'rec_notify_ban_action' in request.POST
                 rec.notify_on_node_offline = 'rec_notify_node_offline' in request.POST
+                rec.can_manage_bans = ('rec_can_manage_bans' in request.POST) and rec.recipient_type != 'CHANNEL'
                 rec.is_active = 'rec_is_active' in request.POST
                 rec.save()
                 messages.success(request, f"✅ Destinatario '{rec.name}' actualizado.")
@@ -292,6 +297,7 @@ def telegram_settings_view(request):
         'recipients': recipients,
         'active_recipients_count': active_count,
         'discovered_chats': discovered_chats,
+        'poller_alive': is_interactive_poller_alive(config),
         'severity_choices': SEVERITY_CHOICES,
         'recipient_type_choices': RECIPIENT_TYPE_CHOICES,
     })

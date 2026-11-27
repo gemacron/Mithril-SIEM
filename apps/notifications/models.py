@@ -41,6 +41,10 @@ class TelegramConfig(models.Model):
         help_text="Chat ID heredado (se migra automáticamente a la lista de destinatarios)",
     )
     is_enabled = models.BooleanField(default=False)
+    enable_interactive_bot = models.BooleanField(
+        default=True,
+        help_text="Habilita botones interactivos (Ver Evidencia, Bloquear 24h/7d/Permanente, Descartar) y comandos en Telegram vía Long Polling",
+    )
     min_severity = models.CharField(
         max_length=16,
         choices=SEVERITY_CHOICES,
@@ -58,6 +62,7 @@ class TelegramConfig(models.Model):
         default=True,
         help_text="Notificar si un proxy Nginx deja de emitir heartbeat",
     )
+    bot_last_poll_at = models.DateTimeField(null=True, blank=True)
     last_notified_at = models.DateTimeField(null=True, blank=True)
     last_error = models.TextField(blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -74,7 +79,7 @@ class TelegramConfig(models.Model):
 class TelegramRecipient(models.Model):
     """
     Destinatario individual (persona, grupo SOC o canal) que recibe alertas desde el Bot de Mithril.
-    Permite filtros independientes por severidad y tipo de evento, más trazabilidad de entregas.
+    Permite filtros independientes por severidad/evento y permisos de acción (bloquear/descartar).
     """
     name = models.CharField(max_length=80, help_text="Nombre de la persona, grupo o canal")
     chat_id = models.CharField(
@@ -100,6 +105,10 @@ class TelegramRecipient(models.Model):
         help_text="Etiqueta opcional (ej: Analista SOC, SysAdmin, Guardia)",
     )
     is_active = models.BooleanField(default=True)
+    can_manage_bans = models.BooleanField(
+        default=True,
+        help_text="Permite aprobar bloqueos, revocar bloqueos y descartar candidatos directamente desde Telegram",
+    )
     min_severity = models.CharField(
         max_length=16,
         choices=SEVERITY_CHOICES,
@@ -128,3 +137,48 @@ class TelegramRecipient(models.Model):
     def __str__(self):
         state = 'Activo' if self.is_active else 'Pausado'
         return f"{self.name} ({self.chat_id}) [{state}]"
+
+
+class TelegramDiscoveredChat(models.Model):
+    """
+    Almacena chats (personas, grupos o canales) que enviaron /start o interactuaron con el bot,
+    alimentado en tiempo real por el listener Long Polling para evitar conflictos 409 en getUpdates.
+    """
+    chat_id = models.CharField(max_length=64, unique=True)
+    name = models.CharField(max_length=120, blank=True, default='')
+    username = models.CharField(max_length=64, blank=True, default='')
+    recipient_type = models.CharField(
+        max_length=16,
+        choices=RECIPIENT_TYPE_CHOICES,
+        default='USER',
+    )
+    thread_id = models.CharField(max_length=32, blank=True, default='')
+    last_message = models.CharField(max_length=120, blank=True, default='')
+    last_seen_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-last_seen_at']
+        verbose_name = 'Chat Detectado en Telegram'
+        verbose_name_plural = 'Chats Detectados en Telegram'
+
+    def __str__(self):
+        return f"{self.name} ({self.chat_id})"
+
+
+class TelegramCandidateMessage(models.Model):
+    """
+    Vincula cada mensaje de alerta enviado a Telegram con su BanCandidate correspondiente
+    para sincronizar/actualizar el mensaje y sus botones en TODOS los chats al aprobar o descartar.
+    """
+    candidate_id = models.BigIntegerField(db_index=True)
+    chat_id = models.CharField(max_length=64)
+    message_id = models.BigIntegerField()
+    rendered_html = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('candidate_id', 'chat_id', 'message_id')
+        ordering = ['-id']
+
+    def __str__(self):
+        return f"Cand #{self.candidate_id} -> {self.chat_id}:{self.message_id}"

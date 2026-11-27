@@ -45,10 +45,14 @@ echo "=========================================="
 echo "🚀 MITHRIL SIEM LISTO. ARRANCANDO SERVIDOR."
 echo "=========================================="
 
-# Si es el contenedor web (daphne), iniciar también el receptor Syslog UDP en el puerto 5140 en segundo plano
-if [ "$1" = "daphne" ] && [ -f "/app/mithril_lan_proxy.py" ]; then
-    echo "📡 Iniciando receptor Syslog UDP (puerto 5140) en segundo plano..."
-    python /app/mithril_lan_proxy.py --syslog-only &
+# Si es el contenedor web (daphne), iniciar también el receptor Syslog UDP y el Bot Interactivo de Telegram en segundo plano
+if [ "$1" = "daphne" ]; then
+    if [ -f "/app/mithril_lan_proxy.py" ]; then
+        echo "📡 Iniciando receptor Syslog UDP (puerto 5140) en segundo plano..."
+        python /app/mithril_lan_proxy.py --syslog-only &
+    fi
+    echo "🤖 Iniciando Bot Interactivo de Telegram (Long Polling) en segundo plano..."
+    python /app/manage.py run_telegram_bot &
 fi
 
 exec "$@"

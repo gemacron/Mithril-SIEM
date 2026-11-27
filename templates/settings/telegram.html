@@ -29,6 +29,9 @@
       <span class="badge {% if config.is_enabled %}safe{% else %}high{% endif %}">
         {% if config.is_enabled %}🟢 ENVÍO ACTIVO{% else %}🔴 ENVÍO PAUSADO{% endif %}
       </span>
+      <span class="badge {% if poller_alive %}safe{% elif config.enable_interactive_bot %}medium{% else %}high{% endif %}" title="Listener Long Polling que atiende botones Bloquear/Descartar y comandos">
+        {% if poller_alive %}⚡ BOT INTERACTIVO ONLINE{% elif config.enable_interactive_bot %}⏳ BOT INTERACTIVO INICIANDO{% else %}⏸️ BOT INTERACTIVO APAGADO{% endif %}
+      </span>
     </div>
   </div>
 
@@ -107,6 +110,10 @@
               <label style="display: flex; align-items: center; gap: 0.55rem; cursor: pointer;">
                 <input type="checkbox" name="notify_on_node_offline" {% if config.notify_on_node_offline %}checked{% endif %}>
                 <span>📡 <strong>Proxy Nginx desconectado</strong> (Heartbeat caído / OFFLINE)</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.55rem; cursor: pointer; margin-top: 0.25rem; padding-top: 0.45rem; border-top: 1px dashed var(--border-dim);">
+                <input type="checkbox" name="enable_interactive_bot" {% if config.enable_interactive_bot %}checked{% endif %}>
+                <span style="color: var(--neon-cyan);">⚡ <strong>Bot Interactivo (Long Polling):</strong> botones <code>Ver Evidencia</code>, <code>Bloquear 24h / 7d / Permanente</code>, <code>Descartar</code> y comandos <code>/pendientes</code></span>
               </label>
             </div>
           </div>
@@ -221,6 +228,7 @@
                   <input type="hidden" name="rec_notify_ban_candidate" value="on">
                   <input type="hidden" name="rec_notify_ban_action" value="on">
                   <input type="hidden" name="rec_notify_node_offline" value="on">
+                  <input type="hidden" name="rec_can_manage_bans" value="on">
                   <input type="hidden" name="rec_send_test_now" value="on">
                   <button type="submit" class="btn btn-cyan" style="padding: 0.3rem 0.7rem; font-size: 0.75rem;">
                     ➕ Agregar y Probar
@@ -273,6 +281,13 @@
               {% if rec.role_label %}
                 <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.15rem;">{{ rec.role_label }}</div>
               {% endif %}
+              <div style="margin-top: 0.25rem;">
+                {% if rec.can_manage_bans and rec.recipient_type != 'CHANNEL' %}
+                  <span class="badge" style="background: rgba(0, 229, 255, 0.12); color: var(--neon-cyan); border: 1px solid rgba(0, 229, 255, 0.35); font-size: 0.64rem;">🛡️ Puede Bloquear / Descartar</span>
+                {% else %}
+                  <span class="badge" style="background: rgba(148, 163, 184, 0.12); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); font-size: 0.64rem;">👁️ Solo Lectura</span>
+                {% endif %}
+              </div>
             </td>
 
             <td>
@@ -353,6 +368,7 @@
                         data-cand="{{ rec.notify_on_ban_candidate|yesno:'1,0' }}"
                         data-ban="{{ rec.notify_on_ban_action|yesno:'1,0' }}"
                         data-off="{{ rec.notify_on_node_offline|yesno:'1,0' }}"
+                        data-manage="{{ rec.can_manage_bans|yesno:'1,0' }}"
                         data-active="{{ rec.is_active|yesno:'1,0' }}"
                         title="Editar filtros y datos">
                   ✏️
@@ -457,6 +473,10 @@
               <input type="checkbox" name="rec_notify_node_offline" checked>
               <span>📡 Proxy Caído</span>
             </label>
+            <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; color: var(--neon-emerald);">
+              <input type="checkbox" name="rec_can_manage_bans" checked>
+              <strong>🛡️ Puede Bloquear / Descartar</strong>
+            </label>
             <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; color: var(--neon-cyan);">
               <input type="checkbox" name="rec_send_test_now" checked>
               <strong>🔔 Enviar prueba al agregar</strong>
@@ -526,6 +546,10 @@
             <input type="checkbox" id="edit_rec_active" name="rec_is_active">
             <strong>Destinatario activo (recibiendo alertas)</strong>
           </label>
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; color: var(--neon-emerald);">
+            <input type="checkbox" id="edit_rec_manage" name="rec_can_manage_bans">
+            <strong>🛡️ Permitir Bloquear / Revocar / Descartar desde botones de Telegram</strong>
+          </label>
           <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
             <input type="checkbox" id="edit_rec_cand" name="rec_notify_ban_candidate">
             <span>🚨 Nuevos Candidatos a Bloqueo</span>
@@ -574,6 +598,7 @@ function openEditRecipientModal(btn) {
   document.getElementById('edit_rec_cand').checked = btn.dataset.cand === '1';
   document.getElementById('edit_rec_ban').checked = btn.dataset.ban === '1';
   document.getElementById('edit_rec_off').checked = btn.dataset.off === '1';
+  document.getElementById('edit_rec_manage').checked = btn.dataset.manage === '1';
   document.getElementById('edit_rec_active').checked = btn.dataset.active === '1';
   document.getElementById('editRecipientModal').style.display = 'flex';
 }
