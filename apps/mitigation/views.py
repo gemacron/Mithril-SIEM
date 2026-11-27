@@ -361,7 +361,9 @@ def approve_candidate_view(request, candidate_id):
             f"Duración: {'Permanente' if not expires_at else f'{duration_hours} horas'}\n"
             f"Motivo: {candidate.suggested_reason}\n"
             f"Distribuyendo orden de bloqueo a {active_nodes.count()} proxies Nginx..."
-        )
+        ),
+        severity='HIGH',
+        event_type='ban_action',
     )
 
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
@@ -503,7 +505,9 @@ def manual_ban_ip_view(request):
             f"Duración: {'Permanente' if not expires_at else f'{duration_hours} horas'}\n"
             f"Motivo: {reason}\n"
             f"Sincronizando bloqueo en {active_nodes.count()} proxies Nginx..."
-        )
+        ),
+        severity='HIGH',
+        event_type='ban_action',
     )
 
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
@@ -550,6 +554,17 @@ def revoke_ban_view(request, ban_id):
         target=f"IP: {ban.client_ip}",
         details={'ban_id': ban.id},
         ip_address=request.META.get('REMOTE_ADDR')
+    )
+
+    send_telegram_alert(
+        title="✅ Bloqueo de IP Revocado",
+        message=(
+            f"IP liberada: {ban.client_ip}\n"
+            f"Operador: {request.user.username}\n"
+            f"Acción: Retirando regla del firewall en todos los proxies."
+        ),
+        severity='MEDIUM',
+        event_type='ban_action',
     )
 
     messages.warning(request, f"Bloqueo para la IP {ban.client_ip} ha sido revocado.")

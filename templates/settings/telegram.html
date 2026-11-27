@@ -1,67 +1,589 @@
 {% extends 'base.html' %}
 
-{% block title %}Configuración de Alertas Telegram{% endblock %}
+{% block title %}Alertas Telegram Multi-Destinatario{% endblock %}
 
 {% block content %}
-<div style="max-width: 650px; margin: 1.5rem auto;">
+<div style="max-width: 1240px; margin: 1.25rem auto; display: flex; flex-direction: column; gap: 1.25rem;">
+
+  <!-- Encabezado y Estado Rápido -->
+  <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+    <div>
+      <h2 style="margin: 0; font-size: 1.25rem; color: var(--text-main); display: flex; align-items: center; gap: 0.5rem;">
+        <span>✈️</span> CENTRO DE ALERTAS TELEGRAM (MULTI-DESTINATARIO)
+      </h2>
+      <p style="margin: 0.25rem 0 0; font-size: 0.8rem; color: var(--text-dim);">
+        Gestiona el Bot corporativo y distribuye alertas tácticas en tiempo real a múltiples personas, grupos SOC y canales con filtros independientes.
+      </p>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 0.65rem; flex-wrap: wrap;">
+      {% if config.bot_username %}
+        <a href="https://t.me/{{ config.bot_username }}" target="_blank" rel="noopener"
+           class="badge" style="background: rgba(0, 229, 255, 0.14); color: var(--neon-cyan); border: 1px solid rgba(0, 229, 255, 0.45); text-decoration: none; font-family: var(--font-mono);">
+          🤖 @{{ config.bot_username }}
+        </a>
+      {% endif %}
+      <span class="badge {% if active_recipients_count > 0 %}safe{% else %}medium{% endif %}">
+        👥 {{ active_recipients_count }}/{{ recipients|length }} DESTINATARIOS ACTIVOS
+      </span>
+      <span class="badge {% if config.is_enabled %}safe{% else %}high{% endif %}">
+        {% if config.is_enabled %}🟢 ENVÍO ACTIVO{% else %}🔴 ENVÍO PAUSADO{% endif %}
+      </span>
+    </div>
+  </div>
+
+  <!-- Aviso de Diagnóstico si hubo error reciente -->
+  {% if config.last_error %}
+  <div style="background: rgba(255, 51, 102, 0.12); border: 1px solid rgba(255, 51, 102, 0.5); border-left: 4px solid var(--neon-crimson); border-radius: 6px; padding: 0.85rem 1rem; font-size: 0.82rem; color: #fecaca;">
+    <strong style="color: #fca5a5;">⚠️ Último diagnóstico de entrega Telegram:</strong>
+    <span style="font-family: var(--font-mono);">{{ config.last_error }}</span>
+  </div>
+  {% endif %}
+
+  <!-- Fila Superior: Configuración Global del Bot + Guía Rápida -->
+  <div style="display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 1.25rem;">
+
+    <!-- Panel 1: Configuración del Bot -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><span>🤖</span> CONFIGURACIÓN DEL BOT PRINCIPAL</div>
+        {% if config.last_notified_at %}
+          <span style="font-size: 0.72rem; color: var(--text-dim); font-family: var(--font-mono);">
+            Última alerta: {{ config.last_notified_at|date:"Y-m-d H:i:s" }}
+          </span>
+        {% endif %}
+      </div>
+
+      <div class="panel-body">
+        <form method="POST">
+          {% csrf_token %}
+
+          <div class="form-group">
+            <label class="form-label" for="bot_token">Telegram Bot Token (@BotFather)</label>
+            <div style="display: flex; gap: 0.5rem;">
+              <input type="password" id="bot_token" name="bot_token" class="form-input"
+                     value="{{ config.bot_token }}" autocomplete="off"
+                     placeholder="123456789:ABCdefGhIJKlmNoPQRstuVWXyz" style="flex: 1; font-family: var(--font-mono);">
+              <button type="button" class="btn btn-dim" onclick="toggleTokenVisibility()" id="btnToggleToken" title="Mostrar u ocultar token" style="white-space: nowrap;">
+                👁️ Mostrar
+              </button>
+            </div>
+            <small style="color: var(--text-dim); font-size: 0.72rem;">
+              Un solo Bot puede enviar alertas a decenas de operadores, grupos y canales simultáneamente.
+            </small>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+            <div class="form-group" style="margin-bottom: 0;">
+              <label class="form-label" for="min_severity">Severidad Mínima por Defecto</label>
+              <select id="min_severity" name="min_severity" class="form-input">
+                {% for val, lbl in severity_choices %}
+                  <option value="{{ val }}" {% if config.min_severity == val %}selected{% endif %}>{{ lbl }} ({{ val }})</option>
+                {% endfor %}
+              </select>
+            </div>
+
+            <div style="display: flex; align-items: flex-end;">
+              <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.86rem; background: rgba(0, 229, 255, 0.07); border: 1px solid rgba(0, 229, 255, 0.25); padding: 0.58rem 0.85rem; border-radius: 6px; width: 100%;">
+                <input type="checkbox" name="is_enabled" {% if config.is_enabled %}checked{% endif %}>
+                <strong style="color: var(--neon-cyan);">Habilitar Alertas Telegram</strong>
+              </label>
+            </div>
+          </div>
+
+          <div style="background: rgba(13, 18, 31, 0.6); padding: 0.9rem 1rem; border-radius: 6px; border: 1px solid var(--border-dim); margin-bottom: 1.15rem;">
+            <div style="font-size: 0.75rem; font-weight: 700; color: var(--text-dim); text-transform: uppercase; margin-bottom: 0.6rem;">
+              Interruptores Globales de Eventos:
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.84rem;">
+              <label style="display: flex; align-items: center; gap: 0.55rem; cursor: pointer;">
+                <input type="checkbox" name="notify_on_ban_candidate" {% if config.notify_on_ban_candidate %}checked{% endif %}>
+                <span>🚨 Nuevos <strong>Candidatos a Bloqueo</strong> detectados por el motor</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.55rem; cursor: pointer;">
+                <input type="checkbox" name="notify_on_ban_action" {% if config.notify_on_ban_action %}checked{% endif %}>
+                <span>🛑 <strong>Bloqueos aprobados / manuales / revocados</strong> por operadores</span>
+              </label>
+              <label style="display: flex; align-items: center; gap: 0.55rem; cursor: pointer;">
+                <input type="checkbox" name="notify_on_node_offline" {% if config.notify_on_node_offline %}checked{% endif %}>
+                <span>📡 <strong>Proxy Nginx desconectado</strong> (Heartbeat caído / OFFLINE)</span>
+              </label>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-wrap: wrap; gap: 0.6rem; justify-content: space-between; align-items: center;">
+            <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+              <button type="submit" name="action" value="verify_bot" class="btn btn-dim">
+                ✅ Verificar Bot
+              </button>
+              <button type="submit" name="action" value="discover_chats" class="btn btn-dim" style="border-color: rgba(0, 229, 255, 0.45); color: var(--neon-cyan);">
+                🔍 Detectar Chats del Bot
+              </button>
+              <button type="submit" name="action" value="test_all" class="btn btn-dim">
+                🔔 Probar a Todos ({{ active_recipients_count }})
+              </button>
+            </div>
+
+            <button type="submit" name="action" value="save" class="btn btn-cyan">
+              💾 Guardar Configuración
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Panel 2: Cómo sumar varias personas o grupos en segundos -->
+    <div class="panel">
+      <div class="panel-header">
+        <div class="panel-title"><span>📋</span> CÓMO AGREGAR PERSONAS O GRUPOS</div>
+      </div>
+      <div class="panel-body" style="display: flex; flex-direction: column; gap: 0.85rem; font-size: 0.82rem; color: var(--text-muted); line-height: 1.5;">
+        <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 6px; padding: 0.8rem;">
+          <div style="font-weight: 700; color: var(--neon-emerald); margin-bottom: 0.35rem;">⚡ Método Automático (Sin buscar IDs)</div>
+          <ol style="margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: 0.3rem;">
+            <li>Cada persona busca {% if config.bot_username %}<strong style="color: var(--neon-cyan);">@{{ config.bot_username }}</strong>{% else %}<strong>tu bot</strong>{% endif %} en Telegram y toca <strong>Iniciar (<code>/start</code>)</strong>.</li>
+            <li>Para un <strong>Grupo SOC</strong>, añade el bot al grupo y escribe un mensaje cualquiera (ej: <code>/start</code>).</li>
+            <li>Presiona <strong>🔍 Detectar Chats del Bot</strong> y agrégalos con <strong>1 clic</strong>.</li>
+          </ol>
+        </div>
+
+        <div style="background: rgba(8, 12, 22, 0.7); border: 1px solid var(--border-dim); border-radius: 6px; padding: 0.8rem;">
+          <div style="font-weight: 700; color: var(--text-main); margin-bottom: 0.35rem;">🛠️ Regla importante de Telegram</div>
+          <ul style="margin: 0; padding-left: 1.15rem; display: flex; flex-direction: column; gap: 0.25rem;">
+            <li>Por seguridad de Telegram, un bot <strong>no puede iniciar conversación</strong> con una persona que nunca le dio <code>/start</code>.</li>
+            <li>Cada destinatario tiene sus <strong>propios filtros</strong> (severidad y eventos) y puedes pausarlo o probarlo individualmente.</li>
+            <li>Los mensajes se envían en <strong>HTML seguro</strong> (no fallan con <code>_</code>, <code>[]</code> o payloads de ataques).</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Panel Dinámico: Chats Detectados automáticamente vía getUpdates -->
+  {% if discovered_chats %}
+  <div class="panel" style="border-color: rgba(0, 229, 255, 0.5);">
+    <div class="panel-header">
+      <div class="panel-title" style="color: var(--neon-cyan);">
+        <span>🔍</span> CHATS DETECTADOS EN EL BOT ({{ discovered_chats|length }})
+      </div>
+      <form method="POST" style="margin: 0;">
+        {% csrf_token %}
+        <button type="submit" name="action" value="clear_discovered" class="btn btn-dim" style="padding: 0.25rem 0.6rem; font-size: 0.72rem;">
+          ✕ Limpiar lista
+        </button>
+      </form>
+    </div>
+    <div class="panel-body" style="padding: 0;">
+      <table class="terminal-table">
+        <thead>
+          <tr>
+            <th>Nombre / Título</th>
+            <th>Tipo</th>
+            <th>Chat ID</th>
+            <th>Último Mensaje</th>
+            <th style="text-align: right;">Acción</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ch in discovered_chats %}
+          <tr>
+            <td>
+              <strong>{{ ch.name }}</strong>
+              {% if ch.username %}<span style="color: var(--neon-cyan); font-size: 0.75rem; margin-left: 0.35rem;">{{ ch.username }}</span>{% endif %}
+            </td>
+            <td>
+              {% if ch.recipient_type == 'GROUP' %}
+                <span class="badge medium">👥 Grupo</span>
+              {% elif ch.recipient_type == 'CHANNEL' %}
+                <span class="badge low">📢 Canal</span>
+              {% else %}
+                <span class="badge safe">👤 Persona</span>
+              {% endif %}
+            </td>
+            <td style="font-family: var(--font-mono); color: var(--neon-cyan);">
+              {{ ch.chat_id }}{% if ch.thread_id %} <span style="color: var(--text-dim);">(Topic: {{ ch.thread_id }})</span>{% endif %}
+            </td>
+            <td style="color: var(--text-dim); font-size: 0.78rem;">{{ ch.sample_text|default:"-" }}</td>
+            <td style="text-align: right;">
+              {% if ch.already_added %}
+                <span class="badge safe">✓ Ya registrado</span>
+              {% else %}
+                <form method="POST" style="display: inline-flex; gap: 0.4rem; align-items: center; margin: 0;">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="add_recipient">
+                  <input type="hidden" name="rec_name" value="{{ ch.name }}">
+                  <input type="hidden" name="rec_chat_id" value="{{ ch.chat_id }}">
+                  <input type="hidden" name="rec_thread_id" value="{{ ch.thread_id }}">
+                  <input type="hidden" name="rec_type" value="{{ ch.recipient_type }}">
+                  <input type="hidden" name="rec_role" value="{{ ch.username }}">
+                  <input type="hidden" name="rec_min_severity" value="{{ config.min_severity|default:'HIGH' }}">
+                  <input type="hidden" name="rec_notify_ban_candidate" value="on">
+                  <input type="hidden" name="rec_notify_ban_action" value="on">
+                  <input type="hidden" name="rec_notify_node_offline" value="on">
+                  <input type="hidden" name="rec_send_test_now" value="on">
+                  <button type="submit" class="btn btn-cyan" style="padding: 0.3rem 0.7rem; font-size: 0.75rem;">
+                    ➕ Agregar y Probar
+                  </button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Panel 3: Directorio de Destinatarios -->
   <div class="panel">
     <div class="panel-header">
       <div class="panel-title">
-        <span>✈️</span> ALERTAS EN TIEMPO REAL VÍA TELEGRAM BOT
+        <span>👥</span> DESTINATARIOS CONFIGURADOS ({{ recipients|length }})
       </div>
-      <span class="badge {% if config.is_enabled %}safe{% else %}high{% endif %}">
-        {% if config.is_enabled %}ACTIVO{% else %}INACTIVO{% endif %}
+      <span style="font-size: 0.75rem; color: var(--text-dim);">
+        Cada alerta se entrega en paralelo a todos los destinatarios activos que cumplan sus filtros.
       </span>
     </div>
 
+    <div class="panel-body" style="padding: 0; overflow-x: auto;">
+      {% if recipients %}
+      <table class="terminal-table">
+        <thead>
+          <tr>
+            <th>Destinatario / Rol</th>
+            <th>Tipo &amp; Chat ID</th>
+            <th>Severidad Mín.</th>
+            <th>Eventos Suscritos</th>
+            <th>Estado de Entrega</th>
+            <th style="text-align: right;">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rec in recipients %}
+          <tr {% if not rec.is_active %}style="opacity: 0.55;"{% endif %}>
+            <td>
+              <div style="font-weight: 700; color: var(--text-main); display: flex; align-items: center; gap: 0.45rem;">
+                <span>{{ rec.name }}</span>
+                {% if not rec.is_active %}
+                  <span class="badge" style="background: rgba(148, 163, 184, 0.2); color: #cbd5e1; font-size: 0.65rem;">PAUSADO</span>
+                {% endif %}
+              </div>
+              {% if rec.role_label %}
+                <div style="font-size: 0.72rem; color: var(--text-dim); margin-top: 0.15rem;">{{ rec.role_label }}</div>
+              {% endif %}
+            </td>
+
+            <td>
+              <div style="display: flex; flex-direction: column; gap: 0.2rem;">
+                <span style="font-size: 0.72rem; color: var(--text-dim);">
+                  {% if rec.recipient_type == 'GROUP' %}👥 Grupo SOC
+                  {% elif rec.recipient_type == 'CHANNEL' %}📢 Canal
+                  {% else %}👤 Persona / Operador{% endif %}
+                </span>
+                <code style="color: var(--neon-cyan); font-size: 0.8rem;">{{ rec.chat_id }}</code>
+                {% if rec.message_thread_id %}
+                  <span style="font-size: 0.68rem; color: var(--text-dim); font-family: var(--font-mono);">Topic ID: {{ rec.message_thread_id }}</span>
+                {% endif %}
+              </div>
+            </td>
+
+            <td>
+              <span class="badge {% if rec.min_severity == 'CRITICAL' %}critical{% elif rec.min_severity == 'HIGH' %}high{% elif rec.min_severity == 'MEDIUM' %}medium{% else %}low{% endif %}">
+                {{ rec.min_severity }}
+              </span>
+            </td>
+
+            <td>
+              <div style="display: flex; flex-wrap: wrap; gap: 0.3rem; font-size: 0.7rem;">
+                {% if rec.notify_on_ban_candidate %}
+                  <span class="badge" style="background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.35);">🚨 Candidatos</span>
+                {% endif %}
+                {% if rec.notify_on_ban_action %}
+                  <span class="badge" style="background: rgba(245, 158, 11, 0.15); color: #fcd34d; border: 1px solid rgba(245, 158, 11, 0.35);">🛑 Bloqueos</span>
+                {% endif %}
+                {% if rec.notify_on_node_offline %}
+                  <span class="badge" style="background: rgba(0, 229, 255, 0.12); color: var(--neon-cyan); border: 1px solid rgba(0, 229, 255, 0.35);">📡 Proxy Caído</span>
+                {% endif %}
+              </div>
+            </td>
+
+            <td style="max-width: 280px;">
+              {% if rec.last_status == 'OK' %}
+                <span class="badge safe">✅ Entregado ({{ rec.sent_count }})</span>
+              {% elif rec.last_status == 'ERROR' %}
+                <span class="badge critical">❌ Error</span>
+              {% else %}
+                <span class="badge" style="background: rgba(148, 163, 184, 0.15); color: #94a3b8;">⏳ Sin envíos</span>
+              {% endif %}
+
+              {% if rec.last_notified_at %}
+                <div style="font-size: 0.69rem; color: var(--text-dim); font-family: var(--font-mono); margin-top: 0.2rem;">
+                  {{ rec.last_notified_at|date:"Y-m-d H:i:s" }}
+                </div>
+              {% endif %}
+              {% if rec.last_error %}
+                <div style="font-size: 0.7rem; color: #fca5a5; margin-top: 0.25rem; line-height: 1.3; word-break: break-word;">
+                  {{ rec.last_error }}
+                </div>
+              {% endif %}
+            </td>
+
+            <td style="text-align: right; white-space: nowrap;">
+              <div style="display: inline-flex; gap: 0.35rem; align-items: center;">
+                <form method="POST" style="margin: 0;">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="test_recipient">
+                  <input type="hidden" name="recipient_id" value="{{ rec.id }}">
+                  <button type="submit" class="btn btn-dim" style="padding: 0.28rem 0.55rem; font-size: 0.72rem;" title="Enviar prueba solo a este destinatario">
+                    🔔 Probar
+                  </button>
+                </form>
+
+                <button type="button" class="btn btn-dim" style="padding: 0.28rem 0.55rem; font-size: 0.72rem;"
+                        onclick="openEditRecipientModal(this)"
+                        data-id="{{ rec.id }}"
+                        data-name="{{ rec.name }}"
+                        data-chatid="{{ rec.chat_id }}"
+                        data-threadid="{{ rec.message_thread_id }}"
+                        data-type="{{ rec.recipient_type }}"
+                        data-role="{{ rec.role_label }}"
+                        data-severity="{{ rec.min_severity }}"
+                        data-cand="{{ rec.notify_on_ban_candidate|yesno:'1,0' }}"
+                        data-ban="{{ rec.notify_on_ban_action|yesno:'1,0' }}"
+                        data-off="{{ rec.notify_on_node_offline|yesno:'1,0' }}"
+                        data-active="{{ rec.is_active|yesno:'1,0' }}"
+                        title="Editar filtros y datos">
+                  ✏️
+                </button>
+
+                <form method="POST" style="margin: 0;">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="toggle_recipient">
+                  <input type="hidden" name="recipient_id" value="{{ rec.id }}">
+                  <button type="submit" class="btn btn-dim" style="padding: 0.28rem 0.55rem; font-size: 0.72rem;" title="{% if rec.is_active %}Pausar envíos{% else %}Reactivar envíos{% endif %}">
+                    {% if rec.is_active %}⏸️{% else %}▶️{% endif %}
+                  </button>
+                </form>
+
+                <form method="POST" style="margin: 0;" onsubmit="return confirm('¿Eliminar a {{ rec.name|escapejs }} de las alertas de Telegram?');">
+                  {% csrf_token %}
+                  <input type="hidden" name="action" value="delete_recipient">
+                  <input type="hidden" name="recipient_id" value="{{ rec.id }}">
+                  <button type="submit" class="btn btn-dim" style="padding: 0.28rem 0.55rem; font-size: 0.72rem; color: #fca5a5; border-color: rgba(239,68,68,0.35);" title="Eliminar destinatario">
+                    🗑️
+                  </button>
+                </form>
+              </div>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <div style="padding: 2rem; text-align: center; color: var(--text-dim);">
+        <div style="font-size: 1.5rem; margin-bottom: 0.4rem;">📭</div>
+        <div style="font-weight: 600; color: var(--text-main);">Todavía no hay destinatarios registrados</div>
+        <div style="font-size: 0.8rem; margin-top: 0.25rem;">
+          Usa <strong>🔍 Detectar Chats del Bot</strong> arriba (después de que cada persona envíe <code>/start</code> al bot) o agrégalos manualmente abajo.
+        </div>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Panel 4: Agregar Nuevo Destinatario Manualmente -->
+  <div class="panel">
+    <div class="panel-header">
+      <div class="panel-title"><span>➕</span> AGREGAR PERSONA, GRUPO O CANAL MANUALMENTE</div>
+    </div>
     <div class="panel-body">
       <form method="POST">
         {% csrf_token %}
+        <input type="hidden" name="action" value="add_recipient">
 
-        <div class="form-group">
-          <label class="form-label" for="bot_token">Telegram Bot Token</label>
-          <input type="text" id="bot_token" name="bot_token" class="form-input" value="{{ config.bot_token }}" placeholder="123456789:ABCdefGhIJKlmNoPQRstuVWXyz">
-          <small style="color: var(--text-dim); font-size: 0.7rem;">Crea un bot con <strong>@BotFather</strong> en Telegram y pega el token aquí.</small>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.9rem; margin-bottom: 1rem;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="rec_name">Nombre / Etiqueta *</label>
+            <input type="text" id="rec_name" name="rec_name" class="form-input" required placeholder="Ej: Ana Pérez / Grupo SOC">
+          </div>
+
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="rec_chat_id">Chat ID *</label>
+            <input type="text" id="rec_chat_id" name="rec_chat_id" class="form-input" required placeholder="Ej: 123456789 o -1001234567890" style="font-family: var(--font-mono);">
+          </div>
+
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="rec_type">Tipo</label>
+            <select id="rec_type" name="rec_type" class="form-input">
+              {% for val, lbl in recipient_type_choices %}
+                <option value="{{ val }}">{{ lbl }}</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="rec_role">Rol / Equipo (opcional)</label>
+            <input type="text" id="rec_role" name="rec_role" class="form-input" placeholder="Ej: Analista SOC / Infra / Guardia">
+          </div>
+
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="rec_min_severity">Severidad Mínima</label>
+            <select id="rec_min_severity" name="rec_min_severity" class="form-input">
+              {% for val, lbl in severity_choices %}
+                <option value="{{ val }}" {% if val == config.min_severity %}selected{% endif %}>{{ lbl }} ({{ val }})</option>
+              {% endfor %}
+            </select>
+          </div>
+
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="rec_thread_id">Topic ID (Supergrupo, opcional)</label>
+            <input type="text" id="rec_thread_id" name="rec_thread_id" class="form-input" placeholder="Ej: 42 (dejar vacío si no aplica)" style="font-family: var(--font-mono);">
+          </div>
         </div>
 
-        <div class="form-group">
-          <label class="form-label" for="chat_id">Chat ID o Canal de Operaciones</label>
-          <input type="text" id="chat_id" name="chat_id" class="form-input" value="{{ config.chat_id }}" placeholder="-1001234567890 o tu ID personal">
-          <small style="color: var(--text-dim); font-size: 0.7rem;">El ID de tu usuario, grupo de SOC o canal privado.</small>
-        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 1rem; align-items: center; justify-content: space-between; padding-top: 0.75rem; border-top: 1px solid var(--border-dim);">
+          <div style="display: flex; flex-wrap: wrap; gap: 1rem; font-size: 0.82rem;">
+            <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer;">
+              <input type="checkbox" name="rec_notify_ban_candidate" checked>
+              <span>🚨 Candidatos a Bloqueo</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer;">
+              <input type="checkbox" name="rec_notify_ban_action" checked>
+              <span>🛑 Acciones de Bloqueo</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer;">
+              <input type="checkbox" name="rec_notify_node_offline" checked>
+              <span>📡 Proxy Caído</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 0.45rem; cursor: pointer; color: var(--neon-cyan);">
+              <input type="checkbox" name="rec_send_test_now" checked>
+              <strong>🔔 Enviar prueba al agregar</strong>
+            </label>
+          </div>
 
-        <div style="background: rgba(13, 18, 31, 0.6); padding: 1rem; border-radius: 6px; border: 1px solid var(--border-dim); margin-bottom: 1.5rem;">
-          <h4 style="font-size: 0.8rem; font-weight: 700; color: var(--text-main); margin-bottom: 0.75rem;">
-            Eventos a Notificar:
-          </h4>
-
-          <label style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; cursor: pointer; font-size: 0.85rem;">
-            <input type="checkbox" name="is_enabled" {% if config.is_enabled %}checked{% endif %}>
-            <strong>Habilitar envío de alertas a Telegram</strong>
-          </label>
-
-          <label style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem; cursor: pointer; font-size: 0.85rem;">
-            <input type="checkbox" name="notify_on_ban_candidate" {% if config.notify_on_ban_candidate %}checked{% endif %}>
-            Notificar cuando se detecta un nuevo <strong>Candidato a Bloqueo</strong>
-          </label>
-
-          <label style="display: flex; align-items: center; gap: 0.6rem; cursor: pointer; font-size: 0.85rem;">
-            <input type="checkbox" name="notify_on_node_offline" {% if config.notify_on_node_offline %}checked{% endif %}>
-            Notificar si un <strong>Proxy Nginx pierde conexión</strong> (Heartbeat caído)
-          </label>
-        </div>
-
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 1.5rem;">
-          <button type="submit" name="action" value="test" class="btn btn-dim">
-            🔔 Enviar Alerta de Prueba
-          </button>
-
-          <button type="submit" name="action" value="save" class="btn btn-cyan">
-            Guardar Configuración
+          <button type="submit" class="btn btn-cyan">
+            ➕ Agregar Destinatario
           </button>
         </div>
       </form>
     </div>
   </div>
+
 </div>
+
+<!-- Modal Editar Destinatario -->
+<div id="editRecipientModal" style="display: none; position: fixed; inset: 0; background: rgba(4, 7, 15, 0.85); backdrop-filter: blur(4px); z-index: 9999; align-items: center; justify-content: center; padding: 1rem;">
+  <div class="panel" style="width: 100%; max-width: 560px; border: 1px solid var(--neon-cyan);">
+    <div class="panel-header">
+      <div class="panel-title"><span>✏️</span> EDITAR DESTINATARIO TELEGRAM</div>
+      <button type="button" class="btn btn-dim" style="padding: 0.25rem 0.6rem;" onclick="closeEditRecipientModal()">✕</button>
+    </div>
+    <div class="panel-body">
+      <form method="POST">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="edit_recipient">
+        <input type="hidden" id="edit_rec_id" name="recipient_id">
+
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.85rem; margin-bottom: 0.85rem;">
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="edit_rec_name">Nombre *</label>
+            <input type="text" id="edit_rec_name" name="rec_name" class="form-input" required>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="edit_rec_chat_id">Chat ID *</label>
+            <input type="text" id="edit_rec_chat_id" name="rec_chat_id" class="form-input" required style="font-family: var(--font-mono);">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="edit_rec_type">Tipo</label>
+            <select id="edit_rec_type" name="rec_type" class="form-input">
+              {% for val, lbl in recipient_type_choices %}
+                <option value="{{ val }}">{{ lbl }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="edit_rec_role">Rol / Equipo</label>
+            <input type="text" id="edit_rec_role" name="rec_role" class="form-input">
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="edit_rec_severity">Severidad Mínima</label>
+            <select id="edit_rec_severity" name="rec_min_severity" class="form-input">
+              {% for val, lbl in severity_choices %}
+                <option value="{{ val }}">{{ lbl }} ({{ val }})</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="form-group" style="margin-bottom: 0;">
+            <label class="form-label" for="edit_rec_thread_id">Topic ID (opcional)</label>
+            <input type="text" id="edit_rec_thread_id" name="rec_thread_id" class="form-input" style="font-family: var(--font-mono);">
+          </div>
+        </div>
+
+        <div style="background: rgba(13, 18, 31, 0.6); padding: 0.85rem; border-radius: 6px; border: 1px solid var(--border-dim); display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.84rem; margin-bottom: 1rem;">
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="edit_rec_active" name="rec_is_active">
+            <strong>Destinatario activo (recibiendo alertas)</strong>
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="edit_rec_cand" name="rec_notify_ban_candidate">
+            <span>🚨 Nuevos Candidatos a Bloqueo</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="edit_rec_ban" name="rec_notify_ban_action">
+            <span>🛑 Bloqueos aprobados / manuales / revocados</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+            <input type="checkbox" id="edit_rec_off" name="rec_notify_node_offline">
+            <span>📡 Proxy Nginx desconectado (OFFLINE)</span>
+          </label>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 0.6rem;">
+          <button type="button" class="btn btn-dim" onclick="closeEditRecipientModal()">Cancelar</button>
+          <button type="submit" class="btn btn-cyan">💾 Guardar Cambios</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+function toggleTokenVisibility() {
+  const inp = document.getElementById('bot_token');
+  const btn = document.getElementById('btnToggleToken');
+  if (!inp || !btn) return;
+  if (inp.type === 'password') {
+    inp.type = 'text';
+    btn.textContent = '🙈 Ocultar';
+  } else {
+    inp.type = 'password';
+    btn.textContent = '👁️ Mostrar';
+  }
+}
+
+function openEditRecipientModal(btn) {
+  document.getElementById('edit_rec_id').value = btn.dataset.id || '';
+  document.getElementById('edit_rec_name').value = btn.dataset.name || '';
+  document.getElementById('edit_rec_chat_id').value = btn.dataset.chatid || '';
+  document.getElementById('edit_rec_thread_id').value = btn.dataset.threadid || '';
+  document.getElementById('edit_rec_type').value = btn.dataset.type || 'USER';
+  document.getElementById('edit_rec_role').value = btn.dataset.role || '';
+  document.getElementById('edit_rec_severity').value = btn.dataset.severity || 'HIGH';
+  document.getElementById('edit_rec_cand').checked = btn.dataset.cand === '1';
+  document.getElementById('edit_rec_ban').checked = btn.dataset.ban === '1';
+  document.getElementById('edit_rec_off').checked = btn.dataset.off === '1';
+  document.getElementById('edit_rec_active').checked = btn.dataset.active === '1';
+  document.getElementById('editRecipientModal').style.display = 'flex';
+}
+
+function closeEditRecipientModal() {
+  document.getElementById('editRecipientModal').style.display = 'none';
+}
+
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape') closeEditRecipientModal();
+});
+</script>
 {% endblock %}

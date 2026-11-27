@@ -1357,7 +1357,9 @@ def ensure_ban_candidate_for_ip(target_ip, reputation=None, last_event=None, rea
                 f"Proxy: {node_name or 'N/A'}\n"
                 f"Motivo: {reason_text}\n"
                 f"Estado: Esperando aprobación del operador en Mithril SIEM."
-            )
+            ),
+            severity='CRITICAL' if eff_score >= 85 else 'HIGH',
+            event_type='ban_candidate',
         )
     return candidate
 

@@ -1,7 +1,10 @@
 import uuid
+import time
 import secrets
 from django.db import models
 from django.utils import timezone
+
+_NODE_OFFLINE_ALERT_COOLDOWN = {}
 
 class ProxyNode(models.Model):
     STATUS_CHOICES = [
@@ -167,10 +170,32 @@ class ProxyNode(models.Model):
         diff = (now - self.last_heartbeat).total_seconds()
 
         if diff > self.heartbeat_timeout_seconds and live_rps == 0:
+            prev_status = self.status
             if self.status != 'OFFLINE' or self.current_rps != 0:
                 self.status = 'OFFLINE'
                 self.current_rps = 0
                 self.save(update_fields=['status', 'current_rps'])
+            if prev_status in ('ONLINE', 'DEGRADED') and self.notify_on_degraded:
+                now_m = time.monotonic()
+                node_k = str(self.id)
+                if (now_m - _NODE_OFFLINE_ALERT_COOLDOWN.get(node_k, 0.0)) >= 300.0:
+                    _NODE_OFFLINE_ALERT_COOLDOWN[node_k] = now_m
+                    try:
+                        from apps.notifications.services import send_telegram_alert
+                        last_hb_str = timezone.localtime(self.last_heartbeat).strftime('%Y-%m-%d %H:%M:%S')
+                        send_telegram_alert(
+                            title="📡 Proxy Nginx Desconectado (OFFLINE)",
+                            message=(
+                                f"Nodo Proxy: {self.name}\n"
+                                f"IP: {self.ip_address}\n"
+                                f"Ubicación: {self.location_label or 'N/A'}\n"
+                                f"Último Heartbeat: {last_hb_str} (hace {int(diff)}s)"
+                            ),
+                            severity='CRITICAL',
+                            event_type='node_offline',
+                        )
+                    except Exception:
+                        pass
             return 'OFFLINE'
 
         new_status = 'DEGRADED' if live_rps >= self.max_rps_alert_threshold else 'ONLINE'
